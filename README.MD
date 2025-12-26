@@ -27,13 +27,3 @@ python example_agent.py
 ## Notes
 
 This is a structural scaffold intended to be filled with your precise axiom math; it is not presented as a final learning system.
-
-## Git hooks
-
-To avoid failed pushes when the remote branch has advanced, the repo ships `.githooks/pre-push`, which fetches the matching remote branch and rebases your work on top of it before `git push` continues. After cloning, activate the hook once with:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-If rebase conflicts occur, resolve them locally and re-run `git push`. The hook keeps the fast-forward requirement intact so GitHub rejects happen less often.
