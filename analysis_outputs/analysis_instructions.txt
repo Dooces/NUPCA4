@@ -1,0 +1,15 @@
+Use `tools/log_analysis.py` on any new run log that already includes transport diagnostics (the lines with `A13 transport_diag`, `_dbg` `transport_delta`, etc.). Before re-running, enable the extra diagnostics so the log contains the mandated fields:
+
+1. **Transport metrics** (before clamp): `transport_mae_pre`, `transport_mae_post`, `trans_norm`.
+2. **Positive error MAEs**: `mae_pos_prior_pre`, `mae_pos_prior_post` (pre-clamp obs), `mae_pos_unobs_pre`, `mae_pos_unobs_post`.
+3. **Periphery status**: `periph_dims_missing_count`, a `periph_selected` flag or comparable log line, and confirmation that coarse transport is derived only from observed periphery (no `true_full` field except when `--transport-test` is on).
+4. **Candidate visibility**: keep `learning_info` + `permit_param_summary` lines to capture `candidate_count`.
+
+Once the run finishes, feed the log into `python tools/log_analysis.py /path/to/log`. It will:
+* Produce `analysis_outputs/analysis_data.csv` with aligned step, transport MAEs, MAE drops, periph missing counts, and candidate numbers.
+* Emit `transport_mae.png`, `unobs_mae.png`, `candidates.png` showing the reduction in loss with transport, how permanent unobserved positives behave, and that learning candidates stay >0.
+* Print step count, candidate stats, and a sample alignment of the essential fields so you can confirm the four key conditions from `nextsteps.txt`.
+
+Give these outputs to the other AI as the proof set that transported priors are being used, periphery coverage stays stable, and gradients operate on transported residuals rather than zero-padding. Make sure the log you hand over has the diagnostics listed above; otherwise the CSV/charts will not show the required evidence.
+Expand the transform candidates (e.g., include rotations plus learned offsets) and weight the scoring so the solver prioritizes the mappings that drove the 280-test wins,
+     aiming to bring down the overall MAE below the baseline.

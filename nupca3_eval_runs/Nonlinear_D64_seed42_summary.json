@@ -1,0 +1,33 @@
+{
+  "run_id": "Nonlinear_D64_seed42",
+  "test_name": "Nonlinear_D64",
+  "seed": 42,
+  "n_steps": 15000,
+  "D": 64,
+  "B": 4,
+  "F": 1,
+  "policy": "adaptive",
+  "regime_duration": 150,
+  "csv_path": "nupca3_eval_runs/Nonlinear_D64_seed42.csv",
+  "events_path": "nupca3_eval_runs/Nonlinear_D64_seed42_events.jsonl",
+  "elapsed_sec": 16.40800976753235,
+  "steps_per_sec": 914.1876566700689,
+  "mae_global_auc": 138.86274950833123,
+  "mae_anchor_auc": 138.86274950833123,
+  "mae_global_mean": 0.009258529709534093,
+  "mae_anchor_mean": 0.009258529709534093,
+  "mae_global_early_mean": 0.053880450326194367,
+  "mae_global_late_mean": 0.008296396374408717,
+  "improvement_simple": 0.8460221254610136,
+  "phase_sensitivity_std": 0.001297279750421097,
+  "phase_sign_negative_rate": 0.0,
+  "per_regime_mae_global": {
+    "0": 0.009332207660455139,
+    "1": 0.010119085844026822,
+    "2": 0.008322062958940899
+  },
+  "nodes_final_total": 4,
+  "spawns_total": 0,
+  "replacements_total": 0,
+  "rejected_aliases_total": 0
+}

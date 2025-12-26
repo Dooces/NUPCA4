@@ -1,0 +1,993 @@
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.000s] cfg.D=16
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.000s] rest_t=False rest_permitted_prev=True demand_prev=False interrupt_prev=False
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.000s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.000s] A16.3 current_blocks=2
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.001s] A16.2 visit_counts(window=256): min=0 median=0.5 max=1
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.001s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.001s] cue_in|x_partial|=8
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.001s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     0 dt=  0.001s elapsed=  0.002s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.070312 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] A7 prior_sigma_diag: mean=0.000000 min=0.000000 max=0.000000
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] BUFFER update x_last; D=16
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] BUFFER observed_dims=8
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] A13 transport_no_shift delta=0.562500 prev_nz=0 curr_nz=1
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] L_eff=4.089 active_set=3
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] A16.2 age_delta_mean=-25.500 rest_t=False
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.002s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.004 resid_min=0.000 resid_max=0.014 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     0 dt=  0.001s elapsed=  0.003s] A7.4 c_stats: mean=0.463891 min=0.417557 max=0.513417
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.770000 c_qual_mean=0.463891 c_cov_mean=1.000000
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A0.2 arousal_terms: L=0.000 C=10.000 S=0.000 delta=30.000 E=0.000 A_raw=40.000
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A10 permit_lagged: rest_t=False freeze=False x_C=260.000 tau_C=0.000 arousal=0.000 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.003s] A10 gates lagged: freeze=False x_C=260.000 arousal=0.000 rawE=0.500 rawD=0.500
+[step_pipeline t=     0 dt=  0.001s elapsed=  0.004s] A10.3 learn_gate: candidates=5 clamped=3 err_j[min/mean/max]=0.000000/0.070312/0.140625 theta_learn=0.020000
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.004s] A10 permit_param_stats candidate_count=5 clamped_count=3 updated=2 permit=True
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.004s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.004s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.004s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.004s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.040 P_rest_eff=3.040
+[step_pipeline t=     0 dt=  0.000s elapsed=  0.004s] A14 macro_vars: rest=False T_since=1 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=0] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625, 0.0] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.5625, 15: 0.0} EXACT_AGENT_PREDICTS=None
+[env square] step=0 pos=(1, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=0 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=1 rest=False forced_rest=False rest_permitted_prev=True rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=0.000000 coverage_debt_delta=0.000000 s_int_need_prev=0.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.040 P_rest_eff=3.040 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=260.000 rawE_prev=0.500 rawD_prev=0.500 arousal=0.020 arousal_prev=0.020 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000000
+[D16 seed42] learning_info candidates=5 clamped=3 err_max=0.140625 samples=[n0@b-1 err=0.070 clamped=True]
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=5 clamped=3 updated=2
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=0 active_dims_head=[]
+[D16 seed42] obs_active_count=0 obs_active_head=[]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[0] fovea_top_resid_head=[0]
+[D16 seed42] active_obs_metrics active_count=0 obs_active_count=0 obs_active_rate=0.000 active_blocks=[] obs_active_blocks=[]
+[D16 seed42] fovea_overlap top_age_hits=1 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.000000 mae_pos_unobs=0.000000 pos_frac=0.000000 mae_zero=0.000000
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.000000 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=1
+[D16 seed42] occlusion_metrics first_err=0.000000 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     1 dt=  0.001s elapsed=  0.005s] cfg.D=16
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.005s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.005s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.005s] A16.3 current_blocks=2
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.005s] A16.2 visit_counts(window=256): min=0 median=1.0 max=2
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.005s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.005s] cue_in|x_partial|=8
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.005s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     1 dt=  0.001s elapsed=  0.006s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.000000 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.006s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.006s] A7 prior_sigma_diag: mean=0.604167 min=0.000000 max=1.000000
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.006s] BUFFER update x_last; D=16
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.006s] BUFFER observed_dims=8
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.006s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.007s] L_eff=4.089 active_set=3
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.007s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.007s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.007 resid_min=0.000 resid_max=0.027 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     1 dt=  0.001s elapsed=  0.008s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A0.2 arousal_terms: L=0.000 C=7.053 S=0.000 delta=8.840 E=0.211 A_raw=16.104
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.020 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.020 rawE=0.500 rawD=0.500
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.080 P_rest_eff=3.080
+[step_pipeline t=     1 dt=  0.000s elapsed=  0.008s] A14 macro_vars: rest=False T_since=2 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=1] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625, 0.0] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.5625, 15: 0.0} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=1 pos=(2, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=1 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=2 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.080 P_rest_eff=3.080 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.040 arousal_prev=0.040 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000003
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[14]
+[D16 seed42] obs_active_count=1 obs_active_head=[14]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.562500 mae_pos_unobs=0.000000 pos_frac=0.062500 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.000000 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=2
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     2 dt=  0.001s elapsed=  0.009s] cfg.D=16
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.009s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.009s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.009s] A16.3 current_blocks=2
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.009s] A16.2 visit_counts(window=256): min=0 median=1.5 max=3
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.009s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.009s] cue_in|x_partial|=8
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.009s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     2 dt=  0.001s elapsed=  0.010s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] BUFFER update x_last; D=16
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] BUFFER observed_dims=8
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] A13 transport_no_shift delta=0.265165 prev_nz=1 curr_nz=2
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] L_eff=4.089 active_set=3
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.010s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.011s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.010 resid_min=0.000 resid_max=0.038 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     2 dt=  0.001s elapsed=  0.011s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.011s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.011s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.011s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A0.2 arousal_terms: L=0.000 C=5.744 S=0.000 delta=3.926 E=0.211 A_raw=9.882
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.040 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.040 rawE=0.500 rawD=0.500
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.120 P_rest_eff=3.120
+[step_pipeline t=     2 dt=  0.000s elapsed=  0.012s] A14 macro_vars: rest=False T_since=3 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=2] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.375, 0.1875] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.375, 15: 0.1875} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=2 pos=(3, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=2 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=3 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.120 P_rest_eff=3.120 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.059 arousal_prev=0.059 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000006
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.281250 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=3
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     3 dt=  0.001s elapsed=  0.013s] cfg.D=16
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.013s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.013s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.013s] A16.3 current_blocks=2
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.013s] A16.2 visit_counts(window=256): min=0 median=2.0 max=4
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.013s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.013s] cue_in|x_partial|=8
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.013s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     3 dt=  0.001s elapsed=  0.014s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] BUFFER update x_last; D=16
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] BUFFER observed_dims=8
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] L_eff=4.089 active_set=3
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.014s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.012 resid_min=0.000 resid_max=0.048 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     3 dt=  0.001s elapsed=  0.016s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A0.2 arousal_terms: L=0.000 C=4.962 S=0.000 delta=2.346 E=0.211 A_raw=7.520
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.059 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.059 rawE=0.500 rawD=0.500
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.160 P_rest_eff=3.160
+[step_pipeline t=     3 dt=  0.000s elapsed=  0.016s] A14 macro_vars: rest=False T_since=4 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=3] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1875, 0.375] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.1875, 15: 0.375} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=3 pos=(4, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=3 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=4 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.160 P_rest_eff=3.160 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.078 arousal_prev=0.078 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000010
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.375000 mae_pos_unobs=0.000000 pos_frac=0.104167 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.281250 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=4
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     4 dt=  0.001s elapsed=  0.017s] cfg.D=16
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.018s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.018s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.018s] A16.3 current_blocks=2
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.018s] A16.2 visit_counts(window=256): min=0 median=2.5 max=5
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.018s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.018s] cue_in|x_partial|=8
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.018s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     4 dt=  0.001s elapsed=  0.019s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] BUFFER update x_last; D=16
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] BUFFER observed_dims=8
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] A13 transport_no_shift delta=0.265165 prev_nz=2 curr_nz=1
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] L_eff=4.089 active_set=3
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.019s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.014 resid_min=0.000 resid_max=0.058 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     4 dt=  0.001s elapsed=  0.020s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.020s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.020s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.020s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A0.2 arousal_terms: L=0.000 C=4.427 S=0.000 delta=1.605 E=0.211 A_raw=6.243
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.078 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.078 rawE=0.500 rawD=0.500
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.200 P_rest_eff=3.200
+[step_pipeline t=     4 dt=  0.000s elapsed=  0.021s] A14 macro_vars: rest=False T_since=5 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=4] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.0, 15: 0.5625} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=4 pos=(5, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=4 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=5 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.200 P_rest_eff=3.200 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.096 arousal_prev=0.096 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000015
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[15]
+[D16 seed42] obs_active_count=1 obs_active_head=[15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.375000 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=5
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     5 dt=  0.001s elapsed=  0.022s] cfg.D=16
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.022s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.022s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.022s] A16.3 current_blocks=2
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.022s] A16.2 visit_counts(window=256): min=0 median=3.0 max=6
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.022s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.022s] cue_in|x_partial|=8
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.022s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     5 dt=  0.001s elapsed=  0.023s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.000000 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] BUFFER update x_last; D=16
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] BUFFER observed_dims=8
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] L_eff=4.089 active_set=3
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.023s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.016 resid_min=0.000 resid_max=0.066 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     5 dt=  0.001s elapsed=  0.024s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.024s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.024s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.024s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A0.2 arousal_terms: L=0.000 C=4.031 S=0.000 delta=1.188 E=0.211 A_raw=5.430
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.096 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.096 rawE=0.500 rawD=0.500
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.240 P_rest_eff=3.240
+[step_pipeline t=     5 dt=  0.000s elapsed=  0.025s] A14 macro_vars: rest=False T_since=6 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=5] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.0, 15: 0.5625} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=5 pos=(6, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=5 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=6 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.240 P_rest_eff=3.240 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.114 arousal_prev=0.114 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000020
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[15]
+[D16 seed42] obs_active_count=1 obs_active_head=[15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.450000 mae_pos_unobs=0.000000 pos_frac=0.087500 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.421875 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=6
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     6 dt=  0.001s elapsed=  0.026s] cfg.D=16
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.026s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.026s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.026s] A16.3 current_blocks=2
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.026s] A16.2 visit_counts(window=256): min=0 median=3.5 max=7
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.026s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.026s] cue_in|x_partial|=8
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.026s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     6 dt=  0.001s elapsed=  0.027s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] BUFFER update x_last; D=16
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] BUFFER observed_dims=8
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] A13 transport_no_shift delta=0.265165 prev_nz=1 curr_nz=2
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] L_eff=4.089 active_set=3
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.027s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.018 resid_min=0.000 resid_max=0.073 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     6 dt=  0.001s elapsed=  0.028s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A0.2 arousal_terms: L=0.000 C=3.723 S=0.000 delta=0.925 E=0.211 A_raw=4.859
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.114 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.114 rawE=0.500 rawD=0.500
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.280 P_rest_eff=3.280
+[step_pipeline t=     6 dt=  0.000s elapsed=  0.029s] A14 macro_vars: rest=False T_since=7 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=6] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1875, 0.375] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.1875, 15: 0.375} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=6 pos=(7, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=6 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=7 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.280 P_rest_eff=3.280 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.132 arousal_prev=0.132 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000024
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.393750 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=7
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     7 dt=  0.001s elapsed=  0.030s] cfg.D=16
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.030s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.030s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.030s] A16.3 current_blocks=2
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.030s] A16.2 visit_counts(window=256): min=0 median=4.0 max=8
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.030s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.030s] cue_in|x_partial|=8
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.030s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     7 dt=  0.001s elapsed=  0.031s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.031s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.031s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.031s] BUFFER update x_last; D=16
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.031s] BUFFER observed_dims=8
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.031s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.031s] L_eff=4.089 active_set=3
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.032s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.032s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.020 resid_min=0.000 resid_max=0.080 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     7 dt=  0.002s elapsed=  0.034s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A0.2 arousal_terms: L=0.000 C=3.473 S=0.000 delta=0.748 E=0.211 A_raw=4.432
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.132 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.132 rawE=0.500 rawD=0.500
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.320 P_rest_eff=3.320
+[step_pipeline t=     7 dt=  0.000s elapsed=  0.034s] A14 macro_vars: rest=False T_since=8 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=7] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.375, 0.1875] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.375, 15: 0.1875} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=7 pos=(0, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=7 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=8 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.320 P_rest_eff=3.320 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.149 arousal_prev=0.149 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000029
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.401786 mae_pos_unobs=0.000000 pos_frac=0.098214 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.375000 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=8
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     8 dt=  0.001s elapsed=  0.035s] cfg.D=16
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.035s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.036s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.036s] A16.3 current_blocks=2
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.036s] A16.2 visit_counts(window=256): min=0 median=4.5 max=9
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.036s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.036s] cue_in|x_partial|=8
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.036s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     8 dt=  0.001s elapsed=  0.037s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] BUFFER update x_last; D=16
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] BUFFER observed_dims=8
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] A13 transport_no_shift delta=0.265165 prev_nz=2 curr_nz=1
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] L_eff=4.089 active_set=3
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.037s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.022 resid_min=0.000 resid_max=0.086 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     8 dt=  0.001s elapsed=  0.038s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A0.2 arousal_terms: L=0.000 C=3.266 S=0.000 delta=0.621 E=0.211 A_raw=4.098
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.149 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.149 rawE=0.500 rawD=0.500
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.038s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.039s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.039s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.039s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.039s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.360 P_rest_eff=3.360
+[step_pipeline t=     8 dt=  0.000s elapsed=  0.039s] A14 macro_vars: rest=False T_since=9 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=8] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625, 0.0] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.5625, 15: 0.0} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=8 pos=(1, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=8 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=9 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.360 P_rest_eff=3.360 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.166 arousal_prev=0.166 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000034
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[14]
+[D16 seed42] obs_active_count=1 obs_active_head=[14]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.401786 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=9
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=     9 dt=  0.001s elapsed=  0.039s] cfg.D=16
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.040s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.040s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.040s] A16.3 current_blocks=2
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.040s] A16.2 visit_counts(window=256): min=0 median=5.0 max=10
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.040s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.040s] cue_in|x_partial|=8
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.040s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=     9 dt=  0.001s elapsed=  0.041s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.000000 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.041s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.041s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.041s] BUFFER update x_last; D=16
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.041s] BUFFER observed_dims=8
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.041s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.041s] L_eff=4.089 active_set=3
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.041s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.042s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.023 resid_min=0.000 resid_max=0.092 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=     9 dt=  0.001s elapsed=  0.042s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A8 select_action -> action=1 commit=True
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A0.2 arousal_terms: L=0.000 C=3.091 S=0.000 delta=0.527 E=0.211 A_raw=3.828
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.166 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.166 rawE=0.500 rawD=0.500
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.400 P_rest_eff=3.400
+[step_pipeline t=     9 dt=  0.000s elapsed=  0.043s] A14 macro_vars: rest=False T_since=10 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=9] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625, 0.0] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.5625, 15: 0.0} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=9 pos=(2, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=9 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=10 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.400 P_rest_eff=3.400 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.183 arousal_prev=0.183 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000038
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[14]
+[D16 seed42] obs_active_count=1 obs_active_head=[14]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.437500 mae_pos_unobs=0.000000 pos_frac=0.090278 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.421875 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=10
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    10 dt=  0.001s elapsed=  0.044s] cfg.D=16
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.044s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.044s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.044s] A16.3 current_blocks=2
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.044s] A16.2 visit_counts(window=256): min=0 median=5.5 max=11
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.044s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.044s] cue_in|x_partial|=8
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.044s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    10 dt=  0.001s elapsed=  0.045s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.045s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.045s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.045s] BUFFER update x_last; D=16
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.045s] BUFFER observed_dims=8
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.045s] A13 transport_no_shift delta=0.265165 prev_nz=1 curr_nz=2
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.045s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.046s] L_eff=4.089 active_set=3
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.046s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.046s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.024 resid_min=0.000 resid_max=0.096 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    10 dt=  0.001s elapsed=  0.047s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A0.2 arousal_terms: L=0.000 C=2.940 S=0.000 delta=0.454 E=0.211 A_raw=3.605
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.183 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.183 rawE=0.500 rawD=0.500
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.440 P_rest_eff=3.440
+[step_pipeline t=    10 dt=  0.000s elapsed=  0.047s] A14 macro_vars: rest=False T_since=11 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=10] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.375, 0.1875] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.375, 15: 0.1875} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=10 pos=(3, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=10 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=11 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.440 P_rest_eff=3.440 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.199 arousal_prev=0.199 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000042
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.406250 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=11
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    11 dt=  0.001s elapsed=  0.048s] cfg.D=16
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.048s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.048s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.048s] A16.3 current_blocks=2
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.048s] A16.2 visit_counts(window=256): min=0 median=6.0 max=12
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.048s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.048s] cue_in|x_partial|=8
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.048s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    11 dt=  0.001s elapsed=  0.050s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] BUFFER update x_last; D=16
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] BUFFER observed_dims=8
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] L_eff=4.089 active_set=3
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.050s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.025 resid_min=0.000 resid_max=0.101 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    11 dt=  0.001s elapsed=  0.052s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A0.2 arousal_terms: L=0.000 C=2.807 S=0.000 delta=0.397 E=0.211 A_raw=3.415
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.199 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.199 rawE=0.500 rawD=0.500
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.480 P_rest_eff=3.480
+[step_pipeline t=    11 dt=  0.000s elapsed=  0.052s] A14 macro_vars: rest=False T_since=12 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=11] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1875, 0.375] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.1875, 15: 0.375} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=11 pos=(4, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=11 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=12 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.480 P_rest_eff=3.480 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.215 arousal_prev=0.215 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000046
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.409091 mae_pos_unobs=0.000000 pos_frac=0.096591 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.393750 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=12
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    12 dt=  0.001s elapsed=  0.053s] cfg.D=16
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.053s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.053s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.053s] A16.3 current_blocks=2
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.053s] A16.2 visit_counts(window=256): min=0 median=6.5 max=13
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.053s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.053s] cue_in|x_partial|=8
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.053s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    12 dt=  0.001s elapsed=  0.054s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.054s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.054s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.055s] BUFFER update x_last; D=16
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.055s] BUFFER observed_dims=8
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.055s] A13 transport_no_shift delta=0.265165 prev_nz=2 curr_nz=1
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.055s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.055s] L_eff=4.089 active_set=3
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.055s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.055s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.026 resid_min=0.000 resid_max=0.105 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    12 dt=  0.001s elapsed=  0.056s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A0.2 arousal_terms: L=0.000 C=2.690 S=0.000 delta=0.351 E=0.211 A_raw=3.252
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.215 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.215 rawE=0.500 rawD=0.500
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.056s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.057s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.057s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.057s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.057s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.520 P_rest_eff=3.520
+[step_pipeline t=    12 dt=  0.000s elapsed=  0.057s] A14 macro_vars: rest=False T_since=13 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=12] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.0, 15: 0.5625} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=12 pos=(5, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=12 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=13 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.520 P_rest_eff=3.520 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.231 arousal_prev=0.231 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000050
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[15]
+[D16 seed42] obs_active_count=1 obs_active_head=[15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.409091 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=13
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    13 dt=  0.001s elapsed=  0.058s] cfg.D=16
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.058s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.058s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.058s] A16.3 current_blocks=2
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.058s] A16.2 visit_counts(window=256): min=0 median=7.0 max=14
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.058s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.058s] cue_in|x_partial|=8
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.058s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    13 dt=  0.001s elapsed=  0.059s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.000000 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.059s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.059s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.059s] BUFFER update x_last; D=16
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.059s] BUFFER observed_dims=8
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.059s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.059s] L_eff=4.089 active_set=3
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.059s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.060s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.027 resid_min=0.000 resid_max=0.108 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    13 dt=  0.001s elapsed=  0.061s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A0.2 arousal_terms: L=0.000 C=2.586 S=0.000 delta=0.314 E=0.211 A_raw=3.110
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.231 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.231 rawE=0.500 rawD=0.500
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.560 P_rest_eff=3.560
+[step_pipeline t=    13 dt=  0.000s elapsed=  0.061s] A14 macro_vars: rest=False T_since=14 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=13] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.0, 15: 0.5625} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=13 pos=(6, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=13 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=14 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.560 P_rest_eff=3.560 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.246 arousal_prev=0.246 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000053
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[15]
+[D16 seed42] obs_active_count=1 obs_active_head=[15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.432692 mae_pos_unobs=0.000000 pos_frac=0.091346 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.421875 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=14
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    14 dt=  0.001s elapsed=  0.062s] cfg.D=16
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.062s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.062s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.062s] A16.3 current_blocks=2
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.062s] A16.2 visit_counts(window=256): min=0 median=7.5 max=15
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.062s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.062s] cue_in|x_partial|=8
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.062s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    14 dt=  0.001s elapsed=  0.063s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.063s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.063s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.063s] BUFFER update x_last; D=16
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.063s] BUFFER observed_dims=8
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.064s] A13 transport_no_shift delta=0.265165 prev_nz=1 curr_nz=2
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.064s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.064s] L_eff=4.089 active_set=3
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.064s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.064s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.028 resid_min=0.000 resid_max=0.112 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    14 dt=  0.001s elapsed=  0.065s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A0.2 arousal_terms: L=0.000 C=2.492 S=0.000 delta=0.282 E=0.211 A_raw=2.985
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.246 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.246 rawE=0.500 rawD=0.500
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.065s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.066s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.600 P_rest_eff=3.600
+[step_pipeline t=    14 dt=  0.000s elapsed=  0.066s] A14 macro_vars: rest=False T_since=15 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=14] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1875, 0.375] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.1875, 15: 0.375} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=14 pos=(7, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=14 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=15 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.600 P_rest_eff=3.600 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.261 arousal_prev=0.261 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000056
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.411058 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=15
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    15 dt=  0.002s elapsed=  0.067s] cfg.D=16
+[step_pipeline t=    15 dt=  0.001s elapsed=  0.068s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.068s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.068s] A16.3 current_blocks=2
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.068s] A16.2 visit_counts(window=256): min=0 median=8.0 max=16
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.068s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.068s] cue_in|x_partial|=8
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.068s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    15 dt=  0.001s elapsed=  0.069s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.069s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.070s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.070s] BUFFER update x_last; D=16
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.070s] BUFFER observed_dims=8
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.070s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.070s] L_eff=4.089 active_set=3
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.070s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.070s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.029 resid_min=0.000 resid_max=0.115 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    15 dt=  0.001s elapsed=  0.071s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A0.2 arousal_terms: L=0.000 C=2.406 S=0.000 delta=0.256 E=0.211 A_raw=2.873
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.261 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.261 rawE=0.500 rawD=0.500
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.640 P_rest_eff=3.640
+[step_pipeline t=    15 dt=  0.000s elapsed=  0.071s] A14 macro_vars: rest=False T_since=16 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=15] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.375, 0.1875] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.375, 15: 0.1875} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=15 pos=(0, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=15 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=16 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.640 P_rest_eff=3.640 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.276 arousal_prev=0.276 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000058
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.412500 mae_pos_unobs=0.000000 pos_frac=0.095833 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.401786 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=16
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    16 dt=  0.001s elapsed=  0.072s] cfg.D=16
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.073s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.073s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.073s] A16.3 current_blocks=2
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.073s] A16.2 visit_counts(window=256): min=0 median=8.5 max=17
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.073s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.073s] cue_in|x_partial|=8
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.073s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    16 dt=  0.001s elapsed=  0.074s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] BUFFER update x_last; D=16
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] BUFFER observed_dims=8
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] A13 transport_no_shift delta=0.265165 prev_nz=2 curr_nz=1
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] L_eff=4.089 active_set=3
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.074s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.029 resid_min=0.000 resid_max=0.117 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    16 dt=  0.001s elapsed=  0.075s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.075s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.075s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.075s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.075s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A0.2 arousal_terms: L=0.000 C=2.328 S=0.000 delta=0.234 E=0.211 A_raw=2.773
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.276 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.276 rawE=0.500 rawD=0.500
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.680 P_rest_eff=3.680
+[step_pipeline t=    16 dt=  0.000s elapsed=  0.076s] A14 macro_vars: rest=False T_since=17 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=16] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625, 0.0] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.5625, 15: 0.0} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=16 pos=(1, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=16 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=17 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.680 P_rest_eff=3.680 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.291 arousal_prev=0.291 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000061
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[14]
+[D16 seed42] obs_active_count=1 obs_active_head=[14]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.412500 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=17
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    17 dt=  0.001s elapsed=  0.077s] cfg.D=16
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.077s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.077s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.077s] A16.3 current_blocks=2
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.077s] A16.2 visit_counts(window=256): min=0 median=9.0 max=18
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.077s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.077s] cue_in|x_partial|=8
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.077s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    17 dt=  0.001s elapsed=  0.078s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.000000 transport_mae_post=0.070312 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.078s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.562500 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.078s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.078s] BUFFER update x_last; D=16
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.078s] BUFFER observed_dims=8
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.078s] A16.2 active_obs: count=1 mean_abs_err=0.562500
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.078s] L_eff=4.089 active_set=3
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.078s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.079s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.030 resid_min=0.000 resid_max=0.120 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    17 dt=  0.001s elapsed=  0.079s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A0.2 arousal_terms: L=0.000 C=2.257 S=0.000 delta=0.214 E=0.211 A_raw=2.682
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.291 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.291 rawE=0.500 rawD=0.500
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.720 P_rest_eff=3.720
+[step_pipeline t=    17 dt=  0.000s elapsed=  0.080s] A14 macro_vars: rest=False T_since=18 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=17] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5625, 0.0] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.5625, 15: 0.0} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=17 pos=(2, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=17 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=18 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.720 P_rest_eff=3.720 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.305 arousal_prev=0.305 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000063
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=1 active_dims_head=[14]
+[D16 seed42] obs_active_count=1 obs_active_head=[14]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=1 obs_active_count=1 obs_active_rate=1.000 active_blocks=[np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.430147 mae_pos_unobs=0.000000 pos_frac=0.091912 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.421875 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=18
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    18 dt=  0.001s elapsed=  0.081s] cfg.D=16
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.081s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.081s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.081s] A16.3 current_blocks=2
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.081s] A16.2 visit_counts(window=256): min=0 median=9.5 max=19
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.081s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.081s] cue_in|x_partial|=8
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.081s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    18 dt=  0.001s elapsed=  0.082s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.082s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.082s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.082s] BUFFER update x_last; D=16
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.082s] BUFFER observed_dims=8
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.083s] A13 transport_no_shift delta=0.265165 prev_nz=1 curr_nz=2
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.083s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.083s] L_eff=4.089 active_set=3
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.083s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.083s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.030 resid_min=0.000 resid_max=0.122 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    18 dt=  0.001s elapsed=  0.085s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A0.2 arousal_terms: L=0.000 C=2.191 S=0.000 delta=0.198 E=0.211 A_raw=2.600
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.305 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.305 rawE=0.500 rawD=0.500
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.760 P_rest_eff=3.760
+[step_pipeline t=    18 dt=  0.000s elapsed=  0.085s] A14 macro_vars: rest=False T_since=19 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=18] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.375, 0.1875] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.375, 15: 0.1875} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=18 pos=(3, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=18 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=19 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.760 P_rest_eff=3.760 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.319 arousal_prev=0.319 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000065
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.421875 mae_pos_unobs=0.000000 pos_frac=0.093750 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.413603 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=19
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[step_pipeline t=    19 dt=  0.001s elapsed=  0.086s] cfg.D=16
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.086s] rest_t=False rest_permitted_prev=False demand_prev=False interrupt_prev=False
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.086s] A16.3 select_fovea -> n_blocks=2
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.086s] A16.3 current_blocks=2
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.086s] A16.2 visit_counts(window=256): min=0 median=10.0 max=20
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.086s] A16.5 make_observation_set -> |O_req|=8
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.086s] cue_in|x_partial|=8
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.086s] A16.5 cue_t filtered -> |O_t|=8
+[step_pipeline t=    19 dt=  0.001s elapsed=  0.087s] A13 transport_diag delta=(1, 0) transport_mae_pre=0.046875 transport_mae_post=0.070312 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000 mae_pos_unobs_pre=0.000000 mae_pos_unobs_post=0.000000 trans_norm=0.000000 transport_effect=0.000000 transport_confidence=0.000000 transport_margin=0.000000 transport_source=grid periph_dims_missing_count=0 periph_selected=True transport_candidates=9
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.087s] A13 clamp_stats: obs_dims=8 mean_abs_delta=0.070312 delta_outside=0.000000 mae_pos_prior=0.281250 mae_pos_prior_unobs=0.000000
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.087s] A7 prior_sigma_diag: mean=0.603054 min=0.000000 max=1.000000
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.087s] BUFFER update x_last; D=16
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.087s] BUFFER observed_dims=8
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.088s] A16.2 active_obs: count=2 mean_abs_err=0.281250
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.088s] L_eff=4.089 active_set=3
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.088s] A16.2 age_delta_mean=0.000 rest_t=False
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.088s] A16.2 coverage_stats: age_mean=25.500 age_min=0.000 age_max=51.000 resid_mean=0.031 resid_min=0.000 resid_max=0.124 top_age=[np.int64(1), np.int64(2), np.int64(0), np.int64(3)] top_resid=[np.int64(3), np.int64(0), np.int64(1), np.int64(2)]
+[step_pipeline t=    19 dt=  0.001s elapsed=  0.089s] A7.4 c_stats: mean=0.464484 min=0.418167 max=0.513989
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A7.4 cov_stats: rho_mean=1.000000 H_cov_mean=0.768715 c_qual_mean=0.464484 c_cov_mean=1.000000
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A8 commit_gate with h=32 c_len=32
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A8 select_action -> action=1 commit=True
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A0/A2 raw_headrooms: E=0.500 D=0.500 rawE=0.500 rawD=0.500
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A0.2 arousal_terms: L=0.000 C=2.130 S=0.000 delta=0.183 E=0.211 A_raw=2.524
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A10 freeze_lagged: s_ext_th=0.000 chi_th=0.900 freeze=False
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A10 permit_lagged: rest_t=False freeze=False x_C=172.503 tau_C=0.000 arousal=0.319 theta_panic=0.950 rawE=0.500 tau_E=0.000 rawD=0.500 tau_D=0.000 permit=True
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A10 gates lagged: freeze=False x_C=172.503 arousal=0.319 rawE=0.500 rawD=0.500
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A10 permit_param_stats candidate_count=0 clamped_count=0 updated=0 permit=True
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A16.2 coverage_debt_delta=0.000
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A16.2 coverage_debt_terms: sum_log1p=7.902 max_log1p=3.951 max_age=51.000
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.089s] A14 inputs: s_int_need=1.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503 mS=0.000 coverage_debt=7.902 proposals=0 edits_processed=0
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.090s] A14 pressures: coverage_debt=7.902 P_wake=7.902 P_rest=0.800 P_rest_eff=3.800
+[step_pipeline t=    19 dt=  0.000s elapsed=  0.090s] A14 macro_vars: rest=False T_since=20 T_rest=0 Q_struct_len=0 rest_permitted=False rest_reason=safe demand=False interrupt=False rest_actionable=False rest_actionable_reason= rest_zero_streak=0 rest_cooldown=0
+[TRACE step=19] EXACT_ENV=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1875, 0.375] EXACT_AGENT_PERCEIVES={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 12: 0.0, 13: 0.0, 14: 0.1875, 15: 0.375} EXACT_AGENT_PREDICTS=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[env square] step=19 pos=(4, 6) true_delta=(1, 0) block_change_rate=0.000000 coverage_debt=7.902487 forced_rest=False
+[transport check] step=19 true_delta=(1, 0) transport_delta=(1, 0) match=True
+[D16 seed42] step=20 rest=False forced_rest=False rest_permitted_prev=False rest_permitted_t=False demand_prev=False demand_t=False interrupt_prev=False interrupt_t=False coverage_debt=7.902487 coverage_debt_prev=7.902487 coverage_debt_delta=0.000000 s_int_need_prev=1.000 s_int_need=1.000 s_ext_th_prev=0.000 s_ext_th=0.000 mE=0.500 mD=0.500 mL=0.000 mC=172.503085 mS=0.000 P_rest=0.800 P_rest_eff=3.800 P_wake=7.902 maint_debt=0.000 b_cons_prev=0.000 Q_struct_len=0 last_struct_edit_t=-1000000000 W=50 observed_dims=8 edits_processed=0 permit_param=True x_C_prev=172.503 rawE_prev=0.500 rawD_prev=0.500 arousal=0.332 arousal_prev=0.332 permit_struct=False permit_reason= probe_var=0.000000 feature_var=0.000066
+[D16 seed42] permit_param_summary theta_learn=0.020 permit=True cand=0 clamped=0 updated=0
+[D16 seed42] obs_dims_count=8 obs_dims_head=[0, 1, 2, 3, 12, 13, 14, 15]
+[D16 seed42] active_dims_count=2 active_dims_head=[14, 15]
+[D16 seed42] obs_active_count=2 obs_active_head=[14, 15]
+[D16 seed42] fovea_blocks_count=2 fovea_blocks_head=[3, 0] k_eff=1
+[D16 seed42] fovea_top_age_head=[1] fovea_top_resid_head=[3]
+[D16 seed42] active_obs_metrics active_count=2 obs_active_count=2 obs_active_rate=1.000 active_blocks=[np.int64(3), np.int64(3)] obs_active_blocks=[3]
+[D16 seed42] fovea_overlap top_age_hits=0 top_resid_hits=1 top_k=1
+[D16 seed42] coverage_check full_obs=0 coverage_debt=7.902487 coverage_debt_full_obs_violation=0
+[D16 seed42] sparse_metrics mae_pos=0.414474 mae_pos_unobs=0.000000 pos_frac=0.095395 mae_zero=0.035156
+[D16 seed42] block_metrics change_rate=0.000000 mae_same_block=0.406250 mae_diff_block=0.000000
+[D16 seed42] permit_param_rate=1.000000 permit_param_true=20
+[D16 seed42] occlusion_metrics first_err=0.562500 reappear_err=0.000000 ratio=0.000000
+[SUMMARY] {'world': 'square', 'D': 16, 'B': 4, 'steps': 20, 'seed': 42, 'obs_budget': 2.0, 'obs_cost': 1.0, 'obs_budget_mode': 'fixed', 'obs_budget_min': 0.0, 'obs_budget_max': 0.0, 'coverage_debt_target': 0.0, 'pred_only_start': -1, 'pred_only_len': 0, 'dense_world': False, 'dense_sigma': 1.5, 'fovea_residual_only': False, 'binding_enabled': False, 'binding_shift_radius': 1, 'binding_rotations': False, 'periph_blocks': 1, 'periph_bins': 2, 'object_size': 3, 'rest_test_period': 0, 'rest_test_length': 0, 'periph_test': False, 'transport_test': True, 'alpha_cov': 0.1, 'coverage_cap_G': 50, 'fovea_residual_ema': 0.1, 'fovea_use_age': False, 'fovea_age_min_inc': 0.05, 'fovea_age_resid_scale': 0.05, 'fovea_age_resid_thresh': 0.01, 'fovea_routing_weight': 1.0, 'fovea_routing_ema': 0.0, 'occlude_start': -1, 'occlude_len': 0, 'occlude_period': 0, 'working_set_linger_steps': 0, 'transport_span_blocks': 0, 'min_fovea_blocks': 0, 'train_active_only': False, 'train_active_threshold': 0.0, 'train_weight_by_value': False, 'train_value_power': 1.0, 'theta_learn': 0.02, 'lr_expert': 0.01, 'sigma_ema': 0.01, 'theta_ar_rest': 1.0, 'theta_ar': 0.5, 'kappa_ar': 0.2, 'nu_max': 1.0, 'xi_max': 12.0, 'stability_window': 50, 'scan_steps': 0, 'warm_steps': 0, 'warm_fovea_blocks': 0, 'log_every': 1, 'visualize_steps': 0, 'n_max': 256, 'l_work_max': 48.0, 'force_block_anchors': False, 'diagnose_coverage': False, 'coverage_log_every': 0, 'side': 8, 'n_colors': 4, 'n_shapes': 4, 'p_color_shift': 0.05, 'p_shape_shift': 0.05, 'square_small': 2, 'square_big': 3, 'pattern_period': 20, 'dx': 1, 'dy': 0} {'mae_obs': 0.0703125, 'mae_unobs': 0.0, 'corr_obs': 0.0, 'corr_unobs': 0.0, 'mae_unobs_predonly': 0.0, 'corr_unobs_predonly': 0.0, 'mae_pos': 0.4144736842105263, 'mae_pos_obs': 0.4144736842105263, 'mae_pos_unobs': 0.0, 'mae_pos_predonly': 0.0, 'pos_frac': 0.09539473684210527, 'mae_zero': 0.03515625, 'block_change_rate': 0.0, 'mae_same_block': 0.40625, 'mae_diff_block': 0.0, 'binding_enabled': False, 'binding_shift_radius': 1, 'binding_rotations': False, 'periph_blocks': 1, 'periph_bins': 2, 'first_seen_err': 0.5625, 'reappear_err': 0.0, 'steps': 20, 'coverage_hit_rate': 0.0, 'coverage_steps': 0, 'rest_test_forced_steps': 0, 'rest_test_edits_processed': 0, 'periph_test_active': False, 'periph_missing_steps': 0, 'periph_present_steps': 0, 'transport_test_active': True, 'transport_test_total': 20, 'transport_test_matches': 20}

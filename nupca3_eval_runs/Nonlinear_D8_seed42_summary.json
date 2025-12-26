@@ -1,0 +1,33 @@
+{
+  "run_id": "Nonlinear_D8_seed42",
+  "test_name": "Nonlinear_D8",
+  "seed": 42,
+  "n_steps": 15000,
+  "D": 8,
+  "B": 4,
+  "F": 1,
+  "policy": "adaptive",
+  "regime_duration": 150,
+  "csv_path": "nupca3_eval_runs/Nonlinear_D8_seed42.csv",
+  "events_path": "nupca3_eval_runs/Nonlinear_D8_seed42_events.jsonl",
+  "elapsed_sec": 15.201626300811768,
+  "steps_per_sec": 986.7365308933425,
+  "mae_global_auc": 144.9636417908488,
+  "mae_anchor_auc": 144.9636417908488,
+  "mae_global_mean": 0.009665119069103325,
+  "mae_anchor_mean": 0.009665119069103325,
+  "mae_global_early_mean": 0.0770121804758383,
+  "mae_global_late_mean": 0.007372955264548266,
+  "improvement_simple": 0.9042624670116449,
+  "phase_sensitivity_std": 0.002752628150723261,
+  "phase_sign_negative_rate": 0.0,
+  "per_regime_mae_global": {
+    "0": 0.009537939949926716,
+    "1": 0.01105014561271607,
+    "2": 0.008411125557369508
+  },
+  "nodes_final_total": 4,
+  "spawns_total": 0,
+  "replacements_total": 0,
+  "rejected_aliases_total": 0
+}

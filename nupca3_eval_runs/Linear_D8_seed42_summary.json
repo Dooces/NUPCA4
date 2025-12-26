@@ -1,0 +1,33 @@
+{
+  "run_id": "Linear_D8_seed42",
+  "test_name": "Linear_D8",
+  "seed": 42,
+  "n_steps": 6000,
+  "D": 8,
+  "B": 4,
+  "F": 1,
+  "policy": "adaptive",
+  "regime_duration": 150,
+  "csv_path": "nupca3_eval_runs/Linear_D8_seed42.csv",
+  "events_path": "nupca3_eval_runs/Linear_D8_seed42_events.jsonl",
+  "elapsed_sec": 5.726387023925781,
+  "steps_per_sec": 1047.7810834180468,
+  "mae_global_auc": 808.1506877053266,
+  "mae_anchor_auc": 808.1506877053266,
+  "mae_global_mean": 0.13469827840368734,
+  "mae_anchor_mean": 0.13469827840368734,
+  "mae_global_early_mean": 0.05806040283594316,
+  "mae_global_late_mean": 0.18643280197558165,
+  "improvement_simple": -2.211014575481951,
+  "phase_sensitivity_std": 0.3060948281778786,
+  "phase_sign_negative_rate": 1.0,
+  "per_regime_mae_global": {
+    "0": 0.19565493879717055,
+    "1": 0.061700632330879294,
+    "2": 0.1420502902065904
+  },
+  "nodes_final_total": 4,
+  "spawns_total": 0,
+  "replacements_total": 0,
+  "rejected_aliases_total": 0
+}

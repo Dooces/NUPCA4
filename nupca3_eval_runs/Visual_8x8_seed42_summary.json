@@ -1,0 +1,33 @@
+{
+  "run_id": "Visual_8x8_seed42",
+  "test_name": "Visual_8x8",
+  "seed": 42,
+  "n_steps": 20000,
+  "D": 64,
+  "B": 4,
+  "F": 1,
+  "policy": "adaptive",
+  "regime_duration": 200,
+  "csv_path": "nupca3_eval_runs/Visual_8x8_seed42.csv",
+  "events_path": "nupca3_eval_runs/Visual_8x8_seed42_events.jsonl",
+  "elapsed_sec": 264.18185806274414,
+  "steps_per_sec": 75.70542559833888,
+  "mae_global_auc": 6345.47478211427,
+  "mae_anchor_auc": 6068.362582319138,
+  "mae_global_mean": 0.31728346306363603,
+  "mae_anchor_mean": 0.3034274948081174,
+  "mae_global_early_mean": 0.2420053450771249,
+  "mae_global_late_mean": 0.26088926377511223,
+  "improvement_simple": -0.07803099809195621,
+  "phase_sensitivity_std": 0.021842022229317706,
+  "phase_sign_negative_rate": 0.895,
+  "per_regime_mae_global": {
+    "0": 0.3025696122625883,
+    "1": 0.370786909058162,
+    "2": 0.278939742136856
+  },
+  "nodes_final_total": 128,
+  "spawns_total": 178,
+  "replacements_total": 0,
+  "rejected_aliases_total": 8
+}

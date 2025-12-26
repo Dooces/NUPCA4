@@ -1,0 +1,18 @@
+{
+  "tasks_processed": 200,
+  "tests_processed": 216,
+  "solver_mae": 1.0279076528016666,
+  "baseline_mae": 1.010465369800625,
+  "solver_perfect_tests": 4,
+  "baseline_perfect_tests": 4,
+  "solver_perfect_tasks": 2,
+  "baseline_perfect_tasks": 2,
+  "solver_cells": 41279,
+  "baseline_cells": 41279,
+  "solver_better_tests": 1,
+  "baseline_better_tests": 8,
+  "equal_tests": 207,
+  "dataset": "/home/dooces/ARC-AGI-2/data/training",
+  "confidence_threshold": 1.05,
+  "threshold_tuning_delta": null
+}

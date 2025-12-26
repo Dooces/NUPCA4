@@ -1,0 +1,9 @@
+[project]
+name = "nupca3"
+version = "0.0.1"
+description = "NUPCA3 v1.5b axiom-aligned skeleton (fixed-budget emergent-horizon adaptive agent)"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

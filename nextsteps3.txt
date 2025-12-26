@@ -1,0 +1,89 @@
+Proceed with a **2×2 pooled occupancy peripheral** for Stage 2. It is the smallest mixed-resolution addition that (a) stays axiom-aligned, (b) is genuinely cheaper than fine blocks under any sensible cost model, and (c) gives the routing signal you need for the moving-square failure mode.
+
+## Peripheral bins layout (recommended default)
+
+### Geometry
+
+Let `side = 8`, `periph_bins = p` (your CLI `--periph-bins`), so each bin covers a macro-tile of size:
+
+* `tile_h = side // p`
+* `tile_w = side // p`
+
+For `p=2`, each bin is a 4×4 region, giving **p² = 4 bins**.
+
+### Feature definition
+
+Assuming your fine state is a grid with `C` channels per cell (in your run, `D=512`, `side²=64` ⇒ `C=8` if it is cell-major), define the peripheral bin value as **total mass in that macro-tile**, aggregated across channels:
+
+[
+z_{u,v}(t)=\frac{1}{|R_{u,v}|,C}\sum_{(x,y)\in R_{u,v}}\sum_{c=1}^{C} x[y,x,c]
+]
+
+* Normalize by `|R|*C` so it is in a stable scale (roughly 0–1 for sparse worlds).
+* This produces **4 scalar dims** for `p=2`.
+
+This is deliberately **not** per-channel to keep it cheap and to avoid bloating `D`.
+
+### Dim count
+
+* `D_periph = p*p` (so 4 dims for p=2; 16 dims for p=4).
+* Append these dims to the end of the state vector: indices `[D_fine : D_fine + D_periph)`.
+
+## Peripheral blocks and costs
+
+### Blocking
+
+Use `--periph-blocks 1` as:
+
+* one peripheral block containing **all** `D_periph` dims.
+
+So you add one new block with `dims = periph_dim_indices`.
+
+### Cost
+
+Do not introduce any special-case “magic cheapness” yet. Let cost be proportional to number of observed dims, which is the most stable and least disruptive assumption:
+
+* `cost(periph_block) = D_periph * obs_cost`
+* `cost(fine_block) = (D_fine / B_fine) * obs_cost`
+
+In your run (likely `C=8`):
+
+* fine block dims ≈ 8 ⇒ fine cost ≈ 8
+* periph dims = 4 ⇒ periph cost = 4
+  So the peripheral block is **naturally cheaper** and will coexist cleanly with your Stage 1 budgeted selector.
+
+## How it should be used by the selector (Stage 2 behavior)
+
+1. **Always include** the peripheral block (treat it as mandatory spend).
+   This ensures you always have a low-band routing signal and prevents it from competing with fine coverage in pathological ways.
+
+2. Use the peripheral bin values to bias fine-block selection (“routing bonus”), without changing your residual/age bookkeeping. A minimal mapping:
+
+* Each fine block corresponds to a cell index `cell = block_id` (if `B=side²`), with `(x,y)` inferred.
+* Map `(x,y)` to bin `(u,v)` by integer division:
+
+  * `u = x // tile_w`
+  * `v = y // tile_h`
+* Add a routing term to that fine block’s score:
+  [
+  \text{score}(b) \leftarrow \text{score}(b) + w_{\text{route}}\cdot \text{EMA}(z_{u,v})
+  ]
+  where `w_route = --fovea-routing-weight` and EMA rate is `--fovea-routing-ema`.
+
+This gives you “coarse-to-fine” attention immediately, without hierarchy, without parent/child aggregation, and without touching the rest queue.
+
+## Why this won’t destabilize coverage_residual or the rest queue
+
+* Fine-block residual/age arrays remain exactly as they are.
+* You are adding one extra block with its own residual/age, but it is always observed, so it never triggers coverage forcing and its stats don’t interfere with fine forcing.
+* Rest/structural edit logic remains downstream of the same completion operator; the peripheral block just supplies a stable low-band signal so the active structure can be reacquired.
+
+## Default values to use for Stage 2 prototype
+
+* `periph_bins = 2` (4 dims; cheapest meaningful coarse localization)
+* `periph_blocks = 1`
+* `cost(periph_block) = 4 * obs_cost` (derived, not hard-coded)
+* `fovea-routing-weight = 1.0` (as you used)
+* `fovea-routing-ema = 0.2` (as you used)
+
+If you need tighter localization later, the next step is `periph_bins=4` (16 dims), still cheap relative to observing many fine blocks, and it increases routing precision without requiring hierarchical aggregation.

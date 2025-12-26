@@ -1,0 +1,503 @@
+The “simple, holistic” fix that is actually implied by biology
+
+You already have fast local prediction (cortex-like) and structural consolidation (sleep-like). What was missing is the brain’s always-on “scene gist + coverage” stack that sits above momentary gaze.
+
+Fix 1 — Make coverage multi-scale (space and representation)
+
+You validated coverage at the DoF/block level. The next obvious extension is: apply the same principle to representation strata, so you don’t only “look everywhere,” you also periodically refresh/test abstractions that won’t be locally surprising in the current fixation.
+
+Concretely, maintain coverage debt at three granularities:
+
+Block debt (already validated):
+
+𝜏
+block
+(
+𝑏
+)
+←
+{
+0
+	
+𝑏
+=
+fovea
+(
+𝑡
+)
+
+
+𝜏
+block
+(
+𝑏
+)
++
+1
+	
+otherwise
+τ
+block
+	​
+
+(b)←{
+0
+τ
+block
+	​
+
+(b)+1
+	​
+
+b=fovea(t)
+otherwise
+	​
+
+
+Expert debt (memory coverage):
+
+𝜏
+𝑗
+←
+{
+0
+	
+𝑗
+∈
+𝐴
+𝑡
+
+
+𝜏
+𝑗
++
+1
+	
+otherwise
+τ
+j
+	​
+
+←{
+0
+τ
+j
+	​
+
++1
+	​
+
+j∈A
+t
+	​
+
+otherwise
+	​
+
+
+Band/level debt (abstraction coverage): tag each node by a crude “level” (e.g., by 
+∣
+𝑜
+𝑢
+𝑡
+𝑗
+∣
+∣out
+j
+	​
+
+∣ or spatial scale: 
+1
+×
+1
+,
+2
+×
+2
+,
+3
+×
+3
+,
+…
+1×1,2×2,3×3,…), and track 
+𝜏
+band
+(
+ℓ
+)
+τ
+band
+	​
+
+(ℓ) similarly.
+
+Then:
+
+Fovea selection (policy-level, not macrostate):
+
+score
+(
+𝑏
+)
+=
+residual
+(
+𝑏
+)
+⏟
+fast surprise
++
+𝜆
+cov
+log
+⁡
+(
+1
++
+𝜏
+block
+(
+𝑏
+)
+)
+score(b)=
+fast surprise
+residual(b)
+	​
+
+	​
+
++λ
+cov
+	​
+
+log(1+τ
+block
+	​
+
+(b))
+
+This is exactly the mechanism your sims show is necessary.
+
+Active-set selection (within your existing A5/A7 substrate): augment node score with debt without changing macrostates:
+
+𝑢
+𝑗
+←
+𝑢
+𝑗
++
+𝛼
+cov,exp
+log
+⁡
+(
+1
++
+𝜏
+𝑗
+)
++
+𝛼
+cov,band
+log
+⁡
+(
+1
++
+𝜏
+band
+(
+ℓ
+𝑗
+)
+)
+u
+j
+	​
+
+←u
+j
+	​
+
++α
+cov,exp
+	​
+
+log(1+τ
+j
+	​
+
+)+α
+cov,band
+	​
+
+log(1+τ
+band
+	​
+
+(ℓ
+j
+	​
+
+))
+
+This is the “what to remember at what level” part: it prevents the system from permanently starving higher-level (rarely directly surprising) structure.
+
+Fix 2 — Add “peripheral gist” as a cue source, not as per-expert input
+
+What biology does that you have not cleanly implemented yet is peripheral vision: a low-resolution global summary that is always available and cheap.
+
+The key constraint you already observed empirically:
+
+If “context” is fed into every expert’s predictor inputs, 
+∣
+𝑖
+𝑛
+𝑗
+∣
+∣in
+j
+	​
+
+∣ rises 
+⇒
+𝐿
+𝑗
+∝
+∣
+𝑖
+𝑛
+𝑗
+∣
+∣
+𝑜
+𝑢
+𝑡
+𝑗
+∣
+⇒L
+j
+	​
+
+∝∣in
+j
+	​
+
+∣∣out
+j
+	​
+
+∣ rises 
+⇒
+𝐿
+𝑒
+𝑓
+𝑓
+⇒L
+eff
+ rises 
+⇒
+𝑏
+𝑟
+𝑜
+𝑙
+𝑙
+⇒b
+roll
+	​
+
+ rises 
+⇒
+∗
+∗
+ℎ
+𝑐
+𝑜
+𝑙
+𝑙
+𝑎
+𝑝
+𝑠
+𝑒
+𝑠
+∗
+∗
+⇒∗∗hcollapses∗∗.
+
+So the biologically-correct way is:
+
+Compute a very low-dimensional peripheral summary 
+𝑔
+(
+𝑡
+)
+g(t) (e.g., pooled 4×4 over the 16×16 field, per channel; or even just a handful of global moments).
+
+Update a slow context register:
+
+𝑧
+(
+𝑡
+)
+=
+(
+1
+−
+𝛽
+𝑧
+)
+𝑧
+(
+𝑡
+−
+1
+)
++
+𝛽
+𝑧
+ 
+𝑔
+(
+𝑡
+)
+z(t)=(1−β
+z
+	​
+
+)z(t−1)+β
+z
+	​
+
+g(t)
+
+Use 
+𝑧
+(
+𝑡
+)
+z(t) only in salience / retrieval bias, not in prediction 
+𝑊
+𝑗
+W
+j
+	​
+
+:
+
+𝑢
+𝑗
+←
+𝑢
+𝑗
++
+𝛼
+𝑐
+𝑡
+𝑥
+ 
+sim
+(
+𝑧
+(
+𝑡
+)
+,
+𝑧
+𝑗
+)
+u
+j
+	​
+
+←u
+j
+	​
+
++α
+ctx
+	​
+
+sim(z(t),z
+j
+	​
+
+)
+
+where 
+𝑧
+𝑗
+z
+j
+	​
+
+ is a slow tag of when node 
+𝑗
+j tends to be useful.
+
+This makes context do what hippocampal indexing does: select which memories matter, without charging every micro-predictor for extra input width.
+
+Fix 3 — Swap “surprise-only” exploration for “surprise + uncertainty” (still within your substrate)
+
+Greedy residual fails because “no observation” means “no error signal.” A second biologically-standard driver is uncertainty: you look where your belief is weak, not only where it is currently wrong.
+
+You already maintain per-dimension variances 
+Σ
+𝑗
+[
+𝑘
+]
+Σ
+j
+	​
+
+[k]. Define a block uncertainty (from fused precision or last-seen variance) and add:
+
+score
+(
+𝑏
+)
+=
+residual
+(
+𝑏
+)
++
+𝜆
+cov
+log
+⁡
+(
+1
++
+𝜏
+block
+(
+𝑏
+)
+)
++
+𝜆
+𝜎
+ 
+uncertainty
+(
+𝑏
+)
+score(b)=residual(b)+λ
+cov
+	​
+
+log(1+τ
+block
+	​
+
+(b))+λ
+σ
+	​
+
+uncertainty(b)
+
+This directly targets the “silent drift” regions before they explode.
+

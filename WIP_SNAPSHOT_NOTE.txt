@@ -1,0 +1,18 @@
+NUPCA3 axiom-faithfulness progress snapshot (WIP)
+
+Label: STEP_PIPELINE_INCOMPLETE
+
+This archive is intentionally a semantic-progress snapshot.
+Primary goal: accurate instantiation of axioms; compile/run is secondary.
+
+Known incomplete / not yet stabilized:
+- nupca3/step_pipeline.py is not yet the finalized axiom-timed control loop.
+  Expect missing/placeholder wiring for lag discipline (A5/A10/A14),
+  structural logs (A12), and full end-to-end update ordering.
+
+This snapshot includes:
+- Axiom list / header clarifications merged into the tree.
+- Intermediate refactors in control/budget, fovea, rollout, macrostate,
+  and other modules as of this snapshot point.
+
+DO NOT treat this snapshot as a frozen interface; it is a checkpoint.
