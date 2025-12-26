@@ -818,12 +818,46 @@ def run_task(
     transport_force_true_delta: bool,
     visualize_steps: int = 0,
 ) -> Dict[str, float]:
-    D_int = int(D)
+    D_cli = int(D)
     B_int = max(1, int(B))
-    if D_int <= 0:
+    if D_cli <= 0:
         raise ValueError("D must be > 0")
     obs_cost_val = max(float(obs_cost), 1e-9)
-    avg_block_size = float(D_int) / float(B_int) if B_int > 0 else float(D_int)
+    periph_blocks = max(0, int(periph_blocks))
+    moving = None
+    square = None
+    linear_world = None
+    world_dim = D_cli
+    if world == "moving":
+        moving = MovingColorShapeWorld(
+            side=side,
+            n_colors=n_colors,
+            n_shapes=n_shapes,
+            seed=seed,
+            p_color_shift=p_color_shift,
+            p_shape_shift=p_shape_shift,
+            periph_bins=periph_bins,
+            object_size=object_size,
+        )
+        world_dim = moving.D
+    elif world == "square":
+        square = LinearSquareWorld(
+            side=side,
+            seed=seed,
+            square_small=square_small,
+            square_big=square_big,
+            pattern_period=pattern_period,
+            dx=dx,
+            dy=dy,
+            periph_bins=periph_bins,
+        )
+        world_dim = square.D
+    else:
+        linear_world = LinearARWorld(D=int(D_cli), seed=int(seed))
+        world_dim = linear_world.D
+
+    D_agent = int(world_dim) if dense_world else D_cli
+    avg_block_size = float(D_agent) / float(B_int) if B_int > 0 else float(D_agent)
     avg_block_size = max(1.0, avg_block_size)
 
     def _budget_to_blocks(budget: float) -> int:
@@ -853,32 +887,18 @@ def run_task(
     theta_learn_effective = float(theta_learn)
     if world == "square" and int(k_fixed) >= B_int and theta_learn_effective < 0.5:
         theta_learn_effective = 0.5
-    moving = None
-    square = None
-    linear_world = None
-    periph_dim = 0
-    base_dim = D_int
-    world_dim = D_int
+    block_size_agent = int(D_agent) // int(B_int)
+    if block_size_agent * B_int != int(D_agent):
+        raise ValueError("D must be divisible by B")
+    periph_dim = int(periph_blocks) * block_size_agent
+    if periph_dim > int(D_agent):
+        raise ValueError("peripheral encoding requires more dims than available")
+    base_dim = int(D_agent) - periph_dim
+
     if world == "moving":
-        moving = MovingColorShapeWorld(
-            side=side,
-            n_colors=n_colors,
-            n_shapes=n_shapes,
-            seed=seed,
-            p_color_shift=p_color_shift,
-            p_shape_shift=p_shape_shift,
-            periph_bins=periph_bins,
-            object_size=object_size,
-        )
-        world_dim = moving.D
-        block_size = int(D_int) // int(B_int)
-        if block_size * int(B_int) != int(D_int):
-            raise ValueError("D must be divisible by B")
-        periph_dim = int(periph_blocks) * block_size
-        base_dim = int(D_int) - periph_dim
         cfg = AgentConfig(
-            D=int(D),
-            B=int(B),
+            D=int(D_agent),
+            B=int(B_int),
             fovea_blocks_per_step=int(k_fixed),
             fovea_residual_only=bool(fovea_residual_only),
             alpha_cov=float(alpha_cov),
@@ -925,25 +945,9 @@ def run_task(
         vis_n_colors = int(n_colors)
         vis_n_shapes = int(n_shapes)
     elif world == "square":
-        square = LinearSquareWorld(
-            side=side,
-            seed=seed,
-            square_small=square_small,
-            square_big=square_big,
-            pattern_period=pattern_period,
-            dx=dx,
-            dy=dy,
-            periph_bins=periph_bins,
-        )
-        world_dim = square.D
-        block_size = int(D_int) // int(B_int)
-        if block_size * int(B_int) != int(D_int):
-            raise ValueError("D must be divisible by B")
-        periph_dim = int(periph_blocks) * block_size
-        base_dim = int(D_int) - periph_dim
         cfg = AgentConfig(
-            D=int(D),
-            B=int(B),
+            D=int(D_agent),
+            B=int(B_int),
             fovea_blocks_per_step=int(k_fixed),
             fovea_residual_only=bool(fovea_residual_only),
             alpha_cov=float(alpha_cov),
@@ -988,8 +992,8 @@ def run_task(
         vis_n_shapes = 0
     else:
         cfg = AgentConfig(
-            D=int(D),
-            B=int(B),
+            D=int(D_agent),
+            B=int(B_int),
             fovea_blocks_per_step=int(k_fixed),
             fovea_residual_only=bool(fovea_residual_only),
             alpha_cov=float(alpha_cov),
@@ -1029,7 +1033,6 @@ def run_task(
             fovea_routing_ema=float(fovea_routing_ema),
         )
         agent = NUPCA3Agent(cfg)
-        linear_world = LinearARWorld(D=int(D), seed=int(seed))
         linear_world.reset()
         vis_n_colors = 0
         vis_n_shapes = 0
@@ -1282,8 +1285,7 @@ def run_task(
             active_idx = np.where(active_mask)[0]
             active_blocks = set()
             if active_idx.size:
-                block_size = int(D) // int(B)
-                active_blocks = set(int(i) // block_size for i in active_idx)
+                active_blocks = set(int(i) // block_size_agent for i in active_idx)
             obs_active_idx = np.array([i for i in obs_dims if active_mask[i]], dtype=int)
             obs_active_count = int(obs_active_idx.size)
             if obs_active_count:
@@ -1302,7 +1304,9 @@ def run_task(
                 if was_occluded and not occluding:
                     reappear_err.append(float(np.mean(err_pos)))
                 if active_idx.size:
-                    active_blocks = np.array([int(i) // int(D // B) for i in active_idx], dtype=int)
+                    active_blocks = np.array(
+                        [int(i) // block_size_agent for i in active_idx], dtype=int
+                    )
                     active_block_now = int(np.bincount(active_blocks).argmax())
                     if prev_active_block is not None:
                         block_steps += 1
@@ -1379,7 +1383,7 @@ def run_task(
             f"EXACT_AGENT_PREDICTS={preds}"
         )
         if visualize_steps and step_idx < visualize_steps:
-            obs_set = {int(dim) for dim in obs_dims if 0 <= int(dim) < int(D)}
+            obs_set = {int(dim) for dim in obs_dims if 0 <= int(dim) < int(D_agent)}
             transport_delta = tuple(trace.get("transport_delta", (0, 0)))
             _print_visualization(
                 step_idx=step_idx,
@@ -1450,7 +1454,7 @@ def run_task(
         emit = step_idx < step_log_limit or (int(log_every) > 0 and step_idx % int(log_every) == 0)
         if emit:
             print(
-                f"[D{D} seed{seed}] step={trace['t']} rest={trace['rest']} forced_rest={force_rest} "
+                f"[D{D_agent} seed{seed}] step={trace['t']} rest={trace['rest']} forced_rest={force_rest} "
                 f"rest_permitted_prev={rest_permitted_prev} rest_permitted_t={trace['rest_permitted_t']} "
                 f"demand_prev={demand_prev} demand_t={trace['demand_t']} "
                 f"interrupt_prev={interrupt_prev} interrupt_t={trace['interrupt_t']} "
@@ -1482,36 +1486,36 @@ def run_task(
                     for s in samples
                 )
                 print(
-                    f"[D{D} seed{seed}] learning_info candidates={learning_info.get('candidates',0)} "
+                    f"[D{D_agent} seed{seed}] learning_info candidates={learning_info.get('candidates',0)} "
                     f"clamped={learning_info.get('clamped',0)} err_max={learning_info.get('err_max',float('nan')):.6f} "
                     f"samples=[{sample_str}]"
                 )
             permit_meta = trace.get("permit_param_info", {}) or {}
             print(
-                f"[D{D} seed{seed}] permit_param_summary theta_learn={permit_meta.get('theta_learn',0.0):.3f} "
+                f"[D{D_agent} seed{seed}] permit_param_summary theta_learn={permit_meta.get('theta_learn',0.0):.3f} "
                 f"permit={permit_meta.get('permit',False)} "
                 f"cand={permit_meta.get('candidate_count',0)} clamped={permit_meta.get('clamped',0)} "
                 f"updated={permit_meta.get('updated',0)}"
             )
             if pred_only:
-                print(f"[D{D} seed{seed}] pred_only_step={trace['t']} obs_dims=0")
+                print(f"[D{D_agent} seed{seed}] pred_only_step={trace['t']} obs_dims=0")
             if occluding:
-                print(f"[D{D} seed{seed}] occluding_step={trace['t']} obs_dims=0")
+                print(f"[D{D_agent} seed{seed}] occluding_step={trace['t']} obs_dims=0")
         if emit and step_idx < step_log_limit:
             obs_preview = obs_dims[: min(32, len(obs_dims))]
             active_preview = active_idx[: min(32, active_idx.size)].tolist() if active_idx.size else []
             obs_active_preview = obs_active_idx[: min(32, obs_active_idx.size)].tolist() if obs_active_idx.size else []
-            print(f"[D{D} seed{seed}] obs_dims_count={len(obs_dims)} obs_dims_head={obs_preview}")
-            print(f"[D{D} seed{seed}] active_dims_count={int(active_idx.size)} active_dims_head={active_preview}")
-            print(f"[D{D} seed{seed}] obs_active_count={obs_active_count} obs_active_head={obs_active_preview}")
+            print(f"[D{D_agent} seed{seed}] obs_dims_count={len(obs_dims)} obs_dims_head={obs_preview}")
+            print(f"[D{D_agent} seed{seed}] active_dims_count={int(active_idx.size)} active_dims_head={active_preview}")
+            print(f"[D{D_agent} seed{seed}] obs_active_count={obs_active_count} obs_active_head={obs_active_preview}")
             blocks_preview = blocks[: min(16, len(blocks))]
-            print(f"[D{D} seed{seed}] fovea_blocks_count={len(blocks)} fovea_blocks_head={blocks_preview} k_eff={k_eff}")
+            print(f"[D{D_agent} seed{seed}] fovea_blocks_count={len(blocks)} fovea_blocks_head={blocks_preview} k_eff={k_eff}")
             top_age_preview = top_age_blocks[: min(16, len(top_age_blocks))]
             top_resid_preview = top_resid_blocks[: min(16, len(top_resid_blocks))]
-            print(f"[D{D} seed{seed}] fovea_top_age_head={top_age_preview} fovea_top_resid_head={top_resid_preview}")
+            print(f"[D{D_agent} seed{seed}] fovea_top_age_head={top_age_preview} fovea_top_resid_head={top_resid_preview}")
         active_count = int(active_idx.size) if active_idx.size else 0
         obs_active_rate = float(obs_active_hits) / float(obs_active_steps) if obs_active_steps else 0.0
-        obs_active_blocks = sorted({int(i) // (int(D) // int(B)) for i in obs_active_idx})
+        obs_active_blocks = sorted({int(i) // block_size_agent for i in obs_active_idx})
         active_blocks_list = sorted(list(active_blocks))
         if len(active_blocks_list) > 8:
             active_blocks_list = active_blocks_list[:8]
@@ -1519,21 +1523,21 @@ def run_task(
             obs_active_blocks = obs_active_blocks[:8]
         if emit:
             print(
-                f"[D{D} seed{seed}] active_obs_metrics active_count={active_count} "
+                f"[D{D_agent} seed{seed}] active_obs_metrics active_count={active_count} "
                 f"obs_active_count={obs_active_count} obs_active_rate={obs_active_rate:.3f} "
                 f"active_blocks={active_blocks_list} obs_active_blocks={obs_active_blocks}"
             )
             top_age_hits = len(set(blocks) & set(top_age_blocks)) if top_age_blocks else 0
             top_resid_hits = len(set(blocks) & set(top_resid_blocks)) if top_resid_blocks else 0
             print(
-                f"[D{D} seed{seed}] fovea_overlap top_age_hits={top_age_hits} "
+                f"[D{D_agent} seed{seed}] fovea_overlap top_age_hits={top_age_hits} "
                 f"top_resid_hits={top_resid_hits} top_k={top_k}"
             )
-            full_obs = int(len(obs_dims) >= int(D) and k_eff >= int(B))
+            full_obs = int(len(obs_dims) >= int(D_agent) and k_eff >= int(B_int))
             cov_debt = float(trace.get("coverage_debt", 0.0))
             cov_violation = int(full_obs and cov_debt > 1e-6)
             print(
-                f"[D{D} seed{seed}] coverage_check full_obs={full_obs} "
+                f"[D{D_agent} seed{seed}] coverage_check full_obs={full_obs} "
                 f"coverage_debt={cov_debt:.6f} coverage_debt_full_obs_violation={cov_violation}"
             )
         mae_pos_avg = float(np.mean(mae_pos)) if mae_pos else 0.0
@@ -1545,22 +1549,22 @@ def run_task(
         diff_block_avg = float(np.mean(diff_block_err)) if diff_block_err else 0.0
         if emit:
             print(
-                f"[D{D} seed{seed}] sparse_metrics mae_pos={mae_pos_avg:.6f} "
+                f"[D{D_agent} seed{seed}] sparse_metrics mae_pos={mae_pos_avg:.6f} "
                 f"mae_pos_unobs={mae_pos_unobs_avg:.6f} "
                 f"pos_frac={pos_frac_avg:.6f} mae_zero={mae_zero_avg:.6f}"
             )
             print(
-                f"[D{D} seed{seed}] block_metrics change_rate={change_rate:.6f} "
+                f"[D{D_agent} seed{seed}] block_metrics change_rate={change_rate:.6f} "
                 f"mae_same_block={same_block_avg:.6f} mae_diff_block={diff_block_avg:.6f}"
             )
             permit_rate = float(permit_param_true) / float(permit_param_total) if permit_param_total else 0.0
-            print(f"[D{D} seed{seed}] permit_param_rate={permit_rate:.6f} permit_param_true={permit_param_true}")
+            print(f"[D{D_agent} seed{seed}] permit_param_rate={permit_rate:.6f} permit_param_true={permit_param_true}")
         first_avg = float(np.mean(first_seen_err)) if first_seen_err else 0.0
         reap_avg = float(np.mean(reappear_err)) if reappear_err else 0.0
         ratio = (reap_avg / first_avg) if first_avg > 0 else 0.0
         if emit:
             print(
-                f"[D{D} seed{seed}] occlusion_metrics first_err={first_avg:.6f} "
+                f"[D{D_agent} seed{seed}] occlusion_metrics first_err={first_avg:.6f} "
                 f"reappear_err={reap_avg:.6f} ratio={ratio:.6f}"
             )
 
