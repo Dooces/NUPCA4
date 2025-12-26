@@ -64,6 +64,9 @@ def init_fovea_state(cfg: AgentConfig, *, block_costs: Optional[Sequence[float]]
         block_uncertainty=np.zeros(B, dtype=float),
         block_costs=cost_arr,
         routing_scores=np.zeros(B, dtype=float),
+        block_disagreement=np.zeros(B, dtype=float),
+        block_innovation=np.zeros(B, dtype=float),
+        block_periph_demand=np.zeros(B, dtype=float),
         routing_last_t=-1,
         current_blocks=set(),
     )
@@ -230,6 +233,27 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
         if uncertainties.shape[0] != B:
             uncertainties = np.resize(uncertainties, (B,))
         scores = scores + uncertainty_weight * uncertainties
+
+    disagreement_weight = float(getattr(cfg, "fovea_disagreement_weight", 0.0))
+    if disagreement_weight != 0.0:
+        disagreements = np.asarray(getattr(fovea, "block_disagreement", np.zeros(B)), dtype=float)
+        if disagreements.shape[0] != B:
+            disagreements = np.resize(disagreements, (B,))
+        scores = scores + disagreement_weight * disagreements
+
+    innovation_weight = float(getattr(cfg, "fovea_innovation_weight", 0.0))
+    if innovation_weight != 0.0:
+        innovations = np.asarray(getattr(fovea, "block_innovation", np.zeros(B)), dtype=float)
+        if innovations.shape[0] != B:
+            innovations = np.resize(innovations, (B,))
+        scores = scores + innovation_weight * innovations
+
+    periph_weight = float(getattr(cfg, "fovea_periph_demand_weight", 0.0))
+    if periph_weight != 0.0:
+        periph_demand = np.asarray(getattr(fovea, "block_periph_demand", np.zeros(B)), dtype=float)
+        if periph_demand.shape[0] != B:
+            periph_demand = np.resize(periph_demand, (B,))
+        scores = scores + periph_weight * periph_demand
 
     routing_weight = float(getattr(cfg, "fovea_routing_weight", 0.0))
     if routing_weight > 0.0:

@@ -30,9 +30,10 @@ Axiom coverage:
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -147,6 +148,9 @@ class FoveaState:
     block_uncertainty: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     block_costs: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     routing_scores: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    block_disagreement: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    block_innovation: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    block_periph_demand: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     routing_last_t: int = -1
     current_blocks: Set[int] = field(default_factory=set)
 
@@ -155,7 +159,21 @@ class FoveaState:
 class ObservationBuffer:
     """Most recent full state estimate (dense) and observation tracking (A16.5)."""
     x_last: np.ndarray
+    x_prior: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     observed_dims: Set[int] = field(default_factory=set)
+
+
+@dataclass
+class WorldHypothesis:
+    """Candidate hypothesis over the current state (per-phase multi-world bookkeeping)."""
+    delta: Tuple[int, int] = field(default_factory=lambda: (0, 0))
+    x_prior: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    x_post: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    sigma_prior_diag: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    weight: float = 0.0
+    prior_mae: float = float("nan")
+    likelihood: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -645,6 +663,8 @@ class AgentState:
     # Consolidation cost b_cons(t) from REST structural processing (A6.2).
     # During OPERATING this should remain 0.
     b_cons: float = 0.0
+    world_hypotheses: List[WorldHypothesis] = field(default_factory=list)
+    observed_history: Deque[Set[int]] = field(default_factory=lambda: deque())
 
     # Lagged A14 predicates evaluated at time t-1 (A14.7).
     rest_permitted_prev: bool = True
@@ -698,6 +718,10 @@ class AgentState:
     transport_margin: float = 0.0
     transport_disagreement_scores: Dict[int, float] = field(default_factory=dict)
     transport_disagreement_margin: float = field(default_factory=lambda: float("inf"))
+    peripheral_prior: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    peripheral_obs: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    peripheral_confidence: float = 0.0
+    peripheral_residual: float = 0.0
 
     # ----- Stability probe/feature variance summaries (A3.3) -----
     # The surrounding pipeline is responsible for feeding probe/feature vectors
@@ -764,6 +788,7 @@ __all__ = [
     "MacrostateVars",
     "FoveaState",
     "ObservationBuffer",
+    "WorldHypothesis",
     "WorkingSet",
     # Library
     "ExpertNode",

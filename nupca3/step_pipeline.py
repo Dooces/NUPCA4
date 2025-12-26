@@ -70,6 +70,7 @@ from .types import (
     PersistentResidualState,
     FootprintResidualStats,
     TransitionRecord,
+    WorldHypothesis,
 )
 
 from .control.budget import compute_budget_and_horizon
@@ -85,6 +86,7 @@ from .edits.proposals import propose_structural_edits
 
 from .geometry.fovea import (
     block_of_dim,
+    block_slices,
     dims_for_block,
     make_observation_set,
     select_fovea,
@@ -268,6 +270,18 @@ def _update_coverage_debts(state: AgentState, cfg: AgentConfig) -> None:
     stale_levels = [nid for nid in node_levels if nid not in seen_nodes]
     for nid in stale_levels:
         node_levels.pop(nid, None)
+
+    innovation_weight = float(getattr(cfg, "fovea_innovation_weight", 0.0))
+    if innovation_weight > 0.0:
+        innovation = np.asarray(getattr(state.fovea, "block_innovation", np.zeros(int(getattr(cfg, "B", 0)))), dtype=float)
+        incumbents = getattr(state, "incumbents", {})
+        for block_id, nodes_in_block in incumbents.items():
+            if block_id < 0 or block_id >= innovation.size:
+                continue
+            if float(innovation[block_id]) <= 0.0:
+                continue
+            for nid in nodes_in_block:
+                expert_debt[nid] = max(0, expert_debt.get(nid, 0) - 1)
 
     active_levels = {node_levels[nid] for nid in active_set if nid in node_levels}
     for level in set(node_levels.values()):
@@ -717,6 +731,402 @@ def _apply_pending_transport_disagreement(state: AgentState, cfg: AgentConfig) -
     state.transport_disagreement_margin = float("inf")
 
 
+def _update_observed_history(state: AgentState, obs_idx: np.ndarray, cfg: AgentConfig) -> None:
+    """Maintain the sliding support window of observed dims for multi-world merge guards."""
+    window = max(1, int(getattr(cfg, "multi_world_support_window", 4)))
+    history = getattr(state, "observed_history", None)
+    if history is None or not isinstance(history, deque):
+        history = deque()
+    dims = {int(k) for k in obs_idx if np.isfinite(k)}
+    history.append(dims)
+    while len(history) > window:
+        history.popleft()
+    state.observed_history = history
+
+
+def _support_window_union(state: AgentState) -> Set[int]:
+    hist = getattr(state, "observed_history", None)
+    if not hist:
+        return set()
+    support: Set[int] = set()
+    for entry in hist:
+        if entry:
+            support.update(entry)
+    return support
+
+
+def _build_coarse_observation(env_obs: EnvObs, obs_idx: np.ndarray, obs_vals: np.ndarray, D: int, cfg: AgentConfig) -> np.ndarray:
+    """Create a low-resolution peripheral observation vector."""
+    full = getattr(env_obs, "x_full", None)
+    if full is not None:
+        return extract_coarse(full, cfg)
+    obs_vec = np.zeros(max(0, D), dtype=float)
+    if obs_idx.size and obs_vals.size:
+        obs_vec[obs_idx] = obs_vals
+    return extract_coarse(obs_vec, cfg)
+
+
+def _compute_peripheral_metrics(
+    state: AgentState,
+    cfg: AgentConfig,
+    prior_t: np.ndarray,
+    env_obs: EnvObs,
+    obs_idx: np.ndarray,
+    obs_vals: np.ndarray,
+    D: int,
+) -> None:
+    periph_prior = extract_coarse(prior_t, cfg)
+    periph_obs = _build_coarse_observation(env_obs, obs_idx, obs_vals, D, cfg)
+    residual = float("nan")
+    if periph_prior.size and periph_obs.size:
+        min_len = min(periph_prior.size, periph_obs.size)
+        if min_len > 0:
+            diff = periph_obs[:min_len] - periph_prior[:min_len]
+            finite = np.isfinite(diff)
+            if finite.any():
+                residual = float(np.mean(np.abs(diff[finite])))
+    top = periph_prior if periph_prior.size else np.zeros(0, dtype=float)
+    state.peripheral_prior = top.copy()
+    state.peripheral_obs = periph_obs.copy() if periph_obs.size else np.zeros(0, dtype=float)
+    periph_size = periph_block_size(cfg)
+    periph_start = max(0, D - periph_size)
+    observed_periph = int(np.sum((obs_idx >= periph_start) & (obs_idx < D))) if periph_size > 0 else 0
+    denom = periph_size if periph_size > 0 else max(1, D)
+    confidence = float(observed_periph) / float(denom)
+    confidence = max(0.0, min(1.0, confidence))
+    state.peripheral_confidence = confidence
+    state.peripheral_residual = residual
+
+
+def _prior_obs_mae(obs_idx: np.ndarray, obs_vals: np.ndarray, prior: np.ndarray) -> float:
+    """Return MAE between obs_vals and prior over the observed dims."""
+    if obs_idx.size == 0:
+        return float("nan")
+    prior = np.asarray(prior, dtype=float).reshape(-1)
+    if prior.shape[0] < obs_idx.max(initial=-1) + 1:
+        prior = np.resize(prior, (max(obs_idx.max(initial=-1) + 1, prior.shape[0]),))
+    diff = obs_vals - prior[obs_idx]
+    finite = np.isfinite(diff)
+    if not finite.any():
+        return float("nan")
+    return float(np.mean(np.abs(diff[finite])))
+
+
+def _normalize_world_weights(raw_weights: List[float]) -> List[float]:
+    """Normalize a list of raw world scores into a probability simplex."""
+    if not raw_weights:
+        return []
+    arr = np.asarray(raw_weights, dtype=float)
+    finite_mask = np.isfinite(arr)
+    total = float(np.sum(arr[finite_mask])) if finite_mask.any() else 0.0
+    if not np.isfinite(total) or total <= 0.0:
+        fallback = 1.0 / float(len(arr))
+        return [fallback] * len(arr)
+    normalized: List[float] = []
+    for val in arr:
+        if not np.isfinite(val):
+            normalized.append(0.0)
+        else:
+            normalized.append(float(val / total))
+    return normalized
+
+
+def _support_window_mae(prior_a: np.ndarray, prior_b: np.ndarray, support_dims: Set[int]) -> float:
+    if not support_dims:
+        return float("inf")
+    dims = sorted(int(d) for d in support_dims if isinstance(d, int) and d >= 0)
+    if not dims:
+        return float("inf")
+    max_dim = dims[-1]
+    arr_a = np.asarray(prior_a, dtype=float).reshape(-1)
+    arr_b = np.asarray(prior_b, dtype=float).reshape(-1)
+    if arr_a.size <= max_dim:
+        arr_a = np.resize(arr_a, (max_dim + 1,))
+    if arr_b.size <= max_dim:
+        arr_b = np.resize(arr_b, (max_dim + 1,))
+    idxs = np.array(dims, dtype=int)
+    diff = arr_a[idxs] - arr_b[idxs]
+    finite = np.isfinite(diff)
+    if not finite.any():
+        return float("inf")
+    return float(np.mean(np.abs(diff[finite])))
+
+
+def _merge_world_group(group: List[WorldHypothesis], D: int) -> WorldHypothesis:
+    weights = [max(0.0, float(w.weight)) for w in group]
+    total = float(sum(weights))
+    if total <= 0.0:
+        weights = [1.0] * len(weights)
+        total = float(len(weights))
+    normalized = [float(w) / total for w in weights]
+    prior_accum = np.zeros(D, dtype=float)
+    post_accum = np.zeros(D, dtype=float)
+    sigma_accum = np.zeros(D, dtype=float)
+    best_idx = int(np.argmax(normalized))
+    best_world = group[best_idx]
+    for share, world in zip(normalized, group):
+        prior = np.asarray(world.x_prior, dtype=float).reshape(-1)
+        post = np.asarray(world.x_post, dtype=float).reshape(-1)
+        sigma = np.asarray(world.sigma_prior_diag, dtype=float).reshape(-1)
+        if prior.size != D:
+            prior = np.resize(prior, (D,))
+        if post.size != D:
+            post = np.resize(post, (D,))
+        if sigma.size != D:
+            sigma = np.resize(sigma, (D,))
+        prior_accum += share * prior
+        post_accum += share * post
+        sigma_accum += share * sigma
+    metadata = dict(getattr(best_world, "metadata", {}))
+    metadata["merged_count"] = len(group)
+    metadata["merged_from"] = [tuple(w.delta) for w in group]
+    merged = WorldHypothesis(
+        delta=tuple(best_world.delta),
+        x_prior=prior_accum,
+        x_post=post_accum,
+        sigma_prior_diag=sigma_accum,
+        weight=total,
+        prior_mae=float(best_world.prior_mae),
+        likelihood=float(best_world.likelihood),
+        metadata=metadata,
+    )
+    return merged
+
+
+def _clone_world(world: WorldHypothesis, D: int) -> WorldHypothesis:
+    prior = np.asarray(world.x_prior, dtype=float).reshape(-1)
+    post = np.asarray(world.x_post, dtype=float).reshape(-1)
+    sigma = np.asarray(world.sigma_prior_diag, dtype=float).reshape(-1)
+    if prior.size != D:
+        prior = np.resize(prior, (D,))
+    if post.size != D:
+        post = np.resize(post, (D,))
+    if sigma.size != D:
+        sigma = np.resize(sigma, (D,))
+    metadata = dict(getattr(world, "metadata", {}))
+    metadata["cloned_from"] = tuple(world.delta)
+    return WorldHypothesis(
+        delta=tuple(world.delta),
+        x_prior=prior.copy(),
+        x_post=post.copy(),
+        sigma_prior_diag=sigma.copy(),
+        weight=float(world.weight),
+        prior_mae=float(world.prior_mae),
+        likelihood=float(world.likelihood),
+        metadata=metadata,
+    )
+
+
+def _consolidate_world_hypotheses(state: AgentState, cfg: AgentConfig, worlds: List[WorldHypothesis], D: int) -> List[WorldHypothesis]:
+    if not worlds:
+        return []
+    support_dims = _support_window_union(state)
+    eps = max(0.0, float(getattr(cfg, "multi_world_merge_eps", 1e-3)))
+    grouped: List[WorldHypothesis] = []
+    used = [False] * len(worlds)
+    for i, world in enumerate(worlds):
+        if used[i]:
+            continue
+        duplicates = [world]
+        used[i] = True
+        for j in range(i + 1, len(worlds)):
+            if used[j]:
+                continue
+            distance = _support_window_mae(world.x_prior, worlds[j].x_prior, support_dims)
+            if distance <= eps:
+                duplicates.append(worlds[j])
+                used[j] = True
+        merged = _merge_world_group(duplicates, D)
+        grouped.append(merged)
+    k = max(1, int(getattr(cfg, "multi_world_K", 1)))
+    grouped.sort(key=lambda w: float(w.weight), reverse=True)
+    while grouped and len(grouped) < k:
+        grouped.append(_clone_world(grouped[0], D))
+    if len(grouped) > k:
+        grouped = grouped[:k]
+    raw_weights = [float(w.weight) for w in grouped]
+    normalized = _normalize_world_weights(raw_weights)
+    for world, wgt in zip(grouped, normalized):
+        world.weight = wgt
+    return grouped
+
+
+def _update_block_signals(state: AgentState, cfg: AgentConfig, worlds: List[WorldHypothesis], D: int) -> None:
+    B = int(getattr(cfg, "B", 0))
+    fovea = state.fovea
+    if B <= 0:
+        zeros = np.zeros(0, dtype=float)
+        fovea.block_disagreement = zeros
+        fovea.block_innovation = zeros
+        fovea.block_periph_demand = zeros
+        return
+    ranges = block_slices(cfg)
+    values = np.zeros((len(worlds), B), dtype=float) if worlds else np.zeros((0, B), dtype=float)
+    deltas = np.zeros((len(worlds), B), dtype=float) if worlds else np.zeros((0, B), dtype=float)
+    for i, world in enumerate(worlds):
+        prior = np.asarray(world.x_prior, dtype=float).reshape(-1)
+        post = np.asarray(world.x_post, dtype=float).reshape(-1)
+        if prior.size != D:
+            prior = np.resize(prior, (D,))
+        if post.size != D:
+            post = np.resize(post, (D,))
+        delta = post - prior
+        for b, (start, end) in enumerate(ranges):
+            if start >= end:
+                continue
+            slice_obj = slice(start, min(end, D))
+            block_vals = prior[slice_obj]
+            if block_vals.size:
+                values[i, b] = float(np.mean(block_vals))
+            block_delta = np.abs(delta[slice_obj])
+            if block_delta.size:
+                deltas[i, b] = float(np.mean(block_delta))
+    if worlds:
+        weights = np.array([max(0.0, float(w.weight)) for w in worlds], dtype=float)
+        if not np.isfinite(weights).any():
+            weights = np.ones_like(weights)
+        total_weight = float(np.sum(weights))
+        if total_weight <= 0.0:
+            weights = np.ones_like(weights)
+            total_weight = float(np.sum(weights))
+        normalized = weights / total_weight
+        mean_vals = np.sum(normalized[:, None] * values, axis=0)
+        disagreement = np.sum(normalized[:, None] * (values - mean_vals) ** 2, axis=0)
+        innovation = np.sum(normalized[:, None] * deltas, axis=0)
+    else:
+        disagreement = np.zeros(B, dtype=float)
+        innovation = np.zeros(B, dtype=float)
+    age = np.asarray(getattr(fovea, "block_age", np.zeros(B)), dtype=float)
+    if age.size != B:
+        age = np.resize(age, (B,))
+    periph_value = float(np.nan_to_num(state.peripheral_residual, nan=0.0))
+    weight = 1.0 / (1.0 + np.maximum(age, 0.0))
+    weight_sum = float(np.sum(weight))
+    if weight_sum <= 0.0:
+        normalized_weight = np.ones_like(weight) / float(weight.size) if weight.size else weight
+    else:
+        normalized_weight = weight / weight_sum
+    periph_demand = periph_value * normalized_weight
+    fovea.block_disagreement = np.asarray(disagreement, dtype=float)
+    fovea.block_innovation = np.asarray(innovation, dtype=float)
+    fovea.block_periph_demand = np.asarray(periph_demand, dtype=float)
+def _select_multi_world_candidates(
+    candidate_infos: List[TransportCandidate],
+    best_candidate: TransportCandidate | None,
+    k: int,
+) -> List[TransportCandidate]:
+    """Return up to k distinct candidate deltas, keeping the chosen best first."""
+    k = max(1, int(k))
+    selection: List[TransportCandidate] = []
+    seen_deltas: Set[Tuple[int, int]] = set()
+    if best_candidate is not None:
+        key = tuple(best_candidate.delta)
+        selection.append(best_candidate)
+        seen_deltas.add(key)
+    sorted_by_score = sorted(candidate_infos, key=lambda cand: cand.score, reverse=True)
+    for cand in sorted_by_score:
+        if len(selection) >= k:
+            break
+        key = tuple(cand.delta)
+        if key in seen_deltas:
+            continue
+        selection.append(cand)
+        seen_deltas.add(key)
+    if not selection and best_candidate is not None:
+        selection.append(best_candidate)
+    return selection[:k]
+
+
+def _build_world_hypotheses(
+    state: AgentState,
+    cfg: AgentConfig,
+    D: int,
+    cue: Dict[int, float],
+    obs_idx: np.ndarray,
+    obs_vals: np.ndarray,
+    candidate_infos: List[TransportCandidate],
+    best_candidate: TransportCandidate | None,
+    main_prior: np.ndarray,
+    main_post: np.ndarray,
+    sigma_prior_diag: np.ndarray,
+) -> List[WorldHypothesis]:
+    """Create/update the multi-world list keyed by transport candidates."""
+    k = max(1, int(getattr(cfg, "multi_world_K", 1)))
+    lambda_param = float(getattr(cfg, "multi_world_lambda", 1.0))
+    selected = _select_multi_world_candidates(candidate_infos, best_candidate, k)
+    if not selected and best_candidate is not None:
+        selected = [best_candidate]
+    prev_weights = {
+        tuple(h.delta): float(h.weight)
+        for h in getattr(state, "world_hypotheses", []) or []
+        if hasattr(h, "delta")
+    }
+    worlds: List[WorldHypothesis] = []
+    for cand in selected:
+        delta = tuple(cand.delta)
+        prior_candidate = np.asarray(cand.shifted, dtype=float).reshape(-1)
+        if prior_candidate.shape[0] != D:
+            prior_candidate = np.resize(prior_candidate, (D,))
+        if cand is best_candidate:
+            post = np.asarray(main_post, dtype=float).reshape(-1)
+            prior_full = np.asarray(main_prior, dtype=float).reshape(-1)
+            sigma_diag = np.asarray(sigma_prior_diag, dtype=float).reshape(-1)
+            if post.shape[0] != D:
+                post = np.resize(post, (D,))
+            if prior_full.shape[0] != D:
+                prior_full = np.resize(prior_full, (D,))
+            if sigma_diag.shape[0] != D:
+                sigma_diag = np.resize(sigma_diag, (D,))
+        else:
+            prior_full = prior_candidate.copy()
+            post, sigma_arr, prior_full = complete(
+                cue,
+                mode="perception",
+                state=state,
+                cfg=cfg,
+                predicted_prior_t=prior_full,
+                predicted_sigma_diag=np.full(D, np.inf, dtype=float),
+            )
+            post = np.asarray(post, dtype=float).reshape(-1)
+            if post.shape[0] != D:
+                post = np.resize(post, (D,))
+            sigma_arr = np.asarray(sigma_arr, dtype=float)
+            if sigma_arr.ndim == 2 and sigma_arr.shape[0] == sigma_arr.shape[1]:
+                diag = np.diag(sigma_arr).copy()
+            else:
+                diag = sigma_arr.reshape(-1).copy()
+            if diag.shape[0] != D:
+                diag = np.resize(diag, (D,))
+            sigma_diag = diag
+            prior_full = np.asarray(prior_full, dtype=float).reshape(-1)
+            if prior_full.shape[0] != D:
+                prior_full = np.resize(prior_full, (D,))
+        prior_mae = _prior_obs_mae(obs_idx, obs_vals, prior_full)
+        likelihood = 1.0
+        if obs_idx.size and np.isfinite(prior_mae):
+            likelihood = math.exp(-lambda_param * prior_mae)
+        prev_weight = prev_weights.get(delta, 1.0)
+        raw_weight = prev_weight * likelihood
+        metadata = {
+            "score": float(getattr(cand, "score", 0.0)),
+            "prev_weight": prev_weight,
+        }
+        worlds.append(
+            WorldHypothesis(
+                delta=delta,
+                x_prior=prior_full,
+                x_post=post,
+                sigma_prior_diag=sigma_diag,
+                weight=raw_weight,
+                prior_mae=prior_mae,
+                likelihood=likelihood,
+                metadata=metadata,
+            )
+        )
+    consolidated = _consolidate_world_hypotheses(state, cfg, worlds, D)
+    state.world_hypotheses = consolidated
+    return consolidated
+
 def _peripheral_block_ids(cfg: AgentConfig) -> List[int]:
     """Return the configured peripheral block IDs (low-priority tail of the budget)."""
     periph_blocks = max(0, int(getattr(cfg, "periph_blocks", 0)))
@@ -1151,6 +1561,8 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         obs_idx = np.zeros(0, dtype=int)
         obs_vals = np.zeros(0, dtype=float)
 
+    _update_observed_history(state, obs_idx, cfg)
+
 
     (
         shift,
@@ -1285,6 +1697,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     else:
         mae_pos_post_transport = float("nan")
     _dbg('A13 complete(perception) end', state=state)
+    _compute_peripheral_metrics(state, cfg, prior_t, env_obs, obs_idx, obs_vals, D)
     clamp_delta = x_t - prior_t
     not_obs_mask = np.ones(D, dtype=bool)
     if obs_idx.size:
@@ -1297,6 +1710,8 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         mean_abs_clamp = float(np.mean(np.abs(clamp_delta[obs_idx]))) if obs_idx.size else 0.0
     else:
         mean_abs_clamp = 0.0
+    innov_energy = float(np.mean(np.abs(clamp_delta))) if clamp_delta.size else 0.0
+    innovation_mean_abs = innov_energy
 
     mae_pos_prior = float("nan")
     mae_pos_prior_unobs = 0.0
@@ -1343,7 +1758,69 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             state=state,
         )
 
+    # -------------------------------------------------------------------------
+    # Prediction error on observed dims for A16.2 tracking and A17 diagnostics
+    # -------------------------------------------------------------------------
+    error_vec = np.zeros(D, dtype=float)
+    if obs_idx.size:
+        error_vec[obs_idx] = obs_vals - prior_t[obs_idx]
+    abs_error = np.abs(error_vec)
+    if obs_idx.size:
+        active_thresh = float(getattr(cfg, "train_active_threshold", 0.0))
+        active_obs_mask = np.abs(obs_vals) > active_thresh
+        active_obs_count = int(np.sum(active_obs_mask))
+        active_obs_err = float(np.mean(abs_error[obs_idx][active_obs_mask])) if active_obs_count else 0.0
+        _dbg(
+            f'A16.2 active_obs: count={active_obs_count} mean_abs_err={active_obs_err:.6f}',
+            state=state,
+        )
+        prior_obs_mae = float(np.mean(abs_error[obs_idx]))
+    else:
+        prior_obs_mae = float("nan")
+
+    worlds = _build_world_hypotheses(
+        state,
+        cfg,
+        D,
+        cue_t,
+        obs_idx,
+        obs_vals,
+        transport_candidates_info,
+        transport_best_candidate,
+        prior_t,
+        x_t,
+        Sigp_diag,
+    )
+    _update_block_signals(state, cfg, worlds, D)
+    finite_world_maes = [float(w.prior_mae) for w in worlds if np.isfinite(w.prior_mae)]
+    if finite_world_maes:
+        best_world_mae = float(min(finite_world_maes))
+        expected_world_mae = float(
+            sum(w.weight * float(w.prior_mae) for w in worlds if np.isfinite(w.prior_mae))
+        )
+    else:
+        best_world_mae = float("nan")
+        expected_world_mae = float("nan")
+    weight_entropy = 0.0
+    for world in worlds:
+        w = float(world.weight)
+        if w > 0.0 and np.isfinite(w):
+            weight_entropy -= w * math.log(w)
+    multi_world_summary = [
+        {
+            "delta": tuple(world.delta),
+            "weight": float(world.weight),
+            "prior_mae": float(world.prior_mae),
+            "likelihood": float(world.likelihood),
+            "score": float(world.metadata.get("score", 0.0)),
+        }
+        for world in worlds
+    ]
+    multi_world_count = len(worlds)
+    support_window = _support_window_union(state)
+
     # Update observation buffer (dense estimate and observed dims)
+    state.buffer.x_prior = prior_t.copy()
     state.buffer.x_last = x_t.copy()
     _dbg(f'BUFFER update x_last; D={D}', state=state)
     coarse_buffer = extract_coarse(state.buffer.x_last, cfg)
@@ -1375,21 +1852,6 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
                 )
         state.coarse_prev = coarse_curr.copy() if coarse_curr.size else np.zeros(0, dtype=float)
 
-
-    # Prediction error on observed dims for A16.2 tracking and A17 diagnostics
-    error_vec = np.zeros(D, dtype=float)
-    if obs_idx.size:
-        error_vec[obs_idx] = obs_vals - prior_t[obs_idx]
-    abs_error = np.abs(error_vec)
-    if obs_idx.size:
-        active_thresh = float(getattr(cfg, "train_active_threshold", 0.0))
-        active_obs_mask = np.abs(obs_vals) > active_thresh
-        active_obs_count = int(np.sum(active_obs_mask))
-        active_obs_err = float(np.mean(abs_error[obs_idx][active_obs_mask])) if active_obs_count else 0.0
-        _dbg(
-            f'A16.2 active_obs: count={active_obs_count} mean_abs_err={active_obs_err:.6f}',
-            state=state,
-        )
 
     _ensure_node_band_levels(state, cfg)
     gist_vec = _compute_peripheral_gist(x_prev, cfg)
@@ -2228,6 +2690,30 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             "transport_high_confidence": bool(transport_high_confidence),
             "transport_ascii_mismatch": int(transport_best_candidate.ascii_mismatch) if transport_best_candidate is not None else 0,
             "delta_outside_O": float(delta_outside_O),
+            "innovation_mean_abs": float(innovation_mean_abs),
+            "innov_energy": float(innov_energy),
+            "prior_obs_mae": float(prior_obs_mae),
+            "multi_world_count": int(multi_world_count),
+            "multi_world_best_prior_mae": float(best_world_mae),
+            "multi_world_expected_prior_mae": float(expected_world_mae),
+            "multi_world_weight_entropy": float(weight_entropy),
+            "multi_world_summary": multi_world_summary,
+            "support_window_size": int(len(getattr(state, "observed_history", []))),
+            "support_window_union_size": int(len(support_window)),
+            "peripheral_confidence": float(np.clip(getattr(state, "peripheral_confidence", 0.0), 0.0, 1.0)),
+            "peripheral_residual": float(np.nan_to_num(getattr(state, "peripheral_residual", float("nan")))),
+            "peripheral_prior_size": int(getattr(state, "peripheral_prior", np.zeros(0)).size),
+            "peripheral_obs_size": int(getattr(state, "peripheral_obs", np.zeros(0)).size),
+            "block_disagreement_mean": float(
+                np.nanmean(getattr(state.fovea, "block_disagreement", np.zeros(0))) if getattr(state.fovea, "block_disagreement", np.zeros(0)).size else 0.0
+            ),
+            "block_innovation_mean": float(
+                np.nanmean(getattr(state.fovea, "block_innovation", np.zeros(0))) if getattr(state.fovea, "block_innovation", np.zeros(0)).size else 0.0
+            ),
+            "block_periph_demand_mean": float(
+                np.nanmean(getattr(state.fovea, "block_periph_demand", np.zeros(0))) if getattr(state.fovea, "block_periph_demand", np.zeros(0)).size else 0.0
+            ),
+            "mean_abs_clamp": float(mean_abs_clamp),
             "mae_pos_prior": float(mae_pos_prior),
             "mae_pos_prior_unobs": float(mae_pos_prior_unobs),
             "mae_pos_unobs_pre": float(mae_pos_unobs_pre_transport),

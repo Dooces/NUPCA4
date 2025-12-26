@@ -6,10 +6,11 @@ from nupca3.geometry.fovea import select_fovea
 from nupca3.memory.salience import compute_scores
 from nupca3.step_pipeline import (
     _compute_peripheral_gist,
+    _update_block_signals,
     _update_context_register,
     _update_coverage_debts,
 )
-from nupca3.types import FoveaState
+from nupca3.types import EnvObs, FoveaState
 
 
 def test_coverage_expert_debt_biases_scores() -> None:
@@ -126,3 +127,48 @@ def test_uncertainty_drives_fovea_selection() -> None:
     cfg_no_uncertainty = cfg.replace(fovea_uncertainty_weight=0.0)
     selected_without_uncertainty = select_fovea(fovea, cfg_no_uncertainty)
     assert selected_without_uncertainty == [0]
+
+
+def test_support_window_history_respects_window_size() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=4,
+        fovea_blocks_per_step=1,
+        multi_world_support_window=2,
+    )
+    agent = NUPCA3Agent(cfg)
+    for _ in range(5):
+        obs = EnvObs(x_partial={0: 0.1})
+        agent.step(obs)
+    assert len(agent.state.observed_history) <= 2
+
+
+def test_peripheral_coherence_residual_with_full_observation() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=4,
+        periph_blocks=1,
+        periph_bins=1,
+        periph_channels=1,
+    )
+    agent = NUPCA3Agent(cfg)
+    full_obs = EnvObs(
+        x_partial={i: float(i + 1) for i in range(cfg.D)},
+        x_full=np.arange(cfg.D, dtype=float),
+    )
+    agent.step(full_obs)
+    assert 0.0 <= agent.state.peripheral_confidence <= 1.0
+    residual = agent.state.peripheral_residual
+    assert np.isfinite(residual)
+    assert agent.state.peripheral_prior.size > 0
+    assert agent.state.peripheral_obs.size > 0
+
+
+def test_block_signals_reset_without_worlds() -> None:
+    cfg = AgentConfig(D=4, B=2)
+    agent = NUPCA3Agent(cfg)
+    agent.state.peripheral_residual = 0.0
+    _update_block_signals(agent.state, cfg, [], cfg.D)
+    assert np.allclose(agent.state.fovea.block_disagreement, 0.0)
+    assert np.allclose(agent.state.fovea.block_innovation, 0.0)
+    assert np.allclose(agent.state.fovea.block_periph_demand, 0.0)

@@ -127,6 +127,11 @@ class AgentConfig:
     fovea_uncertainty_weight: float = 0.0
     fovea_uncertainty_default: float = 1.0
 
+    # Multi-world disagreement/inovation routing contributions into fovea budget.
+    fovea_disagreement_weight: float = 0.0
+    fovea_innovation_weight: float = 0.0
+    fovea_periph_demand_weight: float = 0.0
+
     # Allowed transport span (blocks) for expert input masks.
     transport_span_blocks: int = 0
 
@@ -167,6 +172,12 @@ class AgentConfig:
     transport_uninformative_score: float = -1e6
     # Score margin threshold used to flag ties (diagnostics only).
     transport_tie_threshold: float = 1e-4
+
+    # Multi-world hypothesis tracking for transport ambiguity (Phase 3).
+    multi_world_K: int = 1
+    multi_world_lambda: float = 1.0
+    multi_world_support_window: int = 4
+    multi_world_merge_eps: float = 1e-3
 
     # Binding/equivariance (optional; implementation detail).
     binding_enabled: bool = False
