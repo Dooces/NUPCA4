@@ -1,3 +1,4 @@
+import math
 import numpy as np
 
 from nupca3.agent import NUPCA3Agent
@@ -172,3 +173,69 @@ def test_block_signals_reset_without_worlds() -> None:
     assert np.allclose(agent.state.fovea.block_disagreement, 0.0)
     assert np.allclose(agent.state.fovea.block_innovation, 0.0)
     assert np.allclose(agent.state.fovea.block_periph_demand, 0.0)
+
+
+def test_prior_posterior_mae_logging() -> None:
+    cfg = AgentConfig(
+        D=4,
+        B=2,
+        periph_blocks=1,
+        periph_bins=1,
+        transport_search_radius=0,
+    )
+    agent = NUPCA3Agent(cfg)
+    agent.state.buffer.x_prior = np.zeros(cfg.D, dtype=float)
+    agent.state.buffer.x_last = np.zeros(cfg.D, dtype=float)
+
+    _, trace = agent.step(EnvObs(x_partial={0: 1.0}))
+    prior_mae = float(trace["prior_obs_mae"])
+    posterior_mae = float(trace["posterior_obs_mae"])
+
+    assert math.isfinite(prior_mae)
+    assert math.isfinite(posterior_mae)
+    assert posterior_mae == 0.0
+    assert prior_mae > posterior_mae
+
+
+def test_peripheral_coherence_residual_detects_unobserved_dims() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=4,
+        periph_blocks=1,
+        periph_bins=1,
+        periph_channels=1,
+    )
+    agent = NUPCA3Agent(cfg)
+    full = np.zeros(cfg.D, dtype=float)
+    full[-2:] = 5.0
+
+    _, trace = agent.step(EnvObs(x_partial={0: 0.0}, x_full=full))
+    residual = float(trace["peripheral_residual"])
+    assert residual > 0.0
+
+
+def test_multi_world_summary_present_and_weights_normalized() -> None:
+    cfg = AgentConfig(
+        D=12,
+        B=3,
+        multi_world_K=2,
+        multi_world_lambda=1.0,
+        transport_search_radius=1,
+        transport_rotation_enabled=True,
+        transport_rotation_steps=(0, 1),
+    )
+    agent = NUPCA3Agent(cfg)
+    _, trace = agent.step(EnvObs(x_partial={0: 1.0}))
+
+    best_mae = float(trace["multi_world_best_prior_mae"])
+    expected_mae = float(trace["multi_world_expected_prior_mae"])
+    entropy = float(trace["multi_world_weight_entropy"])
+    summary = trace["multi_world_summary"]
+
+    assert math.isfinite(best_mae)
+    assert math.isfinite(expected_mae)
+    assert entropy >= 0.0
+    assert isinstance(summary, list)
+    assert len(agent.state.world_hypotheses) == cfg.multi_world_K
+    weights = [float(world.weight) for world in agent.state.world_hypotheses]
+    assert math.isclose(sum(weights), 1.0, rel_tol=1e-6)

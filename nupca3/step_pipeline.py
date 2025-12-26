@@ -1869,6 +1869,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         mean_abs_clamp = float(np.mean(np.abs(clamp_delta[obs_idx]))) if obs_idx.size else 0.0
     else:
         mean_abs_clamp = 0.0
+    posterior_obs_mae = _prior_obs_mae(obs_idx, obs_vals, x_t)
     innov_energy = float(np.mean(np.abs(clamp_delta))) if clamp_delta.size else 0.0
     innovation_mean_abs = innov_energy
 
@@ -2852,6 +2853,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             "innovation_mean_abs": float(innovation_mean_abs),
             "innov_energy": float(innov_energy),
             "prior_obs_mae": float(prior_obs_mae),
+            "posterior_obs_mae": float(posterior_obs_mae),
             "multi_world_count": int(multi_world_count),
             "multi_world_best_prior_mae": float(best_world_mae),
             "multi_world_expected_prior_mae": float(expected_world_mae),

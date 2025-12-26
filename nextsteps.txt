@@ -2,6 +2,7 @@
 - Added transport-config options, bias/offset bookkeeping, and rotation-aware `apply_transport`.
 - Extended transport candidate generation to sample rotations, offsets, and weight scoring from learned wins; persisted state updates after each step.
 - Verified targeted stream tests plus the full suite to confirm the new transforms and biasing stay axiom-faithful.
+- Logged `posterior_obs_mae` separately and covered acceptance cases A/D/E with dedicated unit tests to keep prior/prediction, peripheral coherence, and multi-world reporting observable.
 
 ## Implementation Guardrails (must-read)
 
@@ -244,30 +245,35 @@ Case B: True equivalence (same outcome across relevant support / audit)
 A) Posterior-high / prior-low:
 
 * Show posterior/perception match high while prior_obs_mae high, both logged distinctly.
+  (Covered by `tests/test_nextsteps_features.py::test_prior_posterior_mae_logging`.)
 
 B) Motion ambiguity:
 
 * Two motion/transport hypotheses stay alive under aliasing and only collapse after disambiguating fovea observations.
+  (Pending a dedicated multi-step trace / observation scenario.)
 
 C) Merge guard:
 
 * Worlds do not merge just because they match on current Omega_t; merge only when matching on S_t (and/or REST audit).
+  (Pending instrumentation of rolling support windows.)
 
 D) Peripheral coherence:
 
 * Background deviation triggers coherence residual/alarm even when down-weighted for attention and even if fovea didn’t look there.
+  (Covered by `tests/test_nextsteps_features.py::test_peripheral_coherence_residual_detects_unobserved_dims`.)
 
 E) Multi-world metric sanity:
 
 * Logs include best_world_prior_mae_t and expected_prior_mae_t, plus posterior metrics labeled separately.
+  (Covered by `tests/test_nextsteps_features.py::test_multi_world_summary_present_and_weights_normalized`.)
 
 10. IMPLEMENTATION ORDER (PRACTICAL SEQUENCING)
 
 ---
 
-1. Implement prior/posterior storage + enforce per-step invariant + fix metric labeling.
-2. Add multi-world container (fixed K) + scoring by prior-vs-observed + required reporting.
-3. Add prune/clone + merge using S_t merge guard (and optional REST audit).
-4. Add disagreement-driven foveation and blockwise innovation wiring into coverage/candidate pressure.
-5. Add peripheral baseline + confidence + ALWAYS-ON coherence residual diagnostic.
-6. Run acceptance tests A–E and freeze invariants (prevent regressions).
+1. [x] Implement prior/posterior storage + enforce per-step invariant + fix metric labeling.
+2. [x] Add multi-world container (fixed K) + scoring by prior-vs-observed + required reporting.
+3. [x] Add prune/clone + merge using S_t merge guard (and optional REST audit).
+4. [x] Add disagreement-driven foveation and blockwise innovation wiring into coverage/candidate pressure.
+5. [x] Add peripheral baseline + confidence + ALWAYS-ON coherence residual diagnostic.
+6. [ ] Run acceptance tests A–E and freeze invariants (A/D/E covered via new unit tests; B/C remain to be scripted).
