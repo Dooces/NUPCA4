@@ -731,13 +731,26 @@ def _apply_pending_transport_disagreement(state: AgentState, cfg: AgentConfig) -
     state.transport_disagreement_margin = float("inf")
 
 
-def _update_observed_history(state: AgentState, obs_idx: np.ndarray, cfg: AgentConfig) -> None:
+def _update_observed_history(
+    state: AgentState,
+    obs_idx: np.ndarray,
+    cfg: AgentConfig,
+    *,
+    extra_dims: Iterable[int] | None = None,
+) -> None:
     """Maintain the sliding support window of observed dims for multi-world merge guards."""
     window = max(1, int(getattr(cfg, "multi_world_support_window", 4)))
     history = getattr(state, "observed_history", None)
     if history is None or not isinstance(history, deque):
         history = deque()
     dims = {int(k) for k in obs_idx if np.isfinite(k)}
+    if extra_dims:
+        for dim in extra_dims:
+            try:
+                d = int(dim)
+            except Exception:
+                continue
+            dims.add(d)
     history.append(dims)
     while len(history) > window:
         history.popleft()
@@ -755,12 +768,34 @@ def _support_window_union(state: AgentState) -> Set[int]:
     return support
 
 
-def _build_coarse_observation(env_obs: EnvObs, obs_idx: np.ndarray, obs_vals: np.ndarray, D: int, cfg: AgentConfig) -> np.ndarray:
+def _peripheral_dim_set(D: int, cfg: AgentConfig) -> Set[int]:
+    """Return the peripheral dimensionality set (Omega_bg_t) for the config."""
+    periph_size = max(0, min(periph_block_size(cfg), D))
+    if periph_size <= 0:
+        return set()
+    start = max(0, D - periph_size)
+    return set(range(start, D))
+
+
+def _build_coarse_observation(
+    env_obs: EnvObs,
+    obs_idx: np.ndarray,
+    obs_vals: np.ndarray,
+    D: int,
+    cfg: AgentConfig,
+    periph_dims: Set[int] | None = None,
+) -> np.ndarray:
     """Create a low-resolution peripheral observation vector."""
     full = getattr(env_obs, "x_full", None)
-    if full is not None:
-        return extract_coarse(full, cfg)
+    dims = periph_dims if periph_dims is not None else set()
     obs_vec = np.zeros(max(0, D), dtype=float)
+    if dims and full is not None:
+        full_arr = np.asarray(full, dtype=float).reshape(-1)
+        if full_arr.size < D:
+            full_arr = np.resize(full_arr, (D,))
+        for dim in dims:
+            if 0 <= dim < full_arr.size:
+                obs_vec[dim] = float(full_arr[int(dim)])
     if obs_idx.size and obs_vals.size:
         obs_vec[obs_idx] = obs_vals
     return extract_coarse(obs_vec, cfg)
@@ -774,9 +809,10 @@ def _compute_peripheral_metrics(
     obs_idx: np.ndarray,
     obs_vals: np.ndarray,
     D: int,
+    periph_dims: Set[int],
 ) -> None:
     periph_prior = extract_coarse(prior_t, cfg)
-    periph_obs = _build_coarse_observation(env_obs, obs_idx, obs_vals, D, cfg)
+    periph_obs = _build_coarse_observation(env_obs, obs_idx, obs_vals, D, cfg, periph_dims)
     residual = float("nan")
     if periph_prior.size and periph_obs.size:
         min_len = min(periph_prior.size, periph_obs.size)
@@ -788,11 +824,17 @@ def _compute_peripheral_metrics(
     top = periph_prior if periph_prior.size else np.zeros(0, dtype=float)
     state.peripheral_prior = top.copy()
     state.peripheral_obs = periph_obs.copy() if periph_obs.size else np.zeros(0, dtype=float)
-    periph_size = periph_block_size(cfg)
-    periph_start = max(0, D - periph_size)
-    observed_periph = int(np.sum((obs_idx >= periph_start) & (obs_idx < D))) if periph_size > 0 else 0
-    denom = periph_size if periph_size > 0 else max(1, D)
-    confidence = float(observed_periph) / float(denom)
+    periph_count = len(periph_dims)
+    obs_set = {int(dim) for dim in obs_idx if np.isfinite(dim)}
+    if periph_count > 0:
+        if getattr(env_obs, "x_full", None) is not None and periph_obs.size:
+            observed_periph = periph_count
+        else:
+            observed_periph = int(sum(1 for dim in periph_dims if dim in obs_set))
+        denom = float(periph_count)
+        confidence = float(observed_periph) / denom if denom > 0.0 else 0.0
+    else:
+        confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
     state.peripheral_confidence = confidence
     state.peripheral_residual = residual
@@ -1529,15 +1571,15 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     # A16.5 requested observation set
     O_req = make_observation_set(blocks_t, cfg)
     _dbg(f'A16.5 make_observation_set -> |O_req|={len(O_req)}', state=state)
-    periph_dims: Set[int] = set()
+    forced_periph_dims: Set[int] = set()
     missing_periph_dims: List[int] = []
     periph_dims_present = 0
     if forced_periph_blocks:
         for b in forced_periph_blocks:
-            periph_dims.update(dims_for_block(b, cfg))
-        if periph_dims:
+            forced_periph_dims.update(dims_for_block(b, cfg))
+        if forced_periph_dims:
             missing_periph_dims = sorted(
-                int(dim) for dim in periph_dims if dim not in O_req
+                int(dim) for dim in forced_periph_dims if dim not in O_req
             )
             if missing_periph_dims:
                 missing_head = missing_periph_dims[: min(8, len(missing_periph_dims))]
@@ -1546,7 +1588,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
                     f'head={missing_head}',
                     state=state,
                 )
-        periph_dims_present = int(len(periph_dims & O_req))
+        periph_dims_present = int(len(forced_periph_dims & O_req))
 
     # Mask incoming sparse cue to O_req and bounds
     cue_t = _filter_cue_to_Oreq(getattr(env_obs, "x_partial", {}) or {}, O_req, D)
@@ -1561,7 +1603,8 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         obs_idx = np.zeros(0, dtype=int)
         obs_vals = np.zeros(0, dtype=float)
 
-    _update_observed_history(state, obs_idx, cfg)
+    periph_dims = _peripheral_dim_set(D, cfg)
+    _update_observed_history(state, obs_idx, cfg, extra_dims=periph_dims)
 
 
     (
@@ -1697,7 +1740,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     else:
         mae_pos_post_transport = float("nan")
     _dbg('A13 complete(perception) end', state=state)
-    _compute_peripheral_metrics(state, cfg, prior_t, env_obs, obs_idx, obs_vals, D)
+    _compute_peripheral_metrics(state, cfg, prior_t, env_obs, obs_idx, obs_vals, D, periph_dims)
     clamp_delta = x_t - prior_t
     not_obs_mask = np.ones(D, dtype=bool)
     if obs_idx.size:
@@ -2704,6 +2747,8 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             "peripheral_residual": float(np.nan_to_num(getattr(state, "peripheral_residual", float("nan")))),
             "peripheral_prior_size": int(getattr(state, "peripheral_prior", np.zeros(0)).size),
             "peripheral_obs_size": int(getattr(state, "peripheral_obs", np.zeros(0)).size),
+            "peripheral_bg_dim_count": int(len(periph_dims)),
+            "peripheral_bg_active": bool(periph_dims),
             "block_disagreement_mean": float(
                 np.nanmean(getattr(state.fovea, "block_disagreement", np.zeros(0))) if getattr(state.fovea, "block_disagreement", np.zeros(0)).size else 0.0
             ),
@@ -2725,7 +2770,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             "coarse_prev_head": tuple(coarse_prev_head),
             "coarse_curr_head": tuple(coarse_curr_head),
             "periph_block_ids": tuple(int(b) for b in forced_periph_blocks),
-            "periph_dims_forced": int(len(periph_dims)),
+            "periph_dims_forced": int(len(forced_periph_dims)),
             "periph_dims_in_req": int(periph_dims_present),
             "periph_dims_missing_count": int(len(missing_periph_dims)),
             "periph_dims_missing_head": tuple(
