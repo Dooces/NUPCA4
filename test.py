@@ -1324,7 +1324,8 @@ def run_task(
                         err_pos_unobs = np.abs(prior_arr[pos_unobs_mask] - full_x[pos_unobs_mask])
                         mae_pos_unobs.append(float(np.mean(err_pos_unobs)))
         perc = build_partial_obs(full_x, obs_dims)
-        pred_vec = agent.state.buffer.x_last
+        pred_vec = prior_arr if prior_arr is not None else agent.state.buffer.x_last
+        pred_vec = np.asarray(pred_vec, dtype=float).reshape(-1)
         occ_env = _occupancy_array(
             full_x[:int(base_dim)],
             side=side,
@@ -1359,7 +1360,7 @@ def run_task(
                 env_vec=full_x,
                 obs_dims=obs_set,
                 prev_vec=buffer_prev,
-                pred_vec=agent.state.buffer.x_last,
+                pred_vec=pred_vec,
                 side=side,
                 n_colors=n_colors,
                 n_shapes=n_shapes,

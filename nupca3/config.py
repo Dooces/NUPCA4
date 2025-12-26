@@ -56,7 +56,7 @@ dataclass with clear, auditable defaults aligned to the axioms.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace as dc_replace
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 
 @dataclass(frozen=True)
@@ -172,6 +172,16 @@ class AgentConfig:
     transport_uninformative_score: float = -1e6
     # Score margin threshold used to flag ties (diagnostics only).
     transport_tie_threshold: float = 1e-4
+
+    # Extended transform search: rotations + learned shift corrections
+    transport_rotation_enabled: bool = False
+    transport_rotation_steps: Tuple[int, ...] = (0,)
+    transport_offset_history_size: int = 0
+    transport_offset_radius: int = 1
+    transport_bias_decay: float = 0.9
+    transport_bias_weight: float = 0.0
+    transport_bias_increment: float = 0.1
+    transport_bias_max_entries: int = 4
 
     # Multi-world hypothesis tracking for transport ambiguity (Phase 3).
     multi_world_K: int = 1

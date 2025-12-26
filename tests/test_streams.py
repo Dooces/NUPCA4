@@ -68,6 +68,17 @@ def test_transport_shift_and_apply() -> None:
     assert not np.allclose(transported[: cfg.grid_side * cfg.grid_channels], vec[: cfg.grid_side * cfg.grid_channels])
 
 
+def test_apply_transport_rotation() -> None:
+    cfg = make_cfg()
+    vec = np.arange(cfg.D, dtype=float)
+    rotated = apply_transport(vec, (0, 0), cfg, rotation=1)
+    base_size = cfg.grid_side * cfg.grid_side * cfg.grid_channels
+    grid = vec[:base_size].reshape(cfg.grid_side, cfg.grid_side, cfg.grid_channels)
+    expected = np.rot90(grid, k=1, axes=(0, 1)).reshape(-1)
+    assert np.allclose(rotated[: base_size], expected)
+    assert np.allclose(rotated[base_size:], vec[base_size:])
+
+
 def test_grid_mass_shift() -> None:
     cfg = make_cfg()
     prev_vec = np.zeros(cfg.D, dtype=float)

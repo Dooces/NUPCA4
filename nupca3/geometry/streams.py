@@ -175,10 +175,46 @@ def compute_transport_shift(prev: np.ndarray, curr: np.ndarray, cfg: AgentConfig
     return _best_coarse_shift(prev_grid, curr_grid)
 
 
-def apply_transport(fine_vec: np.ndarray, shift: Tuple[int, int], cfg: AgentConfig) -> np.ndarray:
-    dx, dy = shift
-    if dx == 0 and dy == 0:
+def _rotate_grid_segment(fine_vec: np.ndarray, rotation: int, cfg: AgentConfig) -> np.ndarray:
+    rotation = int(rotation) % 4
+    if rotation == 0:
         return fine_vec.copy()
+
+    grid_side = max(0, int(getattr(cfg, "grid_side", 0)))
+    channels = max(1, int(getattr(cfg, "grid_channels", 1)))
+    base_dim = int(getattr(cfg, "D", 0)) - periph_block_size(cfg)
+    if grid_side <= 0 or channels <= 0 or base_dim <= 0:
+        return fine_vec.copy()
+
+    data = np.zeros(grid_side * grid_side * channels, dtype=float)
+    length = min(base_dim, data.size)
+    data[:length] = fine_vec[:length]
+    grid = data.reshape(grid_side, grid_side, channels)
+    rotated = np.rot90(grid, k=rotation, axes=(0, 1))
+    flat = rotated.reshape(-1)
+
+    result = fine_vec.copy()
+    fill_len = min(base_dim, flat.size)
+    result[:fill_len] = flat[:fill_len]
+    return result
+
+
+def apply_transport(
+    fine_vec: np.ndarray,
+    shift: Tuple[int, int],
+    cfg: AgentConfig,
+    *,
+    rotation: int = 0,
+) -> np.ndarray:
+    """Apply translation (and optional rotation) to the fine-grid part of the state."""
+    dx, dy = shift
+    rot = int(rotation) % 4
+    rotated_vec = _rotate_grid_segment(fine_vec, rot, cfg) if rot else fine_vec.copy()
+    if dx == 0 and dy == 0 and rot == 0:
+        return rotated_vec.copy()
+    if dx == 0 and dy == 0:
+        # Only rotation was applied, no translation required after rotation.
+        return rotated_vec
     grid_side = max(1, int(getattr(cfg, "grid_side", 0)))
     channels = max(1, int(getattr(cfg, "grid_channels", 1)))
     base_dim = int(getattr(cfg, "D", 0)) - periph_block_size(cfg)
@@ -187,7 +223,7 @@ def apply_transport(fine_vec: np.ndarray, shift: Tuple[int, int], cfg: AgentConf
     cell_count = grid_side * grid_side
     data_size = min(cell_count * channels, base_dim)
     data = np.zeros(cell_count * channels, dtype=float)
-    data[:data_size] = fine_vec[:data_size]
+    data[:data_size] = rotated_vec[:data_size]
     data = data.reshape(cell_count, channels)
     data = data.reshape(grid_side, grid_side, channels)
     dx_cells = int(dx)

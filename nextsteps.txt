@@ -1,503 +1,273 @@
-The “simple, holistic” fix that is actually implied by biology
-
-You already have fast local prediction (cortex-like) and structural consolidation (sleep-like). What was missing is the brain’s always-on “scene gist + coverage” stack that sits above momentary gaze.
-
-Fix 1 — Make coverage multi-scale (space and representation)
-
-You validated coverage at the DoF/block level. The next obvious extension is: apply the same principle to representation strata, so you don’t only “look everywhere,” you also periodically refresh/test abstractions that won’t be locally surprising in the current fixation.
-
-Concretely, maintain coverage debt at three granularities:
-
-Block debt (already validated):
-
-𝜏
-block
-(
-𝑏
-)
-←
-{
-0
-	
-𝑏
-=
-fovea
-(
-𝑡
-)
-
-
-𝜏
-block
-(
-𝑏
-)
-+
-1
-	
-otherwise
-τ
-block
-	​
-
-(b)←{
-0
-τ
-block
-	​
-
-(b)+1
-	​
-
-b=fovea(t)
-otherwise
-	​
-
-
-Expert debt (memory coverage):
-
-𝜏
-𝑗
-←
-{
-0
-	
-𝑗
-∈
-𝐴
-𝑡
-
-
-𝜏
-𝑗
-+
-1
-	
-otherwise
-τ
-j
-	​
-
-←{
-0
-τ
-j
-	​
-
-+1
-	​
-
-j∈A
-t
-	​
-
-otherwise
-	​
-
-
-Band/level debt (abstraction coverage): tag each node by a crude “level” (e.g., by 
-∣
-𝑜
-𝑢
-𝑡
-𝑗
-∣
-∣out
-j
-	​
-
-∣ or spatial scale: 
-1
-×
-1
-,
-2
-×
-2
-,
-3
-×
-3
-,
-…
-1×1,2×2,3×3,…), and track 
-𝜏
-band
-(
-ℓ
-)
-τ
-band
-	​
-
-(ℓ) similarly.
-
-Then:
-
-Fovea selection (policy-level, not macrostate):
-
-score
-(
-𝑏
-)
-=
-residual
-(
-𝑏
-)
-⏟
-fast surprise
-+
-𝜆
-cov
-log
-⁡
-(
-1
-+
-𝜏
-block
-(
-𝑏
-)
-)
-score(b)=
-fast surprise
-residual(b)
-	​
-
-	​
-
-+λ
-cov
-	​
-
-log(1+τ
-block
-	​
-
-(b))
-
-This is exactly the mechanism your sims show is necessary.
-
-Active-set selection (within your existing A5/A7 substrate): augment node score with debt without changing macrostates:
-
-𝑢
-𝑗
-←
-𝑢
-𝑗
-+
-𝛼
-cov,exp
-log
-⁡
-(
-1
-+
-𝜏
-𝑗
-)
-+
-𝛼
-cov,band
-log
-⁡
-(
-1
-+
-𝜏
-band
-(
-ℓ
-𝑗
-)
-)
-u
-j
-	​
-
-←u
-j
-	​
-
-+α
-cov,exp
-	​
-
-log(1+τ
-j
-	​
-
-)+α
-cov,band
-	​
-
-log(1+τ
-band
-	​
-
-(ℓ
-j
-	​
-
-))
-
-This is the “what to remember at what level” part: it prevents the system from permanently starving higher-level (rarely directly surprising) structure.
-
-Fix 2 — Add “peripheral gist” as a cue source, not as per-expert input
-
-What biology does that you have not cleanly implemented yet is peripheral vision: a low-resolution global summary that is always available and cheap.
-
-The key constraint you already observed empirically:
-
-If “context” is fed into every expert’s predictor inputs, 
-∣
-𝑖
-𝑛
-𝑗
-∣
-∣in
-j
-	​
-
-∣ rises 
-⇒
-𝐿
-𝑗
-∝
-∣
-𝑖
-𝑛
-𝑗
-∣
-∣
-𝑜
-𝑢
-𝑡
-𝑗
-∣
-⇒L
-j
-	​
-
-∝∣in
-j
-	​
-
-∣∣out
-j
-	​
-
-∣ rises 
-⇒
-𝐿
-𝑒
-𝑓
-𝑓
-⇒L
-eff
- rises 
-⇒
-𝑏
-𝑟
-𝑜
-𝑙
-𝑙
-⇒b
-roll
-	​
-
- rises 
-⇒
-∗
-∗
-ℎ
-𝑐
-𝑜
-𝑙
-𝑙
-𝑎
-𝑝
-𝑠
-𝑒
-𝑠
-∗
-∗
-⇒∗∗hcollapses∗∗.
-
-So the biologically-correct way is:
-
-Compute a very low-dimensional peripheral summary 
-𝑔
-(
-𝑡
-)
-g(t) (e.g., pooled 4×4 over the 16×16 field, per channel; or even just a handful of global moments).
-
-Update a slow context register:
-
-𝑧
-(
-𝑡
-)
-=
-(
-1
-−
-𝛽
-𝑧
-)
-𝑧
-(
-𝑡
-−
-1
-)
-+
-𝛽
-𝑧
- 
-𝑔
-(
-𝑡
-)
-z(t)=(1−β
-z
-	​
-
-)z(t−1)+β
-z
-	​
-
-g(t)
-
-Use 
-𝑧
-(
-𝑡
-)
-z(t) only in salience / retrieval bias, not in prediction 
-𝑊
-𝑗
-W
-j
-	​
-
-:
-
-𝑢
-𝑗
-←
-𝑢
-𝑗
-+
-𝛼
-𝑐
-𝑡
-𝑥
- 
-sim
-(
-𝑧
-(
-𝑡
-)
-,
-𝑧
-𝑗
-)
-u
-j
-	​
-
-←u
-j
-	​
-
-+α
-ctx
-	​
-
-sim(z(t),z
-j
-	​
-
-)
-
-where 
-𝑧
-𝑗
-z
-j
-	​
-
- is a slow tag of when node 
-𝑗
-j tends to be useful.
-
-This makes context do what hippocampal indexing does: select which memories matter, without charging every micro-predictor for extra input width.
-
-Fix 3 — Swap “surprise-only” exploration for “surprise + uncertainty” (still within your substrate)
-
-Greedy residual fails because “no observation” means “no error signal.” A second biologically-standard driver is uncertainty: you look where your belief is weak, not only where it is currently wrong.
-
-You already maintain per-dimension variances 
-Σ
-𝑗
-[
-𝑘
-]
-Σ
-j
-	​
-
-[k]. Define a block uncertainty (from fused precision or last-seen variance) and add:
-
-score
-(
-𝑏
-)
-=
-residual
-(
-𝑏
-)
-+
-𝜆
-cov
-log
-⁡
-(
-1
-+
-𝜏
-block
-(
-𝑏
-)
-)
-+
-𝜆
-𝜎
- 
-uncertainty
-(
-𝑏
-)
-score(b)=residual(b)+λ
-cov
-	​
-
-log(1+τ
-block
-	​
-
-(b))+λ
-σ
-	​
-
-uncertainty(b)
-
-This directly targets the “silent drift” regions before they explode.
+## PROGRESS
+- Added transport-config options, bias/offset bookkeeping, and rotation-aware `apply_transport`.
+- Extended transport candidate generation to sample rotations, offsets, and weight scoring from learned wins; persisted state updates after each step.
+- Verified targeted stream tests plus the full suite to confirm the new transforms and biasing stay axiom-faithful.
 
+## Implementation Guardrails (must-read)
+
+1. **Observation budget integrity (no hidden full-state access).**
+   All computations that use ground-truth values must be provably sourced from explicit observed indices:
+
+* Primary observations: (\Omega_t) with values (y_t).
+* If you introduce a peripheral/coarse channel (y^{bg}_t), you must define an explicit index set (\Omega^{bg}_t) and cost/budget for it (even if “cheap”), and treat it as observation.
+  **Prohibited:** computing any “coherence residual” against unobserved ground truth outside (\Omega_t \cup \Omega^{bg}_t), or using debug/full-state diagnostics as learning or scoring inputs.
+
+2. **Per-step invariant is an assertion, not a guideline.**
+   Enforce (by code structure and/or asserts) that:
+
+* priors (\hat{x}_{t|t-1}) are produced before seeing (y_t),
+* (e^{\text{obs}}_t) is computed only from priors on (\Omega_t),
+* posteriors (\hat{x}_{t|t}) never overwrite priors before metrics/logging,
+* no “prediction metric” is computed on posterior/clamped state.
+
+3. **Posterior is never an optimization target for “prediction.”**
+   Posterior/perception metrics may be logged, but do not use posterior-vs-truth to:
+
+* update world weights,
+* claim predictive performance,
+* drive transport/motion selection.
+  World competition must be driven by prior-vs-observed error on (\Omega_t).
+
+4. **Merge/prune safety: never merge on a single-step view.**
+   World merging is allowed only if worlds are near-identical on a rolling evidence support window (S_t=\cup_{i=t-L}^t \Omega_i) (and optional REST audit if permitted and budgeted).
+   **Prohibited:** merging because worlds match on current (\Omega_t) alone (aliasing collapse).
+
+5. **Innovation-driven attention must be feedback-safe.**
+   If (|\Delta|_b) is used in demand/coverage pressure, it must be gated to avoid “self-chasing,” e.g.:
+
+* decay/EMA,
+* age-weighting (prefer blocks not recently observed),
+* or computing innovation demand using *prior-only* disagreement rather than raw clamp-induced changes.
+  **Goal:** innovation helps route attention, not trap it.
+
+6. **Debug/full-state signals are diagnostics only.**
+   Any “true grid,” “ASCII diff,” or full-state access in the harness must be firewalled from learning, scoring, world weights, merge decisions, or attention policy—unless explicitly declared as an observation channel with a budgeted cost.
+
+---
+
+# ROLL OUT PLAN (PLAINTEXT / NOTEPAD SAFE)
+
+0. PURPOSE / NON-NEGOTIABLES
+
+---
+
+Goal:
+
+* Separate prediction/recall (PRIOR) from perception after cue/clamp (POSTERIOR) so metrics cannot be “won by clamping”.
+* Optionally support multiple parallel hypotheses (“multi-worlds”) under ambiguity (esp. motion/transport).
+* Add a peripheral low-res full-field stream that reduces fovea burden without deleting accountability.
+
+Non-negotiables:
+
+* Keep ONE completion operator concept (Complete()), but run it in distinct modes and store both outputs.
+* Learning accountability signal is PRIOR vs OBSERVATION on observed indices (obs_idx).
+* Innovation (prior->posterior change) is NOT the sole error signal; it is routing/diagnostic/candidate/coverage input.
+* Never delete background dims from coherence checking; use confidence/precision weighting, not hard masking.
+* Enforce canonical per-step ordering as an explicit invariant.
+
+Definitions:
+
+* Omega_t = obs_idx (indices observed at step t)
+* y_t = observed values on Omega_t
+* x_prior = x_hat_{t|t-1}
+* x_post  = x_hat_{t|t}
+* e_obs_t = y_t - x_prior[Omega_t]
+* Delta_t = x_post - x_prior
+
+1. PHASE 1: PER-STEP ORDERING INVARIANT (MUST IMPLEMENT)
+
+---
+
+Per-step invariant (canonical sequence):
+(1) Compute PRIOR(s): x_hat_{t|t-1}  (or per-world x_hat^{(k)}*{t|t-1})
+(2) Observe y_t on Omega_t
+(3) Compute POSTERIOR(s): x_hat*{t|t} = Complete(x_hat_{t|t-1}, y_t on Omega_t)
+(4) Compute/log e_obs_t and Delta_t using the PRIOR from step (1)
+(5) ONLY THEN update any buffers / learning state / candidates / resampling / caches
+
+Prohibited:
+
+* Computing “prediction” metrics after step (3) on clamped/posterior states.
+* Overwriting x_prior before logging e_obs_t.
+* Labeling posterior/perception metrics as “prediction”.
+
+2. PHASE 2: METRICS THAT ACTUALLY MEASURE PREDICTION
+
+---
+
+Single-world required per-step logs:
+
+* prior_obs_mae_t = MAE(e_obs_t)  (true predictive loss on what was seen)
+* innov_energy_t  = MAE(Delta_t) or ||Delta_t|| (how much perception rewrote worldview)
+* posterior metrics allowed, but labeled strictly as posterior/perception (never “prediction”)
+
+Required litmus run:
+
+* Show a case where posterior match is high but prior_obs_mae is still high,
+  and both are logged distinctly (proves invariant is respected).
+
+3. PHASE 3: MULTI-WORLD PARALLEL HYPOTHESES (FIXED K)
+
+---
+
+World representation (K fixed):
+For k = 1..K store:
+
+* x_prior^{(k)} = x_hat^{(k)}_{t|t-1}
+* x_post^{(k)}  = x_hat^{(k)}_{t|t}
+* delta^{(k)}   = world-specific motion/transport hypothesis (dx,dy or transform)
+* w^{(k)}       = world weight (credence)
+* metadata^{(k)}: coverage debt, last-good blocks, etc.
+
+Per-step multi-world scoring (ANCHOR TO PRIOR vs OBS):
+
+* e^{(k)}(Omega_t) = y_t - x_prior^{(k)}[Omega_t]
+* score/likelihood l^{(k)} monotone decreasing in MAE(e^{(k)}(Omega_t))
+  Example: l^{(k)} ~ exp(-lambda * MAE(e^{(k)}(Omega_t)))
+* weight update:
+  w^{(k)} <- normalize( w^{(k)} * l^{(k)} )
+
+Per-world posterior:
+
+* x_post^{(k)} = Complete(x_prior^{(k)}, y_t on Omega_t)
+* Delta^{(k)}  = x_post^{(k)} - x_prior^{(k)}
+
+4. PHASE 3B: REQUIRED MULTI-WORLD REPORTING (EXPLICIT)
+
+---
+
+Log per step (and in summary):
+
+* best_world_prior_mae_t = min_k MAE(e^{(k)}(Omega_t))
+* expected_prior_mae_t   = sum_k w^{(k)} * MAE(e^{(k)}(Omega_t))
+* posterior metrics separately (never labeled prediction)
+* (optional) weight_entropy_t = -sum_k w^{(k)} log w^{(k)}
+
+5. PHASE 4: PRUNE / CLONE / MERGE (WITH ANTI-ALIAS MERGE GUARD)
+
+---
+
+Budget discipline (required):
+
+* K is constant (no uncontrolled branching).
+* Prune low-weight worlds; clone/replace as needed to maintain K.
+
+Merge guard (critical):
+
+* Do NOT merge worlds just because they match on current Omega_t (they may be aliased).
+* Define relevant support window:
+  S_t = union_{i=t-L..t} Omega_i   (recent evidence window of observed dims/blocks)
+
+Merge condition:
+
+* Only merge world k and j if they are near-identical over S_t:
+  MAE( x_prior^{(k)}[S_t] - x_prior^{(j)}[S_t] ) < eps_merge
+  (and optionally their delta hypotheses are compatible / redundant)
+
+Optional REST audit guard (only if allowed by your axioms):
+
+* During REST only, sample additional audit dims A_t (cheap) and require near-identity on (S_t U A_t)
+* Purpose: prevent merging worlds that are merely currently aliased.
+
+6. PHASE 5: ATTENTION / FOVEATION DRIVEN BY DISAGREEMENT + INNOVATION
+
+---
+
+Multi-world disagreement routing:
+
+* For each block b, compute disagreement across worlds on PRIOR:
+  disagree_b ~ Var_k( x_prior^{(k)}[block_b] )  (or similar)
+* Use disagreement to pick fovea blocks to disambiguate hypotheses under budget.
+
+Innovation wiring (explicit):
+
+* Compute blockwise innovation:
+  |Delta|_b = MAE( Delta_t[block_b] )  (single-world)
+  or weight-avg across worlds (multi-world)
+* Feed |Delta|_b into coverage debt / candidate pressure / routing.
+* Keep learning loss anchored to e_obs (prior-vs-observed), not innovation alone.
+
+7. PHASE 6: PERIPHERAL (LOW-RES FULL-FIELD) + FOVEA (HIGH-RES SELECTIVE)
+
+---
+
+Peripheral stream requirements:
+
+* Runs continuously on full input at low resolution / coarse features.
+* Produces:
+  (a) baseline coarse prediction: x_bg_prior = x_hat^{bg}_{t|t-1}  (or feature map phi(x))
+  (b) per-block confidence/precision: c_bg[b] (or uncertainty proxy)
+
+Critical rule:
+
+* Peripheral does NOT delete background dims; it down-weights them for fovea routing,
+  but keeps them eligible for coherence violation detection.
+
+Operational coherence violation diagnostic (required):
+
+* Compute a cheap coarse/global residual regardless of fovea choice.
+  Example: r_bg_t = MAE( phi(y_coarse_t) - phi(x_bg_prior) )
+* This runs every step (or at a fixed cadence), independent of what the fovea chose.
+* r_bg_t is used for:
+  (a) “background violated” alarms/sanity checks
+  (b) novelty component in fovea demand
+
+Residual demand for fovea routing:
+For each block b:
+
+* d_b proportional to:
+  uncertainty_bg[b] + novelty_bg[b] + disagreement_b + |Delta|_b
+* Choose fovea blocks maximizing d_b (not hard forced; allow exploration / overrides)
+
+Peripheral coherence residual is only valid if it uses an explicit, budgeted peripheral observation set (Omega_bg_t); otherwise compute coherence only on observed support (Omega_t / S_t) and do not expect “detect without looking.”
+
+
+8. PHASE 7: “TWO HYPOTHESES SAME OUTCOME” HANDLING (EXPLICIT)
+
+---
+
+Case A: Aliasing (same outcome on current Omega_t only)
+
+* Worlds have similar e^{(k)}(Omega_t); weights remain tied.
+* Correct: keep multiple worlds alive; do not force collapse.
+* Use disagreement-driven foveation to seek disambiguating evidence.
+
+Case B: True equivalence (same outcome across relevant support / audit)
+
+* Worlds are redundant on S_t (and optional REST audit).
+* Correct: merge/compress; treat as equivalence class to avoid wasted capacity.
+
+9. ACCEPTANCE TESTS (MUST DEMONSTRATE)
+
+---
+
+A) Posterior-high / prior-low:
+
+* Show posterior/perception match high while prior_obs_mae high, both logged distinctly.
+
+B) Motion ambiguity:
+
+* Two motion/transport hypotheses stay alive under aliasing and only collapse after disambiguating fovea observations.
+
+C) Merge guard:
+
+* Worlds do not merge just because they match on current Omega_t; merge only when matching on S_t (and/or REST audit).
+
+D) Peripheral coherence:
+
+* Background deviation triggers coherence residual/alarm even when down-weighted for attention and even if fovea didn’t look there.
+
+E) Multi-world metric sanity:
+
+* Logs include best_world_prior_mae_t and expected_prior_mae_t, plus posterior metrics labeled separately.
+
+10. IMPLEMENTATION ORDER (PRACTICAL SEQUENCING)
+
+---
+
+1. Implement prior/posterior storage + enforce per-step invariant + fix metric labeling.
+2. Add multi-world container (fixed K) + scoring by prior-vs-observed + required reporting.
+3. Add prune/clone + merge using S_t merge guard (and optional REST audit).
+4. Add disagreement-driven foveation and blockwise innovation wiring into coverage/candidate pressure.
+5. Add peripheral baseline + confidence + ALWAYS-ON coherence residual diagnostic.
+6. Run acceptance tests A–E and freeze invariants (prevent regressions).

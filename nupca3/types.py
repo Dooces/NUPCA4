@@ -718,6 +718,8 @@ class AgentState:
     transport_margin: float = 0.0
     transport_disagreement_scores: Dict[int, float] = field(default_factory=dict)
     transport_disagreement_margin: float = field(default_factory=lambda: float("inf"))
+    transport_biases: Dict[Tuple[int, int, int], float] = field(default_factory=dict)
+    transport_offsets: List[Tuple[int, int]] = field(default_factory=list)
     peripheral_prior: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     peripheral_obs: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     peripheral_confidence: float = 0.0

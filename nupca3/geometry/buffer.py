@@ -21,7 +21,8 @@ from ..types import ObservationBuffer, EnvObs
 
 
 def init_observation_buffer(cfg: AgentConfig) -> ObservationBuffer:
-    return ObservationBuffer(x_last=np.zeros(cfg.D, dtype=float))
+    base = np.zeros(cfg.D, dtype=float)
+    return ObservationBuffer(x_last=base.copy(), x_prior=base.copy())
 
 
 def buffer_update(buf: ObservationBuffer, obs: EnvObs, cfg: AgentConfig) -> None:

@@ -53,7 +53,7 @@ def _dbg(msg: str, *, state=None) -> None:
     print(prefix + str(msg))
 
 from collections import deque, defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import math
@@ -340,27 +340,84 @@ class TransportCandidate:
     overlap: int
     score: float
     ascii_mismatch: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TransportTransform:
+    """Specification of a transform to evaluate (delta + rotation)."""
+
+    delta: Tuple[int, int]
+    rotation: int = 0
+    label: str = "grid"
+
+
+def _normalize_rotation_steps(cfg: AgentConfig) -> List[int]:
+    steps = tuple(getattr(cfg, "transport_rotation_steps", (0,)))
+    normalized: List[int] = []
+    for step in steps:
+        rot = int(step) % 4
+        if rot not in normalized:
+            normalized.append(rot)
+    if 0 not in normalized:
+        normalized.insert(0, 0)
+    return normalized
 
 
 def _build_transport_candidate_set(
     cfg: AgentConfig,
     env_shift: Tuple[int, int] | None,
     coarse_shift: Tuple[int, int] | None,
-    true_delta: Tuple[int, int] | None = None,
-) -> List[Tuple[int, int]]:
-    """Return a deterministic set of transport deltas (Fix D) to consider."""
+    state: AgentState | None,
+) -> List[TransportTransform]:
+    """Return a deterministic list of transport transformations to consider."""
     radius = max(1, int(getattr(cfg, "transport_search_radius", 1)))
     span = radius
     deltas: Set[Tuple[int, int]] = set()
-    deltas.add((0, 0))
+    label_map: Dict[Tuple[int, int], str] = {}
     for dy in range(-span, span + 1):
         for dx in range(-span, span + 1):
-            deltas.add((dx, dy))
+            key = (dx, dy)
+            deltas.add(key)
+            label_map.setdefault(key, "grid")
+    deltas.add((0, 0))
+    label_map.setdefault((0, 0), "grid")
+
     if env_shift is not None:
-        deltas.add((int(env_shift[0]), int(env_shift[1])))
+        key = (int(env_shift[0]), int(env_shift[1]))
+        deltas.add(key)
+        label_map[key] = "env_shift"
     if coarse_shift is not None:
-        deltas.add((int(coarse_shift[0]), int(coarse_shift[1])))
-    return list(deltas)
+        key = (int(coarse_shift[0]), int(coarse_shift[1]))
+        deltas.add(key)
+        label_map.setdefault(key, "coarse_shift")
+
+    offset_size = max(0, int(getattr(cfg, "transport_offset_history_size", 0)))
+    offsets = []
+    if state is not None and offset_size > 0:
+        offsets = list(getattr(state, "transport_offsets", []))
+    if offsets:
+        limit = radius + max(0, int(getattr(cfg, "transport_offset_radius", 0)))
+        base_deltas = list(deltas)
+        for offset in offsets:
+            offset_key = (int(offset[0]), int(offset[1]))
+            deltas.add(offset_key)
+            label_map[offset_key] = "offset"
+            for base in base_deltas:
+                combined = (base[0] + offset_key[0], base[1] + offset_key[1])
+                if abs(combined[0]) <= limit and abs(combined[1]) <= limit:
+                    deltas.add(combined)
+                    label_map.setdefault(combined, "offset_combo")
+            base_deltas = list(deltas)
+
+    rotations = _normalize_rotation_steps(cfg) if bool(getattr(cfg, "transport_rotation_enabled", False)) else [0]
+    transforms: List[TransportTransform] = []
+    sorted_deltas = sorted(deltas, key=_transport_delta_priority)
+    for delta in sorted_deltas:
+        label = label_map.get(delta, "grid")
+        for rot in rotations:
+            transforms.append(TransportTransform(delta=delta, rotation=rot, label=label))
+    return transforms
 
 
 _TRANSPORT_UNINFORMATIVE_SCORE = -1e6
@@ -463,7 +520,7 @@ def _select_transport_delta(
     """Evaluate candidate shifts, maintain belief, and return the chosen delta plus diagnostics."""
     D = _cfg_D(state, cfg)
     base_dim = max(0, int(D) - periph_block_size(cfg))
-    candidate_deltas = _build_transport_candidate_set(cfg, env_shift, coarse_shift)
+    candidate_transforms = _build_transport_candidate_set(cfg, env_shift, coarse_shift, state)
 
     prev_obs_dims = getattr(state.buffer, "observed_dims", set()) or set()
     prev_obs_mask = np.zeros(D, dtype=float)
@@ -492,10 +549,12 @@ def _select_transport_delta(
         env_occ_mask = _grid_occupancy_mask(true_env_vec, cfg)
     candidate_infos: List[TransportCandidate] = []
 
-    for delta in candidate_deltas:
-        shifted = apply_transport(x_prev, delta, cfg)
-        shifted_prev_obs = apply_transport(prev_obs_values, delta, cfg)
-        mask_shifted = apply_transport(prev_obs_mask, delta, cfg)
+    for transform in candidate_transforms:
+        delta = tuple(int(v) for v in transform.delta)
+        rotation = int(transform.rotation) % 4
+        shifted = apply_transport(x_prev, delta, cfg, rotation=rotation)
+        shifted_prev_obs = apply_transport(prev_obs_values, delta, cfg, rotation=rotation)
+        mask_shifted = apply_transport(prev_obs_mask, delta, cfg, rotation=rotation)
         overlap_mask = obs_mask & (mask_shifted > 0.5)
         overlap_idx = np.nonzero(overlap_mask)[0]
         overlap = int(overlap_idx.size)
@@ -523,6 +582,14 @@ def _select_transport_delta(
             ascii_mismatch = mismatch
             if ascii_penalty > 0.0 and mismatch > 0:
                 score -= ascii_penalty * float(mismatch)
+        bias_key = (delta[0], delta[1], rotation)
+        bias_bonus = float(getattr(state, "transport_biases", {}).get(bias_key, 0.0))
+        weight = float(getattr(cfg, "transport_bias_weight", 0.0))
+        score += bias_bonus * weight
+        metadata = {
+            "rotation": rotation,
+            "transform_source": transform.label,
+        }
         candidate_infos.append(
             TransportCandidate(
                 delta=delta,
@@ -531,6 +598,7 @@ def _select_transport_delta(
                 overlap=overlap,
                 score=score,
                 ascii_mismatch=ascii_mismatch,
+                metadata=metadata,
             )
         )
 
@@ -1169,6 +1237,53 @@ def _build_world_hypotheses(
     state.world_hypotheses = consolidated
     return consolidated
 
+
+def _update_transport_learning_state(
+    state: AgentState,
+    cfg: AgentConfig,
+    best_candidate: TransportCandidate | None,
+    chosen_shift: Tuple[int, int],
+    true_delta: Tuple[int, int] | None,
+) -> None:
+    """Decay transport biases and insert new wins/offsets when available."""
+    biases = dict(getattr(state, "transport_biases", {}) or {})
+    decay = float(getattr(cfg, "transport_bias_decay", 1.0))
+    if decay != 1.0:
+        for key, value in list(biases.items()):
+            decayed = float(value) * decay
+            if decayed > 0.0:
+                biases[key] = decayed
+            else:
+                biases.pop(key, None)
+
+    if best_candidate is not None and true_delta is not None:
+        target = (int(true_delta[0]), int(true_delta[1]))
+        shift_vals = (int(chosen_shift[0]), int(chosen_shift[1]))
+        rot = int(best_candidate.metadata.get("rotation", 0)) % 4
+        bias_key = (int(best_candidate.delta[0]), int(best_candidate.delta[1]), rot)
+        if target == shift_vals:
+            increment = float(getattr(cfg, "transport_bias_increment", 0.0))
+            if increment > 0.0:
+                biases[bias_key] = biases.get(bias_key, 0.0) + increment
+        offset_history = max(0, int(getattr(cfg, "transport_offset_history_size", 0)))
+        radius = max(0, int(getattr(cfg, "transport_offset_radius", 0)))
+        if offset_history > 0:
+            offset = (target[0] - shift_vals[0], target[1] - shift_vals[1])
+            if offset != (0, 0) and abs(offset[0]) <= radius and abs(offset[1]) <= radius:
+                offsets = list(getattr(state, "transport_offsets", []))
+                offsets = [o for o in offsets if o != offset]
+                offsets.insert(0, offset)
+                state.transport_offsets = offsets[:offset_history]
+
+    max_entries = max(1, int(getattr(cfg, "transport_bias_max_entries", 1)))
+    if len(biases) > max_entries:
+        sorted_items = sorted(biases.items(), key=lambda item: float(item[1]), reverse=True)
+        keep_keys = {key for key, _ in sorted_items[:max_entries]}
+        biases = {key: value for key, value in biases.items() if key in keep_keys}
+
+    state.transport_biases = biases
+
+
 def _peripheral_block_ids(cfg: AgentConfig) -> List[int]:
     """Return the configured peripheral block IDs (low-priority tail of the budget)."""
     periph_blocks = max(0, int(getattr(cfg, "periph_blocks", 0)))
@@ -1636,6 +1751,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     )
     x_prev = x_prev_post
     shift = tuple(int(v) for v in shift)
+    _update_transport_learning_state(state, cfg, transport_best_candidate, shift, env_true_delta_hint)
     state.transport_last_delta = shift
     state.coarse_shift = shift
     if transport_null_evidence:
