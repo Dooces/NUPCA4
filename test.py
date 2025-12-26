@@ -261,7 +261,19 @@ def _print_visualization(
     true_env_vec: np.ndarray | None = None,
     true_env_dim: int | None = None,
 ) -> None:
-    env_pos = _mass_center(env_vec[:base_dim], side=side, base_dim=base_dim, n_colors=n_colors, n_shapes=n_shapes)
+    env_source_vec = env_vec
+    env_source_dim = base_dim
+    if true_env_vec is not None and int(true_env_dim or 0) > 0:
+        env_source_vec = true_env_vec
+        env_source_dim = int(true_env_dim)
+
+    env_pos = _mass_center(
+        env_source_vec[:env_source_dim],
+        side=side,
+        base_dim=env_source_dim,
+        n_colors=n_colors,
+        n_shapes=n_shapes,
+    )
     prev_pos = _mass_center(prev_vec[:base_dim], side=side, base_dim=base_dim, n_colors=n_colors, n_shapes=n_shapes)
     pred_pos = _mass_center(pred_vec[:base_dim], side=side, base_dim=base_dim, n_colors=n_colors, n_shapes=n_shapes)
     grid_kwargs = dict(
@@ -270,14 +282,20 @@ def _print_visualization(
         n_colors=n_colors,
         n_shapes=n_shapes,
     )
-    env_grid = _occupancy_grid(env_vec[:base_dim], **grid_kwargs)
+    env_grid = _occupancy_grid(
+        env_source_vec[:env_source_dim],
+        side=side,
+        base_dim=env_source_dim,
+        n_colors=n_colors,
+        n_shapes=n_shapes,
+    )
     prev_grid = _occupancy_grid(prev_vec[:base_dim], **grid_kwargs)
     pred_grid = _occupancy_grid(pred_vec[:base_dim], **grid_kwargs)
     obs_grid = _obs_mask_grid(obs_dims, side=side, n_colors=n_colors, n_shapes=n_shapes)
     env_occ = _occupancy_array(
-        env_vec[:base_dim],
+        env_source_vec[:env_source_dim],
         side=side,
-        base_dim=base_dim,
+        base_dim=env_source_dim,
         n_colors=n_colors,
         n_shapes=n_shapes,
     )
@@ -320,9 +338,9 @@ def _print_visualization(
         (
             "EMASS",
             _mass_grid(
-                env_vec[:base_dim],
+                env_source_vec[:env_source_dim],
                 side=side,
-                base_dim=base_dim,
+                base_dim=env_source_dim,
                 n_colors=n_colors,
                 n_shapes=n_shapes,
             ),
@@ -353,11 +371,15 @@ def _print_visualization(
             prefix = label if row_idx == 0 else "     "
             formatted = " ".join(".." if val == 0 else f"{val}{val}" for val in row)
             print(f"{prefix} " + formatted)
-    real_grid = _real_grid(env_vec[:base_dim], side=side, channels=max(1, n_colors + n_shapes))
+    real_grid = _real_grid(
+        env_source_vec[:env_source_dim],
+        side=side,
+        channels=max(1, n_colors + n_shapes),
+    )
     for row_idx, row in enumerate(real_grid):
         prefix = "REAL" if row_idx == 0 else "    "
         print(f"{prefix} " + " ".join(row))
-    full_grid = _env_full_grid(env_vec, side=side)
+    full_grid = _env_full_grid(env_source_vec[:env_source_dim], side=side)
     for row_idx, row in enumerate(full_grid):
         prefix = "FULL" if row_idx == 0 else "    "
         print(f"{prefix} " + " ".join(row))
@@ -900,6 +922,8 @@ def run_task(
         )
         agent = NUPCA3Agent(cfg)
         moving.reset()
+        vis_n_colors = int(n_colors)
+        vis_n_shapes = int(n_shapes)
     elif world == "square":
         square = LinearSquareWorld(
             side=side,
@@ -960,6 +984,8 @@ def run_task(
         )
         agent = NUPCA3Agent(cfg)
         square.reset()
+        vis_n_colors = 1
+        vis_n_shapes = 0
     else:
         cfg = AgentConfig(
             D=int(D),
@@ -1005,6 +1031,8 @@ def run_task(
         agent = NUPCA3Agent(cfg)
         linear_world = LinearARWorld(D=int(D), seed=int(seed))
         linear_world.reset()
+        vis_n_colors = 0
+        vis_n_shapes = 0
     periph_ids = _peripheral_block_ids(cfg) if periph_blocks > 0 else []
     coverage_diag_enabled = bool(diagnose_coverage) and world == "square"
     coverage_steps_total = 0
@@ -1330,15 +1358,15 @@ def run_task(
             full_x[:int(base_dim)],
             side=side,
             base_dim=int(base_dim),
-            n_colors=n_colors,
-            n_shapes=n_shapes,
+            n_colors=vis_n_colors,
+            n_shapes=vis_n_shapes,
         )
         occ_pred = _occupancy_array(
             pred_vec[:int(base_dim)],
             side=side,
             base_dim=int(base_dim),
-            n_colors=n_colors,
-            n_shapes=n_shapes,
+            n_colors=vis_n_colors,
+            n_shapes=vis_n_shapes,
         )
         diff_mask = np.asarray(occ_env, dtype=bool) != np.asarray(occ_pred, dtype=bool)
         diff_count = int(np.sum(diff_mask)) if diff_mask.size else 0
@@ -1362,8 +1390,8 @@ def run_task(
                 prev_vec=buffer_prev,
                 pred_vec=pred_vec,
                 side=side,
-                n_colors=n_colors,
-                n_shapes=n_shapes,
+                n_colors=vis_n_colors,
+                n_shapes=vis_n_shapes,
                 base_dim=int(base_dim),
                 trace=trace,
                 true_env_vec=true_env_vec,
