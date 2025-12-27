@@ -17,7 +17,7 @@ from nupca3.types import EnvObs
 # OPTIONS (edit these)
 # ============================================================
 HEIGHT = 32
-WIDTH = 64            # 2x as wide as tall
+WIDTH = 32
 FPS = 120
 
 MAX_SHAPES = 8
