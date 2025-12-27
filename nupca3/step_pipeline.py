@@ -20,7 +20,7 @@ from __future__ import annotations
 # =============================================================================
 # Single switch for step-by-step tracing. When False, the file behaves identically
 # except for added comments/docstrings.
-DEBUG = True
+DEBUG = False
 _LOG_START_TIME = None
 _LAST_LOG_TIME = None
 def _dbg(msg: str, *, state=None) -> None:

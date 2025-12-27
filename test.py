@@ -1939,7 +1939,7 @@ def main() -> None:
         nargs="?",
         const="cli",
         default="",
-        help="Emit only tagged CLI output and suppress other logs.",
+        help="Emit only tagged CLI output and suppress other logs; optionally supply the tag.",
     )
     parser.add_argument("--n-max", type=int, default=256)
     parser.add_argument("--l-work-max", type=float, default=48.0)
