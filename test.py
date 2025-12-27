@@ -1000,6 +1000,7 @@ def run_task(
             transport_force_true_delta=bool(transport_force_true_delta),
             fovea_routing_weight=float(fovea_routing_weight),
             fovea_routing_ema=float(fovea_routing_ema),
+            allow_selected_blocks_override=bool(force_selected_blocks),
         )
         agent = NUPCA3Agent(cfg)
         moving.reset()
@@ -1048,6 +1049,7 @@ def run_task(
             transport_force_true_delta=bool(transport_force_true_delta),
             fovea_routing_weight=float(fovea_routing_weight),
             fovea_routing_ema=float(fovea_routing_ema),
+            allow_selected_blocks_override=bool(force_selected_blocks),
         )
         agent = NUPCA3Agent(cfg)
         square.reset()
@@ -1094,6 +1096,7 @@ def run_task(
             transport_force_true_delta=bool(transport_force_true_delta),
             fovea_routing_weight=float(fovea_routing_weight),
             fovea_routing_ema=float(fovea_routing_ema),
+            allow_selected_blocks_override=bool(force_selected_blocks),
         )
         agent = NUPCA3Agent(cfg)
         linear_world.reset()
