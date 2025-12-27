@@ -143,6 +143,10 @@ class CompositeMovingColorShapeWorld:
         self.bg_last_dy = 0
         self.fg_last_dx = 0
         self.fg_last_dy = 0
+        self.bg_vx = 0
+        self.bg_vy = 0
+        self.fg_vx = 0
+        self.fg_vy = 0
         self.bg_speed_range = tuple(int(v) for v in bg_speed_range)
         self.bg_speed_min = max(1, min(self.bg_speed_range))
         self.bg_speed_max = max(self.bg_speed_min, max(self.bg_speed_range))
@@ -155,6 +159,15 @@ class CompositeMovingColorShapeWorld:
         self.occlusion_min = occ_min
         self.occlusion_max = occ_max
         self.last_occlusion: tuple[int, int, int] | None = None
+
+    def _sample_velocity(self, speed_min: int, speed_max: int) -> tuple[int, int]:
+        while True:
+            dx = int(self.rng.integers(-1, 2))
+            dy = int(self.rng.integers(-1, 2))
+            if dx != 0 or dy != 0:
+                break
+        speed = int(self.rng.integers(speed_min, speed_max + 1))
+        return dx * speed, dy * speed
 
     @property
     def D(self) -> int:
@@ -169,6 +182,8 @@ class CompositeMovingColorShapeWorld:
         self.fg_y = int(self.rng.integers(self.side))
         self.fg_color = int(self.rng.integers(self.fg_color_span))
         self.fg_shape = int(self.rng.integers(self.fg_shape_span))
+        self.bg_vx, self.bg_vy = self._sample_velocity(self.bg_speed_min, self.bg_speed_max)
+        self.fg_vx, self.fg_vy = self._sample_velocity(self.fg_speed_min, self.fg_speed_max)
         self.bg_last_dx = 0
         self.bg_last_dy = 0
         self.fg_last_dx = 0
@@ -176,20 +191,14 @@ class CompositeMovingColorShapeWorld:
         return self._encode()
 
     def step(self) -> np.ndarray:
-        bg_dx = int(self.rng.integers(-1, 2))
-        bg_dy = int(self.rng.integers(-1, 2))
-        bg_speed = int(self.rng.integers(self.bg_speed_min, self.bg_speed_max + 1))
-        self.bg_last_dx = bg_dx * bg_speed
-        self.bg_last_dy = bg_dy * bg_speed
-        self.bg_x = (self.bg_x + self.bg_last_dx) % self.side
-        self.bg_y = (self.bg_y + self.bg_last_dy) % self.side
-        fg_dx = int(self.rng.integers(-1, 2))
-        fg_dy = int(self.rng.integers(-1, 2))
-        fg_speed = int(self.rng.integers(self.fg_speed_min, self.fg_speed_max + 1))
-        self.fg_last_dx = fg_dx * fg_speed
-        self.fg_last_dy = fg_dy * fg_speed
-        self.fg_x = (self.fg_x + self.fg_last_dx) % self.side
-        self.fg_y = (self.fg_y + self.fg_last_dy) % self.side
+        self.bg_last_dx = self.bg_vx
+        self.bg_last_dy = self.bg_vy
+        self.bg_x = (self.bg_x + self.bg_vx) % self.side
+        self.bg_y = (self.bg_y + self.bg_vy) % self.side
+        self.fg_last_dx = self.fg_vx
+        self.fg_last_dy = self.fg_vy
+        self.fg_x = (self.fg_x + self.fg_vx) % self.side
+        self.fg_y = (self.fg_y + self.fg_vy) % self.side
 
         if self.rng.random() < self.p_color_shift_bg:
             self.bg_color = int(self.rng.integers(self.bg_color_span))
