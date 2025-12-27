@@ -74,6 +74,13 @@ def main() -> None:
     parser.add_argument("--warm-fovea-blocks", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--visualize-steps", type=int, default=0)
+    parser.add_argument(
+        "--cli-tag",
+        nargs="?",
+        const="cli",
+        default="",
+        help="Emit only tagged CLI output and suppress other logs when provided.",
+    )
     parser.add_argument("--n-max", type=int, default=256)
     parser.add_argument("--l-work-max", type=float, default=48.0)
     parser.add_argument("--force-block-anchors", action="store_true")
@@ -170,7 +177,6 @@ def main() -> None:
         debug_full_state=args.debug_full_state,
         force_selected_blocks=args.force_selected_blocks,
         visualize_steps=args.visualize_steps,
-        cli_tag=args.cli_tag,
     )
     if not args.cli_tag:
         print("[SUMMARY]", vars(args), summary)
