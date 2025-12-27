@@ -1652,36 +1652,16 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         if mandatory and not set(mandatory).intersection(set(blocks_t or [])):
             mandatory = sorted(mandatory, key=lambda b: float(ages_now[b]), reverse=True)
             blocks_t = mandatory[: min(len(mandatory), budget)]
-    use_age = bool(getattr(cfg, "fovea_use_age", True))
-    grid_world = int(getattr(cfg, "grid_side", 0)) > 0 and int(getattr(cfg, "grid_channels", 0)) > 0
-    if ages_now.size and grid_world:
-        residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
-        alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
-        if use_age:
-            scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages_now))
-        else:
-            scores = residuals
-        top_blocks = np.argsort(-scores)[: min(budget, scores.size)].tolist()
-        if top_blocks:
-            blocks_t = [int(b) for b in top_blocks]
     periph_candidates = _peripheral_block_ids(cfg)
     blocks_t, forced_periph_blocks = _enforce_peripheral_blocks(blocks_t or [], cfg, periph_candidates)
     motion_probe_budget = max(0, int(getattr(cfg, "motion_probe_blocks", 0)))
+    if budget <= 1:
+        motion_probe_budget = 0
     motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg, motion_probe_budget)
     blocks_t, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks_t or [], cfg, motion_probe_blocks)
     selected_blocks = tuple(getattr(env_obs, "selected_blocks", ()) or ())
     if selected_blocks:
         blocks_t = [int(b) for b in selected_blocks]
-    if ages_now.size and grid_world:
-        residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
-        alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
-        if use_age:
-            scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages_now))
-        else:
-            scores = residuals
-        top_blocks = np.argsort(-scores)[: min(budget, scores.size)].tolist()
-        if top_blocks:
-            blocks_t = [int(b) for b in top_blocks]
     _dbg(f'A16.3 select_fovea -> n_blocks={len(blocks_t) if blocks_t is not None else 0}', state=state)
     state.fovea.current_blocks = set(int(b) for b in blocks_t)
     _dbg(f'A16.3 current_blocks={len(state.fovea.current_blocks)}', state=state)
