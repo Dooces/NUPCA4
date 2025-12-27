@@ -1,0 +1,729 @@
+                x_tau_block=x_tau_vals,
+                x_tau_plus_1_block=x_tau_plus_1_vals,
+                observed_dims_tau_plus_1=set(state.buffer.observed_dims),
+            )
+        )
+        if len(log) > trans_max:
+            log = log[-trans_max:]
+        observed_transitions[int(block_id)] = log
+
+    state.persistent_residuals = persistent
+    state.residual_stats = residual_stats
+    state.observed_transitions = observed_transitions
+
+    # -------------------------------------------------------------------------
+    # A3.3 stability metrics plumbing (low-dimensional only)
+    # -------------------------------------------------------------------------
+    probe_vec, feature_vec = _feature_probe_vectors(
+        state=state,
+        obs=env_obs,
+        abs_error=abs_error,
+        observed_dims=state.buffer.observed_dims,
+    )
+    _dbg('A3.3 feature/probe vectors', state=state)
+    update_stability_metrics(state, cfg, probe_vec=probe_vec, feature_vec=feature_vec)
+    _dbg('A3.3 update_stability_metrics', state=state)
+
+    # -------------------------------------------------------------------------
+    # A7.3: one-step fusion prediction x̂(t+1|t)
+    # -------------------------------------------------------------------------
+    yhat_tp1, Sigma_tp1 = fuse_predictions(
+        state.library,
+        A_t,
+        state.buffer,
+        set(state.buffer.observed_dims),
+        cfg,
+    )
+    _dbg('A7.3 fuse_predictions', state=state)
+
+    yhat_tp1 = np.asarray(yhat_tp1, dtype=float).reshape(-1)
+    if yhat_tp1.shape[0] != D:
+        yhat_tp1 = np.resize(yhat_tp1, (D,))
+
+    Sigma_tp1 = np.asarray(Sigma_tp1, dtype=float)
+    if Sigma_tp1.ndim == 2 and Sigma_tp1.shape[0] == Sigma_tp1.shape[1]:
+        sigma_tp1_diag = np.diag(Sigma_tp1).copy()
+    else:
+        sigma_tp1_diag = np.asarray(Sigma_tp1, dtype=float).reshape(-1)
+        if sigma_tp1_diag.shape[0] != D:
+            sigma_tp1_diag = np.resize(sigma_tp1_diag, (D,))
+
+    # A13 prediction uses the same completion operator (no cue overwrite).
+    yhat_tp1, Sigma_tp1_pred, _prior_pred = complete(
+        None,
+        mode="prediction",
+        state=state,
+        cfg=cfg,
+        predicted_prior_t=yhat_tp1,
+        predicted_sigma_diag=sigma_tp1_diag,
+    )
+    yhat_tp1 = np.asarray(yhat_tp1, dtype=float).reshape(-1)
+    Sigma_tp1_pred = np.asarray(Sigma_tp1_pred, dtype=float)
+    if Sigma_tp1_pred.ndim == 2 and Sigma_tp1_pred.shape[0] == Sigma_tp1_pred.shape[1]:
+        sigma_tp1_diag = np.diag(Sigma_tp1_pred).copy()
+
+    _update_block_uncertainty(state, sigma_tp1_diag, cfg)
+
+    # -------------------------------------------------------------------------
+    # REST structural processing (A12/A14): REST-only, queue ownership preserved
+    # -------------------------------------------------------------------------
+    edits_processed_t = 0
+    b_cons_t = 0.0
+    rest_res = RestProcessingResult()
+
+    if rest_t:
+        _dbg('REST branch', state=state)
+        # Some modules gate on state.is_rest (macro.rest). Make best-effort to
+        # reflect rest(t) before calling REST processors.
+        try:
+            if hasattr(state, "macro") and hasattr(state.macro, "rest"):
+                state.macro.rest = True  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        rest_res = process_struct_queue(
+            state,
+            cfg,
+            queue=list(state.q_struct),
+            max_edits=int(getattr(cfg, "max_edits_per_rest_step", 32)),
+        )
+        _dbg('REST process_struct_queue begin', state=state)
+        edits_processed_t = int(getattr(rest_res, "proposals_processed", 0))
+        b_cons_t = float(getattr(rest_res, "total_consolidation_cost", 0.0))
+        _dbg(f'REST processed={edits_processed_t} b_cons_t={b_cons_t:.3f}', state=state)
+
+    queue_len = int(len(getattr(state, "q_struct", []) or []))
+    rest_permit_struct = bool(getattr(rest_res, "permit_struct", False))
+    rest_actionable = bool(queue_len > 0)
+    rest_actionable_reason = ""
+    if rest_t and not rest_actionable:
+        rest_actionable_reason = "queue_empty" if queue_len == 0 else "no_work"
+
+    # -------------------------------------------------------------------------
+    # A6 budget and horizon
+    # -------------------------------------------------------------------------
+    budget = compute_budget_and_horizon(
+        rest=rest_t,
+        cfg=cfg,
+        L_eff=L_eff,
+        L_eff_roll=float(getattr(A_t, "rollout_load", L_eff)),
+        L_eff_anc=float(getattr(A_t, "anchor_load", 0.0)),
+        b_cons=b_cons_t,
+    )
+    _dbg('A6 compute_budget_and_horizon', state=state)
+
+    # -------------------------------------------------------------------------
+    # A7.4 rollout + confidence (provides c list for A8.2)
+    # -------------------------------------------------------------------------
+    rollout = rollout_and_confidence(
+        x0=x_t,
+        x_hat_1=yhat_tp1,
+        Sigma_1=np.diag(sigma_tp1_diag),
+        h=int(budget.h),
+        cfg=cfg,
+    )
+    _dbg('A7.4 rollout_and_confidence', state=state)
+    c_vals = np.asarray(list(getattr(rollout, "c", []) or []), dtype=float)
+    if c_vals.size:
+        _dbg(
+            f'A7.4 c_stats: mean={float(np.mean(c_vals)):.6f} '
+            f'min={float(np.min(c_vals)):.6f} max={float(np.max(c_vals)):.6f}',
+            state=state,
+        )
+    rho_vals = np.asarray(list(getattr(rollout, "rho", []) or []), dtype=float)
+    H_vals = np.asarray(list(getattr(rollout, "H", []) or []), dtype=float)
+    c_qual_vals = np.asarray(list(getattr(rollout, "c_qual", []) or []), dtype=float)
+    c_cov_vals = np.asarray(list(getattr(rollout, "c_cov", []) or []), dtype=float)
+    if rho_vals.size and H_vals.size:
+        _dbg(
+            f'A7.4 cov_stats: rho_mean={float(np.mean(rho_vals)):.6f} '
+            f'H_cov_mean={float(np.mean(H_vals)):.6f} '
+            f'c_qual_mean={float(np.mean(c_qual_vals)):.6f} '
+            f'c_cov_mean={float(np.mean(c_cov_vals)):.6f}',
+            state=state,
+        )
+
+    # -------------------------------------------------------------------------
+    # A8 commitment gate and action selection
+    # -------------------------------------------------------------------------
+    commit_t = commit_gate(rest=rest_t, h=int(budget.h), c=list(getattr(rollout, "c", [])), cfg=cfg)
+    _dbg(f'A8 commit_gate with h={int(budget.h)} c_len={len(list(getattr(rollout,"c",[]) or []))}', state=state)
+    action = int(select_action(commit=commit_t, rollout=rollout, cfg=cfg))
+    _dbg(f'A8 select_action -> action={action} commit={bool(commit_t)}', state=state)
+
+    # -------------------------------------------------------------------------
+    # A15 hard dynamics update of (E, D, drift_P)
+    # -------------------------------------------------------------------------
+    hard_prev = HardState(E=float(state.E), D=float(state.D), drift_P=float(state.drift_P))
+    hard_t = step_hard_dynamics(prev=hard_prev, rest=rest_t, commit=commit_t, L_eff=L_eff, cfg=cfg)
+    _dbg('A15 step_hard_dynamics', state=state)
+
+    state.E = float(hard_t.E)
+    state.D = float(hard_t.D)
+    state.drift_P = float(hard_t.drift_P)
+
+    # -------------------------------------------------------------------------
+    # Margins (A0.1 / A2) + baselines (A3.1) + arousal (A0.2–A0.4)
+    # -------------------------------------------------------------------------
+    margins_t, rawE_t, rawD_t, _rawS = _derive_margins(
+        E=state.E,
+        D=state.D,
+        drift_P=state.drift_P,
+        opp=float(getattr(env_obs, "opp", 0.0)),
+        x_C=float(budget.x_C),
+        cfg=cfg,
+    )
+    _dbg('A0/A2 derive margins', state=state)
+    _dbg(
+        f'A0/A2 raw_headrooms: E={state.E:.3f} D={state.D:.3f} rawE={rawE_t:.3f} rawD={rawD_t:.3f}',
+        state=state,
+    )
+
+    baselines_t = update_baselines(baselines=state.baselines, margins=margins_t, cfg=cfg)
+    _dbg('A3.1 update_baselines', state=state)
+
+    # Feel proxy (A17) uses sigma prior (Σ_global(t) diag) and H_d at latency floor.
+    if Sigma_prior is None:
+        sigma_prior_diag = np.ones(D, dtype=float)
+    else:
+        Sigp = np.asarray(Sigma_prior, dtype=float)
+        if Sigp.ndim == 2 and Sigp.shape[0] == Sigp.shape[1]:
+            sigma_prior_diag = np.diag(Sigp).copy()
+        else:
+            sigma_prior_diag = np.asarray(Sigp, dtype=float).reshape(-1)
+        if sigma_prior_diag.shape[0] != D:
+            sigma_prior_diag = np.resize(sigma_prior_diag, (D,))
+
+    d_floor = int(getattr(cfg, "d_latency_floor", 1))
+    if d_floor <= 0:
+        d_floor = 1
+    H_d = 0.0
+    if len(getattr(rollout, "H", [])) >= d_floor:
+        H_d = float(rollout.H[d_floor - 1])
+
+    feel = compute_feel_proxy(
+        observed_dims=state.buffer.observed_dims,
+        error_vec=error_vec,
+        sigma_global_diag=sigma_prior_diag,
+        L_eff=L_eff,
+        H_d=H_d,
+        sigma_floor=float(getattr(cfg, "sigma_floor_diag", 1e-2)),
+    )
+    _dbg('A17 compute_feel_proxy', state=state)
+
+    # Arousal uses pred_error magnitude proxy; use q_res (A17.1) as a scalar proxy.
+    arousal_prev = float(getattr(state, "arousal_prev", getattr(state, "arousal", 0.0)))
+    s_inst, s_ar = compute_arousal(
+        arousal_prev=arousal_prev,
+        margins=margins_t,
+        baselines=baselines_t,
+        pred_error=float(getattr(feel, "q_res_raw", 0.0)),
+        cfg=cfg,
+    )
+    _dbg('A0.2 compute_arousal', state=state)
+
+    # Persist tilde_prev for A0.2 delta computation (no other module does this yet)
+    tilde, delta_tilde = normalize_margins(margins=margins_t, baselines=baselines_t, cfg=cfg)
+    baselines_t = commit_tilde_prev(baselines_t, tilde=tilde)
+    mE, mD, mL, mC, mS = [float(x) for x in tilde]
+    dE, dD, dL, dC, dS = [float(x) for x in delta_tilde]
+    w_L = float(getattr(cfg, "w_L", getattr(cfg, "w_L_ar", 1.0)))
+    w_C = float(getattr(cfg, "w_C", getattr(cfg, "w_C_ar", 1.0)))
+    w_S = float(getattr(cfg, "w_S", getattr(cfg, "w_S_ar", 1.0)))
+    w_delta = float(getattr(cfg, "w_delta", getattr(cfg, "w_delta_ar", 1.0)))
+    w_E = float(getattr(cfg, "w_E", getattr(cfg, "w_E_ar", 0.0)))
+    term_L = w_L * abs(mL)
+    term_C = w_C * abs(mC)
+    term_S = w_S * abs(mS)
+    term_delta = w_delta * (abs(dE) + abs(dD) + abs(dL) + abs(dC) + abs(dS))
+    term_E = w_E * abs(float(getattr(feel, "q_res", 0.0)))
+    A_raw = term_L + term_C + term_S + term_delta + term_E
+    _dbg(
+        'A0.2 arousal_terms: '
+        f'L={term_L:.3f} C={term_C:.3f} S={term_S:.3f} '
+        f'delta={term_delta:.3f} E={term_E:.3f} A_raw={A_raw:.3f}',
+        state=state,
+    )
+
+    # -------------------------------------------------------------------------
+    # Stress (A0.3) from hard observables + exogenous threat
+    # -------------------------------------------------------------------------
+    s_ext_th_t = float(getattr(env_obs, "danger", 0.0))
+    stress_t = compute_stress(E=state.E, D=state.D, drift_P=state.drift_P, s_ext_th=s_ext_th_t, cfg=cfg)
+    _dbg('A0.3 compute_stress', state=state)
+
+    # -------------------------------------------------------------------------
+    # A10 learning gates (freeze uses lagged stress; permit_param uses lagged slack/headrooms)
+    # -------------------------------------------------------------------------
+    freeze_t = freeze_predicate(stress_lagged=state.stress, cfg=cfg)
+    _dbg('A10 freeze_predicate (uses lagged stress)', state=state)
+    chi_th = float(getattr(cfg, "chi_th", 0.90))
+    s_ext_th_lagged = float(getattr(state.stress, "s_ext_th", 0.0))
+    _dbg(
+        f'A10 freeze_lagged: s_ext_th={s_ext_th_lagged:.3f} chi_th={chi_th:.3f} freeze={freeze_t}',
+        state=state,
+    )
+
+    use_current = bool(getattr(cfg, "gates_use_current", False))
+    if use_current:
+        x_C_lagged = float(budget.x_C)
+        arousal_lagged = float(s_ar)
+        rawE_lagged = float(rawE_t)
+        rawD_lagged = float(rawD_t)
+    else:
+        x_C_lagged = float(getattr(state, "x_C_prev", 0.0))
+        arousal_lagged = float(getattr(state, "arousal_prev", arousal_prev))
+        rawE_lagged = float(getattr(state, "rawE_prev", rawE_t))
+        rawD_lagged = float(getattr(state, "rawD_prev", rawD_t))
+
+    theta_learn = float(getattr(cfg, "theta_learn", 0.10))
+    permit_param_t = permit_param_updates(
+        rest_t=rest_t,
+        freeze_t=freeze_t,
+        x_C_lagged=x_C_lagged,
+        arousal_lagged=arousal_lagged,
+        rawE_lagged=rawE_lagged,
+        rawD_lagged=rawD_lagged,
+        cfg=cfg,
+    )
+    _dbg('A10 permit_param_updates', state=state)
+    tau_C = float(getattr(cfg, "tau_C_edit", 0.0))
+    tau_E = float(getattr(cfg, "tau_E_edit", 0.0))
+    tau_D = float(getattr(cfg, "tau_D_edit", 0.0))
+    theta_panic = float(getattr(cfg, "theta_ar_panic", 0.95))
+    _dbg(
+        'A10 permit_lagged: '
+        f'rest_t={rest_t} freeze={freeze_t} '
+        f'x_C={x_C_lagged:.3f} tau_C={tau_C:.3f} '
+        f'arousal={arousal_lagged:.3f} theta_panic={theta_panic:.3f} '
+        f'rawE={rawE_lagged:.3f} tau_E={tau_E:.3f} '
+        f'rawD={rawD_lagged:.3f} tau_D={tau_D:.3f} '
+        f'permit={permit_param_t}',
+        state=state,
+    )
+    _dbg(
+        f'A10 gates lagged: freeze={freeze_t} x_C={x_C_lagged:.3f} arousal={arousal_lagged:.3f} rawE={rawE_lagged:.3f} rawD={rawD_lagged:.3f}',
+        state=state,
+    )
+
+    # -------------------------------------------------------------------------
+    # A10.3 responsibility-gated parameter learning (observed footprint only)
+    # -------------------------------------------------------------------------
+    learning_candidates_info = None
+    permit_param_info = {
+        "theta_learn": theta_learn,
+        "permit": bool(permit_param_t),
+        "candidate_count": 0,
+        "clamped": 0,
+        "updated": 0,
+        "transport_high_confidence": bool(transport_high_confidence),
+    }
+    if permit_param_t and transport_high_confidence:
+        lr = float(getattr(cfg, "lr_expert", 0.0))
+        sigma_ema = float(getattr(cfg, "sigma_ema", 0.01))
+        observed_dims = set(state.buffer.observed_dims)
+        if not observed_dims:
+            observed_dims = set()
+
+        updated_nodes: list[int] = []
+        candidate_nodes = 0
+        clamped_candidates = 0
+        err_j_vals: list[float] = []
+        candidate_samples: list[Dict[str, Any]] = []
+        sample_cap = int(min(8, max(1, getattr(cfg, "fovea_blocks_per_step", 16))))
+        for node_id in getattr(A_t, "active", []) or []:
+            node = state.library.nodes.get(int(node_id))
+            if node is None:
+                continue
+
+            mask = np.asarray(getattr(node, "mask", np.zeros(D)), dtype=float).reshape(-1)
+            if mask.shape[0] != D:
+                mask = np.resize(mask, (D,))
+
+            if not observed_dims:
+                continue
+
+            obs_mask = (mask > 0.5)
+            obs_mask &= np.isin(np.arange(D), list(observed_dims))
+            if not np.any(obs_mask):
+                continue
+
+            candidate_nodes += 1
+            obs_idx = np.where(obs_mask)[0]
+            err_j = float(np.mean(np.abs(error_vec[obs_idx]))) if obs_idx.size else float("inf")
+            err_j_vals.append(err_j)
+            clamped = err_j > theta_learn
+            if clamped:
+                clamped_candidates += 1
+            if len(candidate_samples) < sample_cap:
+                candidate_samples.append(
+                    {
+                        "node": int(node_id),
+                        "footprint": int(getattr(node, "footprint", -1)),
+                        "err": err_j,
+                        "obs_dims": int(obs_idx.size),
+                        "clamped": clamped,
+                    }
+                )
+
+            if not clamped:
+                sgd_update(
+                    node,
+                    x_t=x_prev,
+                    y_target=x_t,
+                    out_mask=_build_training_mask(
+                        obs_mask=obs_mask,
+                        x_obs=x_t,
+                        cfg=cfg,
+                    ),
+                    lr=lr,
+                    sigma_ema=sigma_ema,
+                )
+                updated_nodes.append(int(node_id))
+        if err_j_vals:
+            err_min = float(np.min(err_j_vals))
+            err_mean = float(np.mean(err_j_vals))
+            err_max = float(np.max(err_j_vals))
+        else:
+            err_min = err_mean = err_max = float("nan")
+        learning_candidates_info = {
+            "candidates": candidate_nodes,
+            "clamped": clamped_candidates,
+            "err_min": err_min,
+            "err_mean": err_mean,
+            "err_max": err_max,
+            "samples": candidate_samples,
+        }
+        permit_param_info.update(
+            {
+                "candidate_count": candidate_nodes,
+                "clamped": clamped_candidates,
+                "updated": len(updated_nodes),
+            }
+        )
+        _dbg(
+            f'A10.3 learn_gate: candidates={candidate_nodes} clamped={clamped_candidates} '
+            f'err_j[min/mean/max]={err_min:.6f}/{err_mean:.6f}/{err_max:.6f} '
+            f'theta_learn={theta_learn:.6f}',
+            state=state,
+        )
+        _dbg(f'A10.3 sgd_updates={len(updated_nodes)} nodes={updated_nodes}', state=state)
+    elif permit_param_t and not transport_high_confidence:
+        _dbg('A10 learning skipped: transport evidence not high confidence', state=state)
+
+    _dbg(
+        f'A10 permit_param_stats candidate_count={permit_param_info["candidate_count"]} '
+        f'clamped_count={permit_param_info["clamped"]} updated={permit_param_info["updated"]} '
+        f'permit={permit_param_info["permit"]}',
+        state=state,
+    )
+
+    # -------------------------------------------------------------------------
+    # A14 macrostate evolution (queue ownership in macrostate.py)
+    # -------------------------------------------------------------------------
+    # Generate structural proposals during OPERATING only (A14.2).
+    proposals_t: List[Any] = []
+    if not rest_t:
+        proposals_t = list(propose_structural_edits(state, cfg))
+
+    # Coverage debt from A16 block ages (use current ages at t).
+    ages = np.asarray(getattr(state.fovea, "block_age", []), dtype=float)
+    log1p_ages = np.log1p(np.maximum(0.0, ages)) if ages.size else np.zeros(0, dtype=float)
+    coverage_debt = float(np.sum(log1p_ages)) if ages.size else 0.0
+    coverage_debt_prev = float(getattr(state, "coverage_debt_prev", coverage_debt))
+    _dbg(f'A16.2 coverage_debt_delta={coverage_debt - coverage_debt_prev:.3f}', state=state)
+    if ages.size:
+        _dbg(
+            'A16.2 coverage_debt_terms: '
+            f'sum_log1p={coverage_debt:.3f} max_log1p={float(np.max(log1p_ages)):.3f} '
+            f'max_age={float(np.max(ages)):.3f}',
+            state=state,
+        )
+
+    _dbg(
+        'A14 inputs: '
+        f's_int_need={float(getattr(stress_t, "s_int_need", 0.0)):.3f} '
+        f's_ext_th={float(getattr(stress_t, "s_ext_th", 0.0)):.3f} '
+        f'mE={float(getattr(margins_t, "m_E", 0.0)):.3f} '
+        f'mD={float(getattr(margins_t, "m_D", 0.0)):.3f} '
+        f'mL={float(getattr(margins_t, "m_L", 0.0)):.3f} '
+        f'mC={float(getattr(margins_t, "m_C", 0.0)):.3f} '
+        f'mS={float(getattr(margins_t, "m_S", 0.0)):.3f} '
+        f'coverage_debt={coverage_debt:.3f} '
+        f'proposals={len(proposals_t)} edits_processed={int(edits_processed_t)}',
+        state=state,
+    )
+    macro_t, demand_t, interrupt_t, P_eff_t = evolve_macrostate(
+        prev=state.macro,
+        rest_t=rest_t,
+        proposals_t=proposals_t,
+        edits_processed_t=edits_processed_t,
+        stress_t=stress_t,
+        margins_t=margins_t,
+        coverage_debt=coverage_debt,
+        rest_actionable=rest_actionable,
+        cfg=cfg,
+    )
+    _dbg('A14 evolve_macrostate', state=state)
+    P_rest_t = float(getattr(macro_t, "P_rest", 0.0))
+    P_wake = float(coverage_debt)
+    _dbg(f'A14 pressures: coverage_debt={coverage_debt:.3f} P_wake={P_wake:.3f} P_rest={P_rest_t:.3f} P_rest_eff={P_eff_t:.3f}', state=state)
+    # A14.6: rest_permitted(t) from actual predicate (not from a missing field)
+    rest_perm_t, rest_perm_reason = rest_permitted(stress_t, coverage_debt, cfg, arousal=s_ar)
+    # Require stability windows before REST permission (A3.3-driven guard).
+    W = int(getattr(cfg, "W", 50))
+    if len(getattr(state, "probe_window", [])) < W or len(getattr(state, "feature_window", [])) < W:
+        rest_perm_t = False
+    # REST requires work: gate entry using same condition as continuation.
+    if len(getattr(state, "q_struct", []) or []) == 0 and float(b_cons_t) == 0.0:
+        rest_perm_t = False
+        _dbg('A14 REST entry gated: no work in queue and no maintenance debt', state=state)
+    if rest_t and not rest_actionable:
+        rest_perm_t = False
+        _dbg(
+            f'A14 rest_actionable guard: reason={rest_actionable_reason} '
+            f'queue_len={queue_len} permit_struct={rest_permit_struct}',
+            state=state,
+        )
+    _dbg(f'A14.6 rest_permitted -> {rest_perm_t}', state=state)
+    _dbg(
+        'A14 macro_vars: '
+        f'rest={bool(getattr(macro_t, "rest", False))} '
+        f'T_since={int(getattr(macro_t, "T_since", 0))} '
+        f'T_rest={int(getattr(macro_t, "T_rest", 0))} '
+        f'Q_struct_len={int(len(getattr(macro_t, "Q_struct", []) or []))} '
+        f'rest_permitted={bool(rest_perm_t)} '
+        f'rest_reason={rest_perm_reason} '
+        f'demand={bool(demand_t)} interrupt={bool(interrupt_t)} '
+        f'rest_actionable={rest_actionable} rest_actionable_reason={rest_actionable_reason} '
+        f'rest_zero_streak={int(getattr(macro_t, "rest_zero_processed_streak", 0))} '
+        f'rest_cooldown={int(getattr(macro_t, "rest_cooldown", 0))}',
+        state=state,
+    )
+
+    # -------------------------------------------------------------------------
+    # Learning cache for next step’s completion prior (A13) and A17 diag use
+    # -------------------------------------------------------------------------
+    state.learn_cache = LearningCache(
+        x_t=x_t.copy(),
+        yhat_tp1=yhat_tp1.copy(),
+        sigma_tp1_diag=np.asarray(sigma_tp1_diag, dtype=float).copy(),
+        A_t=A_t,
+        permit_param_t=bool(permit_param_t),
+        rest_t=bool(rest_t),
+    )
+
+    # -------------------------------------------------------------------------
+    # Commit updated state fields and lagged values
+    # -------------------------------------------------------------------------
+    state.t = int(getattr(state, "t", 0)) + 1
+    _dbg(f'commit state.t -> {state.t}', state=state)
+
+    state.macro = macro_t
+    state.margins = margins_t
+    state.baselines = baselines_t
+    state.stress = stress_t
+    state.arousal = float(s_ar)
+
+    # Lagged predicates/signals for t+1
+    state.rest_permitted_prev = bool(rest_perm_t)
+    # If REST has no work (no queue, no maintenance debt), force exit next step.
+    maint_debt = float(b_cons_t)
+    if rest_t and len(getattr(macro_t, "Q_struct", []) or []) == 0 and maint_debt == 0.0:
+        _dbg(
+            'A14 REST requires work: forcing exit next step '
+            f'(Q_struct_len=0 maint_debt={maint_debt:.3f})',
+            state=state,
+        )
+        demand_t = False
+        state.rest_permitted_prev = False
+    if rest_t and not rest_actionable:
+        _dbg(
+            'A14 REST actionable guard: forcing exit next step '
+            f'reason={rest_actionable_reason} queue_len={queue_len} permit_struct={rest_permit_struct}',
+            state=state,
+        )
+        demand_t = False
+        state.rest_permitted_prev = False
+    state.demand_prev = bool(demand_t)
+    state.interrupt_prev = bool(interrupt_t)
+
+    state.s_int_need_prev = float(getattr(stress_t, "s_int_need", 0.0))
+    state.s_ext_th_prev = float(getattr(stress_t, "s_ext_th", 0.0))
+
+    state.arousal_prev = float(s_ar)
+    state.scores_prev = dict(getattr(sal, "scores", {}) or {})
+
+    state.x_C_prev = float(budget.x_C)
+    state.rawE_prev = float(rawE_t)
+    state.rawD_prev = float(rawD_t)
+    state.coverage_debt_prev = float(coverage_debt)
+
+    # Lagged rollout confidence at latency floor (A8.2 timing discipline)
+    c_list = list(getattr(rollout, "c", []) or [])
+    if len(c_list) >= d_floor:
+        state.c_d_prev = float(c_list[d_floor - 1])
+    elif c_list:
+        state.c_d_prev = float(c_list[-1])
+    else:
+        state.c_d_prev = 0.0
+
+    # Consolidation cost channel (A6.2) (store for visibility)
+    state.b_cons = float(b_cons_t)
+
+    rest_queue_len_next = int(len(getattr(macro_t, "Q_struct", []) or []))
+    max_edits_per_rest = max(1, int(getattr(cfg, "max_edits_per_rest_step", 32)))
+    if rest_queue_len_next > 0:
+        rest_cycles_needed = int((rest_queue_len_next + max_edits_per_rest - 1) // max_edits_per_rest)
+    else:
+        rest_cycles_needed = 0
+
+    # -------------------------------------------------------------------------
+    # Trace (runner expects dict)
+    # -------------------------------------------------------------------------
+    trace = StepTrace(
+        t=int(state.t),
+        rest=bool(rest_t),
+        h=int(budget.h),
+        commit=bool(commit_t),
+        x_C=float(budget.x_C),
+        b_enc=float(budget.b_enc),
+        b_roll=float(budget.b_roll),
+        b_cons=float(budget.b_cons),
+        L_eff=float(L_eff),
+        arousal=float(s_ar),
+        feel={
+            "q_res": float(getattr(feel, "q_res", 0.0)),
+            "q_maint": float(getattr(feel, "q_maint", 0.0)),
+            "q_unc": float(getattr(feel, "q_unc", 0.0)),
+        },
+        permit_param=bool(permit_param_t),
+        freeze=bool(freeze_t),
+    )
+
+    trace_dict = asdict(trace)
+    # Extra diagnostics (dict-only; does not affect StepTrace typing)
+    trace_dict.update(
+        {
+            "P_rest_eff": float(P_eff_t),
+            "P_rest": float(P_rest_t),
+            "P_wake": float(P_wake),
+            "coverage_debt": float(coverage_debt),
+            "coverage_debt_delta": float(coverage_debt - coverage_debt_prev),
+            "maint_debt": float(maint_debt),
+            "Q_struct_len": int(len(getattr(macro_t, "Q_struct", []) or [])),
+            "observed_dims": int(len(state.buffer.observed_dims)),
+            "obs_env_size": int(len(env_obs_dims)),
+            "obs_env_min": int(env_min) if env_min is not None else None,
+            "obs_env_max": int(env_max) if env_max is not None else None,
+            "obs_req_size": int(len(O_req)),
+            "obs_req_min": int(req_min) if req_min is not None else None,
+            "obs_req_max": int(req_max) if req_max is not None else None,
+            "obs_used_size": int(len(O_t)),
+            "obs_used_min": int(used_min) if used_min is not None else None,
+            "obs_used_max": int(used_max) if used_max is not None else None,
+            "obs_filtered_count": int(len(O_req) - len(O_t)),
+            "env_full_provided": bool(env_full_diag is not None),
+            "env_full_used": bool(env_full is not None),
+            "use_true_transport": bool(use_true_transport),
+            "transport_debug_env_grid": bool(use_env_grid),
+            "edits_processed": int(edits_processed_t),
+            "rest_permitted_t": bool(rest_perm_t),
+            "rest_unsafe_reason": str(rest_perm_reason),
+            "demand_t": bool(demand_t),
+            "interrupt_t": bool(interrupt_t),
+            "rest_actionable": bool(rest_actionable),
+            "rest_queue_len": queue_len,
+            "rest_permit_struct": rest_permit_struct,
+            "rest_cooldown": int(getattr(macro_t, "rest_cooldown", 0)),
+            "rest_cycles_needed": int(rest_cycles_needed),
+            "rest_zero_processed_streak": int(getattr(macro_t, "rest_zero_processed_streak", 0)),
+            "s_int_need": float(getattr(stress_t, "s_int_need", 0.0)),
+            "s_ext_th": float(getattr(stress_t, "s_ext_th", 0.0)),
+            "mE": float(getattr(margins_t, "m_E", 0.0)),
+            "mD": float(getattr(margins_t, "m_D", 0.0)),
+            "mL": float(getattr(margins_t, "m_L", 0.0)),
+            "mC": float(getattr(margins_t, "m_C", 0.0)),
+            "mS": float(getattr(margins_t, "m_S", 0.0)),
+            "permit_struct": bool(getattr(rest_res, "permit_struct", False)),
+            "permit_struct_reason": str(getattr(rest_res, "permit_struct_reason", "")),
+            "transport_delta": tuple(shift),
+            "transport_mae_pre": float(mae_pos_pre_transport),
+            "transport_mae_post": float(mae_pos_post_transport),
+            "transport_applied_norm": float(transport_applied_norm),
+            "transport_source": transport_source,
+            "transport_effect": float(transport_effect),
+            "transport_confidence": float(state.transport_confidence),
+            "transport_margin": float(state.transport_margin),
+            "transport_candidate_count": int(len(transport_candidates_info)),
+            "transport_score_margin": float(transport_score_margin),
+            "candidate_score_spread": float(transport_score_spread),
+            "overlap_count_best": int(transport_best_overlap),
+            "posterior_entropy": float(transport_posterior_entropy),
+            "tie_flag": bool(transport_tie_flag),
+            "null_chosen_due_to_low_evidence": bool(transport_null_evidence),
+            "motion_probe_blocks_used": int(motion_probe_blocks_used),
+            "transport_high_confidence": bool(transport_high_confidence),
+            "transport_ascii_mismatch": int(transport_best_candidate.ascii_mismatch) if transport_best_candidate is not None else 0,
+            "delta_outside_O": float(delta_outside_O),
+            "innovation_mean_abs": float(innovation_mean_abs),
+            "innov_energy": float(innov_energy),
+            "prior_obs_mae": float(prior_obs_mae),
+            "posterior_obs_mae": float(posterior_obs_mae),
+            "multi_world_count": int(multi_world_count),
+            "multi_world_best_prior_mae": float(best_world_mae),
+            "multi_world_expected_prior_mae": float(expected_world_mae),
+            "multi_world_weight_entropy": float(weight_entropy),
+            "multi_world_summary": multi_world_summary,
+            "support_window_size": int(len(getattr(state, "observed_history", []))),
+            "support_window_union_size": int(len(support_window)),
+            "peripheral_confidence": float(np.clip(getattr(state, "peripheral_confidence", 0.0), 0.0, 1.0)),
+            "peripheral_residual": float(np.nan_to_num(getattr(state, "peripheral_residual", float("nan")))),
+            "peripheral_prior_size": int(getattr(state, "peripheral_prior", np.zeros(0)).size),
+            "peripheral_obs_size": int(getattr(state, "peripheral_obs", np.zeros(0)).size),
+            "peripheral_bg_dim_count": int(len(periph_dims)),
+            "peripheral_bg_active": bool(periph_dims),
+            "block_disagreement_mean": float(
+                np.nanmean(getattr(state.fovea, "block_disagreement", np.zeros(0))) if getattr(state.fovea, "block_disagreement", np.zeros(0)).size else 0.0
+            ),
+            "block_innovation_mean": float(
+                np.nanmean(getattr(state.fovea, "block_innovation", np.zeros(0))) if getattr(state.fovea, "block_innovation", np.zeros(0)).size else 0.0
+            ),
+            "block_periph_demand_mean": float(
+                np.nanmean(getattr(state.fovea, "block_periph_demand", np.zeros(0))) if getattr(state.fovea, "block_periph_demand", np.zeros(0)).size else 0.0
+            ),
+            "mean_abs_clamp": float(mean_abs_clamp),
+            "mae_pos_prior": float(mae_pos_prior),
+            "mae_pos_prior_unobs": float(mae_pos_prior_unobs),
+            "mae_pos_unobs_pre": float(mae_pos_unobs_pre_transport),
+            "mae_pos_unobs_post": float(mae_pos_unobs_post_transport),
+            "coarse_prev_norm": float(coarse_prev_norm),
+            "coarse_curr_norm": float(coarse_curr_norm),
+            "coarse_prev_nonzero": int(coarse_prev_nonzero),
+            "coarse_curr_nonzero": int(coarse_curr_nonzero),
+            "coarse_prev_head": tuple(coarse_prev_head),
+            "coarse_curr_head": tuple(coarse_curr_head),
+            "periph_block_ids": tuple(int(b) for b in forced_periph_blocks),
+            "periph_dims_forced": int(len(forced_periph_dims)),
+            "periph_dims_in_req": int(periph_dims_present),
+            "periph_dims_missing_count": int(len(missing_periph_dims)),
+            "periph_dims_missing_head": tuple(
+                missing_periph_dims[: min(8, len(missing_periph_dims))]
+            ),
+            "n_fine_blocks_selected": int(n_fine_blocks_selected),
+            "n_periph_blocks_selected": int(n_periph_blocks_selected),
+            "periph_included": bool(periph_included),
+            "probe_var": float(state.probe_var) if getattr(state, "probe_var", None) is not None else float("nan"),
+            "feature_var": float(state.feature_var) if getattr(state, "feature_var", None) is not None else float("nan"),
+            "arousal": float(getattr(state, "arousal", 0.0)),
+            "arousal_prev": float(getattr(state, "arousal_prev", 0.0)),
+            "last_struct_edit_t": int(getattr(state.baselines, "last_struct_edit_t", -10**9)),
+            "W_window": int(getattr(cfg, "W", 50)),
+            "learning_candidates": learning_candidates_info if learning_candidates_info is not None else {},
+            "permit_param_info": permit_param_info,
+        }
+    )
+
+    _dbg('returning (action, state, trace_dict)', state=state)
+    return action, state, trace_dict
+__all__ = ["step_pipeline"]
