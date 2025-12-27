@@ -1669,6 +1669,9 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     motion_probe_budget = max(0, int(getattr(cfg, "motion_probe_blocks", 0)))
     motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg, motion_probe_budget)
     blocks_t, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks_t or [], cfg, motion_probe_blocks)
+    selected_blocks = tuple(getattr(env_obs, "selected_blocks", ()) or ())
+    if selected_blocks:
+        blocks_t = [int(b) for b in selected_blocks]
     if ages_now.size and grid_world:
         residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
         alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
