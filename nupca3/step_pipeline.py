@@ -1642,11 +1642,43 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     update_fovea_routing_scores(state.fovea, x_prev, cfg, t=int(getattr(state, "t", 0)))
     _apply_pending_transport_disagreement(state, cfg)
     blocks_t = select_fovea(state.fovea, cfg)
+    G = int(getattr(cfg, "coverage_cap_G", 0))
+    ages_now = np.asarray(
+        getattr(state.fovea, "block_age", np.zeros(int(getattr(cfg, "B", 0)))), dtype=float
+    )
+    budget = max(1, int(getattr(cfg, "fovea_blocks_per_step", 0)))
+    if G > 0 and ages_now.size:
+        mandatory = [int(b) for b in range(int(getattr(cfg, "B", 0))) if float(ages_now[b]) >= float(G)]
+        if mandatory and not set(mandatory).intersection(set(blocks_t or [])):
+            mandatory = sorted(mandatory, key=lambda b: float(ages_now[b]), reverse=True)
+            blocks_t = mandatory[: min(len(mandatory), budget)]
+    use_age = bool(getattr(cfg, "fovea_use_age", True))
+    grid_world = int(getattr(cfg, "grid_side", 0)) > 0 and int(getattr(cfg, "grid_channels", 0)) > 0
+    if ages_now.size and grid_world:
+        residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
+        alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
+        if use_age:
+            scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages_now))
+        else:
+            scores = residuals
+        top_blocks = np.argsort(-scores)[: min(budget, scores.size)].tolist()
+        if top_blocks:
+            blocks_t = [int(b) for b in top_blocks]
     periph_candidates = _peripheral_block_ids(cfg)
     blocks_t, forced_periph_blocks = _enforce_peripheral_blocks(blocks_t or [], cfg, periph_candidates)
     motion_probe_budget = max(0, int(getattr(cfg, "motion_probe_blocks", 0)))
     motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg, motion_probe_budget)
     blocks_t, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks_t or [], cfg, motion_probe_blocks)
+    if ages_now.size and grid_world:
+        residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
+        alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
+        if use_age:
+            scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages_now))
+        else:
+            scores = residuals
+        top_blocks = np.argsort(-scores)[: min(budget, scores.size)].tolist()
+        if top_blocks:
+            blocks_t = [int(b) for b in top_blocks]
     _dbg(f'A16.3 select_fovea -> n_blocks={len(blocks_t) if blocks_t is not None else 0}', state=state)
     state.fovea.current_blocks = set(int(b) for b in blocks_t)
     _dbg(f'A16.3 current_blocks={len(state.fovea.current_blocks)}', state=state)

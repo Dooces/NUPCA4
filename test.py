@@ -954,6 +954,8 @@ def run_task(
             binding_rotations=bool(binding_rotations),
             grid_side=int(side),
             grid_channels=int(n_colors + n_shapes),
+            grid_color_channels=int(n_colors),
+            grid_shape_channels=int(n_shapes),
             grid_base_dim=int(base_dim),
             periph_bins=int(periph_bins),
             periph_blocks=int(periph_blocks),
@@ -1000,6 +1002,8 @@ def run_task(
             force_block_anchors=bool(force_block_anchors),
             grid_side=int(side),
             grid_channels=1,
+            grid_color_channels=1,
+            grid_shape_channels=0,
             grid_base_dim=int(base_dim),
             periph_bins=int(periph_bins),
             periph_blocks=int(periph_blocks),
@@ -1189,6 +1193,30 @@ def run_task(
         else:
             top_resid_blocks = []
         blocks = select_fovea(agent.state.fovea, cfg_step)
+        ages_snapshot = np.asarray(getattr(agent.state.fovea, "block_age", []), dtype=float)
+        if int(coverage_cap_G) > 0 and ages_snapshot.size:
+            mandatory_blocks = [
+                int(b)
+                for b in range(int(B))
+                if float(ages_snapshot[b]) >= float(coverage_cap_G)
+            ]
+            if mandatory_blocks and not set(mandatory_blocks).intersection(set(blocks or [])):
+                mandatory_blocks = sorted(
+                    mandatory_blocks, key=lambda b: float(ages_snapshot[b]), reverse=True
+                )
+                blocks = mandatory_blocks[: max(1, int(k_eff))]
+        grid_world = int(side) > 0 and int(n_colors + n_shapes) > 0
+        if ages_snapshot.size and grid_world:
+            alpha_cov_eff = float(alpha_cov)
+            if fovea_use_age:
+                scores = resid_snapshot + alpha_cov_eff * np.log1p(np.maximum(0.0, ages_snapshot))
+            else:
+                scores = resid_snapshot
+            top_score_blocks = np.argsort(-scores)[: min(int(k_eff), scores.size)].tolist()
+            if top_score_blocks:
+                blocks = [int(b) for b in top_score_blocks]
+        if fovea_use_age and grid_world and int(B) > 1 and int(k_eff) == 1:
+            blocks = [int(step_idx) % int(B)]
         periph_candidates = list(range(max(0, int(B) - int(periph_blocks)), int(B)))
         blocks, forced_periph_blocks = _enforce_peripheral_blocks(
             blocks,
@@ -1225,8 +1253,6 @@ def run_task(
             obs_dims = []
         if occluding:
             obs_dims = []
-        if dense_world and not pred_only and not occluding:
-            obs_dims = list(range(int(D_agent)))
 
         # Environment evolves, then we reveal only the selected dims.
         true_delta: Tuple[int, int] = (0, 0)
@@ -1314,12 +1340,13 @@ def run_task(
             else:
                 obs_min = None
                 obs_max = None
-            if len(obs_act_set) != int(D_agent):
+            full_obs_expected = len(obs_req_set) == int(D_agent)
+            if full_obs_expected and len(obs_act_set) != int(D_agent):
                 raise AssertionError(
                     f"Invariant violation: dense-world obs size={len(obs_act_set)} "
                     f"expected D_world={D_agent}."
                 )
-            if obs_min != 0 or obs_max != int(D_agent) - 1:
+            if full_obs_expected and (obs_min != 0 or obs_max != int(D_agent) - 1):
                 raise AssertionError(
                     f"Invariant violation: dense-world obs bounds min={obs_min} max={obs_max} "
                     f"expected [0, {int(D_agent) - 1}]."
@@ -1738,7 +1765,8 @@ def main() -> None:
     parser.add_argument("--alpha-cov", type=float, default=0.10)
     parser.add_argument("--coverage-cap-G", type=int, default=50)
     parser.add_argument("--fovea-residual-ema", type=float, default=0.10)
-    parser.add_argument("--fovea-use-age", action="store_true")
+    parser.add_argument("--fovea-use-age", dest="fovea_use_age", action="store_true", default=True)
+    parser.add_argument("--no-fovea-use-age", dest="fovea_use_age", action="store_false")
     parser.add_argument("--fovea-age-min-inc", type=float, default=0.05)
     parser.add_argument("--fovea-age-resid-scale", type=float, default=0.05)
     parser.add_argument("--fovea-age-resid-thresh", type=float, default=0.01)
