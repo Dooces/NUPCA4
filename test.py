@@ -820,6 +820,7 @@ def run_task(
     binding_rotations: bool,
     periph_blocks: int,
     periph_bins: int,
+    periph_bg_full: bool,
     object_size: int,
     alpha_cov: float,
     coverage_cap_G: int,
@@ -863,6 +864,8 @@ def run_task(
     periph_test: bool,
     transport_test: bool,
     transport_force_true_delta: bool,
+    debug_full_state: bool,
+    force_selected_blocks: bool,
     visualize_steps: int = 0,
 ) -> Dict[str, float]:
     D_cli = int(D)
@@ -871,6 +874,9 @@ def run_task(
         raise ValueError("D must be > 0")
     obs_cost_val = max(float(obs_cost), 1e-9)
     periph_blocks = max(0, int(periph_blocks))
+    periph_bg_full = bool(periph_bg_full)
+    debug_full_state = bool(debug_full_state)
+    force_selected_blocks = bool(force_selected_blocks)
     moving = None
     square = None
     linear_world = None
@@ -946,6 +952,7 @@ def run_task(
     if periph_dim > int(D_agent):
         raise ValueError("peripheral encoding requires more dims than available")
     base_dim = int(D_agent) - periph_dim
+    periph_dims_set = set(range(base_dim, int(D_agent))) if periph_blocks > 0 else set()
 
     if world == "moving":
         cfg = AgentConfig(
@@ -1291,6 +1298,14 @@ def run_task(
                 f"[obs debug] step={step_idx} k_eff={k_eff} blocks={blocks} "
                 f"obs_count={len(obs_dims)} obs_head={obs_head} obs_tail={obs_tail}"
             )
+            periph_bg_dims = len(periph_dims_set) if periph_bg_full else 0
+            periph_bg_cost = int(periph_blocks) if periph_bg_full else 0
+            print(
+                f"[obs policy] step={step_idx} override_selected_blocks={force_selected_blocks} "
+                f"fovea_blocks_per_step={k_eff} selected_blocks={blocks} "
+                f"O_t={len(obs_dims)} periph_uses_x_full={periph_bg_full and periph_bg_dims > 0} "
+                f"periph_bg_dims={periph_bg_dims} periph_bg_cost={periph_bg_cost}"
+            )
             block_partitions = getattr(agent.state, "blocks", []) or []
             channels = max(1, int(n_colors + n_shapes)) if world in {"moving", "square"} else 1
             for block_id in blocks:
@@ -1358,14 +1373,22 @@ def run_task(
             base_x = env_state_full
             full_x = base_x
         pos_dims = set(int(idx) for idx in np.where(full_x > 0.0)[0])
+        periph_full = None
+        if periph_bg_full and periph_dims_set:
+            periph_full = np.zeros(int(D_agent), dtype=float)
+            for dim in periph_dims_set:
+                periph_full[int(dim)] = float(full_x[int(dim)])
+        diag_full = full_x.copy() if debug_full_state else None
         obs = EnvObs(
             x_partial=build_partial_obs(full_x, obs_dims),
             opp=0.0,
             danger=0.0,
-            x_full=full_x.copy(),
+            x_full=diag_full,
+            periph_full=periph_full,
+            allow_full_state=False,
             true_delta=true_delta,
             pos_dims=pos_dims,
-            selected_blocks=selected_blocks_tuple,
+            selected_blocks=selected_blocks_tuple if force_selected_blocks else tuple(),
         )
 
         buffer_prev = agent.state.buffer.x_last.copy()
@@ -1826,12 +1849,15 @@ def main() -> None:
     parser.add_argument("--binding-rotations", action="store_true")
     parser.add_argument("--periph-blocks", type=int, default=0)
     parser.add_argument("--periph-bins", type=int, default=2)
+    parser.add_argument("--periph-bg-full", action="store_true")
     parser.add_argument("--object-size", type=int, default=3)
     parser.add_argument("--rest-test-period", type=int, default=0)
     parser.add_argument("--rest-test-length", type=int, default=0)
     parser.add_argument("--periph-test", action="store_true")
     parser.add_argument("--transport-test", action="store_true")
     parser.add_argument("--transport-force-true-delta", action="store_true")
+    parser.add_argument("--debug-full-state", action="store_true")
+    parser.add_argument("--force-selected-blocks", action="store_true")
     parser.add_argument("--alpha-cov", type=float, default=0.10)
     parser.add_argument("--coverage-cap-G", type=int, default=50)
     parser.add_argument("--fovea-residual-ema", type=float, default=0.10)
@@ -1915,6 +1941,7 @@ def main() -> None:
         binding_rotations=args.binding_rotations,
         periph_blocks=args.periph_blocks,
         periph_bins=args.periph_bins,
+        periph_bg_full=args.periph_bg_full,
         object_size=args.object_size,
         alpha_cov=args.alpha_cov,
         coverage_cap_G=args.coverage_cap_G,
@@ -1958,6 +1985,8 @@ def main() -> None:
         periph_test=args.periph_test,
         transport_test=args.transport_test,
         transport_force_true_delta=args.transport_force_true_delta,
+        debug_full_state=args.debug_full_state,
+        force_selected_blocks=args.force_selected_blocks,
         visualize_steps=args.visualize_steps,
     )
     print("[SUMMARY]", vars(args), summary)

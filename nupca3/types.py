@@ -65,6 +65,8 @@ class EnvObs:
     opp: float = 0.0
     danger: float = 0.0
     x_full: np.ndarray | None = None
+    periph_full: np.ndarray | None = None
+    allow_full_state: bool = False
     true_delta: Tuple[int, int] | None = None
     pos_dims: Set[int] = field(default_factory=set)
     selected_blocks: Tuple[int, ...] = field(default_factory=tuple)
