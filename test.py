@@ -142,6 +142,27 @@ def _env_full_grid(vec: np.ndarray, *, side: int) -> List[List[str]]:
     return grid
 
 
+def _print_cli_env_state(
+    *,
+    step_idx: int,
+    env_vec: np.ndarray,
+    cli_tag: str,
+    grid_world: bool,
+    side: int,
+    channels: int,
+) -> None:
+    header = f"[CLI {cli_tag}] step={step_idx} ENV_STATE"
+    print(header)
+    vec = np.asarray(env_vec, dtype=float).reshape(-1)
+    if grid_world and int(side) > 0 and int(channels) > 0:
+        grid = _real_grid(vec, side=side, channels=channels)
+        for row_idx, row in enumerate(grid):
+            prefix = "ENV" if row_idx == 0 else "   "
+            print(f"{prefix} " + " ".join(row))
+    vec_str = " ".join(f"{val:.6f}" for val in vec.tolist())
+    print(f"VEC {vec_str}")
+
+
 def _occupancy_grid(
     vec: np.ndarray,
     *,
@@ -875,6 +896,7 @@ def run_task(
     debug_full_state: bool,
     force_selected_blocks: bool,
     visualize_steps: int = 0,
+    cli_tag: str = "",
 ) -> Dict[str, float]:
     D_cli = int(D)
     B_int = max(1, int(B))
@@ -885,6 +907,12 @@ def run_task(
     periph_bg_full = bool(periph_bg_full)
     debug_full_state = bool(debug_full_state)
     force_selected_blocks = bool(force_selected_blocks)
+    cli_tag = str(cli_tag or "")
+    cli_quiet = bool(cli_tag)
+
+    def log(msg: str) -> None:
+        if not cli_quiet:
+            print(msg)
     moving = None
     square = None
     linear_world = None
@@ -938,7 +966,7 @@ def run_task(
         k_max = k_min
     if int(min_fovea_blocks) > 0:
         k_fixed = max(k_fixed, min(int(B), int(min_fovea_blocks)))
-    print(
+    log(
         f"[BUDGET] obs_budget={obs_budget} obs_cost={obs_cost_val} budget_units={budget_units:.3f} "
         f"avg_block_size={avg_block_size:.3f} blocks_selected={k_fixed}"
     )
@@ -1111,7 +1139,7 @@ def run_task(
         vis_n_colors = 0
         vis_n_shapes = 0
     D_source = "world" if dense_world else "cli"
-    print(
+    log(
         f"[INIT] world_created=True world={world} D_world={world_dim} "
         f"D_agent={D_agent} D_source={D_source} B={B_int}"
     )
@@ -1124,16 +1152,16 @@ def run_task(
         )
     blocks_partition = getattr(agent.state, "blocks", []) or []
     blocks_ok, blocks_msg = _check_block_partition(blocks_partition, int(D_agent))
-    print(f"[INIT] block_partition_ok={blocks_ok} detail={blocks_msg}")
+    log(f"[INIT] block_partition_ok={blocks_ok} detail={blocks_msg}")
     if not blocks_ok:
         raise AssertionError(f"Invariant violation: block partition invalid ({blocks_msg}).")
     if blocks_partition:
         block_sizes = [len(b) for b in blocks_partition]
-        print(
+        log(
             f"[INIT] block_sizes count={len(block_sizes)} min={min(block_sizes)} "
             f"max={max(block_sizes)} sum={sum(block_sizes)}"
         )
-    print("[INIT] agent_constructed=True (buffers/weights stable after init)")
+    log("[INIT] agent_constructed=True (buffers/weights stable after init)")
     periph_ids = _peripheral_block_ids(cfg) if periph_blocks > 0 else []
     coverage_diag_enabled = bool(diagnose_coverage) and world == "square"
     coverage_steps_total = 0
@@ -1278,7 +1306,7 @@ def run_task(
         if visualize_steps and step_idx < visualize_steps:
             ages_preview = ages_snapshot[: min(8, ages_snapshot.size)].tolist() if ages_snapshot.size else []
             resid_preview = resid_snapshot[: min(8, resid_snapshot.size)].tolist() if resid_snapshot.size else []
-            print(
+            log(
                 f"[fovea debug] step={step_idx} ages_head={ages_preview} "
                 f"resid_head={resid_preview} blocks={blocks}"
             )
@@ -1288,7 +1316,7 @@ def run_task(
                 periph_present_steps += 1
             else:
                 periph_missing_steps += 1
-            print(
+            log(
                 f"[periph check] step={step_idx} n_blocks={len(blocks)} "
                 f"periph_present={periph_present} missing={periph_missing_steps}"
             )
@@ -1305,13 +1333,13 @@ def run_task(
         if visualize_steps and step_idx < visualize_steps:
             obs_head = obs_dims[: min(16, len(obs_dims))]
             obs_tail = obs_dims[-min(16, len(obs_dims)) :] if obs_dims else []
-            print(
+            log(
                 f"[obs debug] step={step_idx} k_eff={k_eff} blocks={blocks} "
                 f"obs_count={len(obs_dims)} obs_head={obs_head} obs_tail={obs_tail}"
             )
             periph_bg_dims = len(periph_dims_set) if periph_bg_full else 0
             periph_bg_cost = int(periph_blocks) if periph_bg_full else 0
-            print(
+            log(
                 f"[obs policy] step={step_idx} override_selected_blocks={force_selected_blocks} "
                 f"fovea_blocks_per_step={k_eff} selected_blocks={blocks} "
                 f"O_t={len(obs_dims)} periph_uses_x_full={periph_bg_full and periph_bg_dims > 0} "
@@ -1321,7 +1349,7 @@ def run_task(
             channels = max(1, int(n_colors + n_shapes)) if world in {"moving", "square"} else 1
             for block_id in blocks:
                 if int(block_id) < 0 or int(block_id) >= len(block_partitions):
-                    print(f"[obs debug] block_id={block_id} bounds=invalid")
+                    log(f"[obs debug] block_id={block_id} bounds=invalid")
                     continue
                 bounds = _block_grid_bounds(
                     [int(dim) for dim in block_partitions[int(block_id)]],
@@ -1330,10 +1358,10 @@ def run_task(
                     base_dim=int(base_dim),
                 )
                 if bounds is None:
-                    print(f"[obs debug] block_id={block_id} bounds=periph_or_empty")
+                    log(f"[obs debug] block_id={block_id} bounds=periph_or_empty")
                 else:
                     r0, r1, c0, c1 = bounds
-                    print(f"[obs debug] block_id={block_id} bounds=r{r0}:{r1} c{c0}:{c1}")
+                    log(f"[obs debug] block_id={block_id} bounds=r{r0}:{r1} c{c0}:{c1}")
 
         # Environment evolves, then we reveal only the selected dims.
         true_delta: Tuple[int, int] = (0, 0)
@@ -1383,6 +1411,18 @@ def run_task(
             true_env_dim = int(linear_world.D)
             base_x = env_state_full
             full_x = base_x
+        if cli_quiet:
+            grid_world = world in {"moving", "square"}
+            channels = max(1, int(n_colors + n_shapes)) if grid_world else 1
+            env_vec = true_env_vec[: int(true_env_dim)] if true_env_vec.size else full_x
+            _print_cli_env_state(
+                step_idx=step_idx,
+                env_vec=env_vec,
+                cli_tag=cli_tag,
+                grid_world=grid_world,
+                side=side,
+                channels=channels,
+            )
         pos_dims = set(int(idx) for idx in np.where(full_x > 0.0)[0])
         periph_full = None
         if periph_bg_full and periph_dims_set:
@@ -1418,7 +1458,7 @@ def run_task(
         if obs_req_set != obs_act_set:
             req_head = sorted(obs_req_set)[:8]
             act_head = sorted(obs_act_set)[:8]
-            print(
+            log(
                 f"[obs mismatch] step={step_idx} req_count={len(obs_req_set)} "
                 f"used_count={len(obs_act_set)} req_head={req_head} used_head={act_head}"
             )
@@ -1443,7 +1483,7 @@ def run_task(
         if log_every > 0 and (step_idx % log_every == 0 or log_every == 1):
             obs_min = min(obs_act_set) if obs_act_set else None
             obs_max = max(obs_act_set) if obs_act_set else None
-            print(
+            log(
                 f"[obs summary] step={step_idx} env_obs_count={len(obs_req_set)} "
                 f"used_obs_count={len(obs_act_set)} used_min={obs_min} used_max={obs_max} "
                 f"req_min={min(obs_req_set) if obs_req_set else None} "
@@ -1481,7 +1521,7 @@ def run_task(
             hit = bool(square_blocks & covered_blocks)
             coverage_hits += int(hit)
             if coverage_log_every > 0 and (step_idx % coverage_log_every == 0 or coverage_log_every == 1):
-                print(
+                log(
                     f"[coverage] step={trace['t']} square_blocks={sorted(square_blocks)} "
                     f"covered_blocks={sorted(covered_blocks)} hit={int(hit)}"
                 )
@@ -1585,14 +1625,14 @@ def run_task(
         diff_mask = np.asarray(occ_env, dtype=bool) != np.asarray(occ_pred, dtype=bool)
         diff_count = int(np.sum(diff_mask)) if diff_mask.size else 0
         trace["diff_count"] = diff_count
-        print(f"[diff check] step={step_idx} diff_count={diff_count} pred_source={pred_source}")
+        log(f"[diff check] step={step_idx} diff_count={diff_count} pred_source={pred_source}")
         preds = prior_arr.tolist() if prior_arr is not None else None
-        print(
+        log(
             f"[TRACE step={step_idx}] EXACT_ENV={full_x.tolist()} "
             f"EXACT_AGENT_PERCEIVES={perc} "
             f"EXACT_AGENT_PREDICTS={preds}"
         )
-        if visualize_steps and step_idx < visualize_steps:
+        if visualize_steps and step_idx < visualize_steps and not cli_quiet:
             obs_set = {int(dim) for dim in obs_dims_actual if 0 <= int(dim) < int(D_agent)}
             transport_delta = tuple(trace.get("transport_delta", (0, 0)))
             _print_visualization(
@@ -1616,14 +1656,14 @@ def run_task(
         block_change_rate = float(block_changes) / float(block_steps) if block_steps > 0 else 0.0
         if world == "square":
             env_pos = (int(square.x), int(square.y))
-            print(
+            log(
                 f"[env square] step={step_idx} pos={env_pos} true_delta={true_delta} "
                 f"block_change_rate={block_change_rate:.6f} coverage_debt={trace['coverage_debt']:.6f} "
                 f"forced_rest={force_rest}"
             )
         elif world == "moving":
             env_pos = (int(moving.x), int(moving.y))
-            print(
+            log(
                 f"[env moving] step={step_idx} pos={env_pos} true_delta={true_delta} "
                 f"color={int(moving.color)} shape={int(moving.shape)} "
                 f"block_change_rate={block_change_rate:.6f} coverage_debt={trace['coverage_debt']:.6f} "
@@ -1644,7 +1684,7 @@ def run_task(
                 diff_nonzero_match += 1
             else:
                 diff_nonzero_mismatch += 1
-            print(
+            log(
                 f"[transport check] step={step_idx} true_delta={true_delta} "
                 f"transport_delta={tdelta} match={match}"
             )
@@ -1657,21 +1697,21 @@ def run_task(
                 periph_dims_in_req = trace.get("periph_dims_in_req", 0)
                 coarse_prev_head = trace.get("coarse_prev_head", ())
                 coarse_curr_head = trace.get("coarse_curr_head", ())
-                print(
+                log(
                     f"[transport diag] step={step_idx} coarse_prev_norm={coarse_prev_norm:.3f} "
                     f"coarse_curr_norm={coarse_curr_norm:.3f} "
                     f"periph_block_ids={periph_block_ids} periph_dims_in_req={periph_dims_in_req} "
                     f"periph_dims_missing_count={periph_missing_count} "
                     f"periph_dims_missing_head={periph_missing_head}"
                 )
-                print(
+                log(
                     f"[transport diag] step={step_idx} coarse_prev_head={coarse_prev_head} "
                     f"coarse_curr_head={coarse_curr_head}"
                 )
 
         emit = step_idx < step_log_limit or (int(log_every) > 0 and step_idx % int(log_every) == 0)
         if emit:
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] step={trace['t']} rest={trace['rest']} forced_rest={force_rest} "
                 f"rest_permitted_prev={rest_permitted_prev} rest_permitted_t={trace['rest_permitted_t']} "
                 f"demand_prev={demand_prev} demand_t={trace['demand_t']} "
@@ -1703,34 +1743,34 @@ def run_task(
                     f"n{int(s['node'])}@b{int(s['footprint'])} err={s['err']:.3f} clamped={s['clamped']}"
                     for s in samples
                 )
-                print(
+                log(
                     f"[D{D_agent} seed{seed}] learning_info candidates={learning_info.get('candidates',0)} "
                     f"clamped={learning_info.get('clamped',0)} err_max={learning_info.get('err_max',float('nan')):.6f} "
                     f"samples=[{sample_str}]"
                 )
             permit_meta = trace.get("permit_param_info", {}) or {}
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] permit_param_summary theta_learn={permit_meta.get('theta_learn',0.0):.3f} "
                 f"permit={permit_meta.get('permit',False)} "
                 f"cand={permit_meta.get('candidate_count',0)} clamped={permit_meta.get('clamped',0)} "
                 f"updated={permit_meta.get('updated',0)}"
             )
             if pred_only:
-                print(f"[D{D_agent} seed{seed}] pred_only_step={trace['t']} obs_dims=0")
+                log(f"[D{D_agent} seed{seed}] pred_only_step={trace['t']} obs_dims=0")
             if occluding:
-                print(f"[D{D_agent} seed{seed}] occluding_step={trace['t']} obs_dims=0")
+                log(f"[D{D_agent} seed{seed}] occluding_step={trace['t']} obs_dims=0")
         if emit and step_idx < step_log_limit:
             obs_preview = obs_dims_actual[: min(32, len(obs_dims_actual))]
             active_preview = active_idx[: min(32, active_idx.size)].tolist() if active_idx.size else []
             obs_active_preview = obs_active_idx[: min(32, obs_active_idx.size)].tolist() if obs_active_idx.size else []
-            print(f"[D{D_agent} seed{seed}] obs_dims_count={len(obs_dims_actual)} obs_dims_head={obs_preview}")
-            print(f"[D{D_agent} seed{seed}] active_dims_count={int(active_idx.size)} active_dims_head={active_preview}")
-            print(f"[D{D_agent} seed{seed}] obs_active_count={obs_active_count} obs_active_head={obs_active_preview}")
+            log(f"[D{D_agent} seed{seed}] obs_dims_count={len(obs_dims_actual)} obs_dims_head={obs_preview}")
+            log(f"[D{D_agent} seed{seed}] active_dims_count={int(active_idx.size)} active_dims_head={active_preview}")
+            log(f"[D{D_agent} seed{seed}] obs_active_count={obs_active_count} obs_active_head={obs_active_preview}")
             blocks_preview = blocks[: min(16, len(blocks))]
-            print(f"[D{D_agent} seed{seed}] fovea_blocks_count={len(blocks)} fovea_blocks_head={blocks_preview} k_eff={k_eff}")
+            log(f"[D{D_agent} seed{seed}] fovea_blocks_count={len(blocks)} fovea_blocks_head={blocks_preview} k_eff={k_eff}")
             top_age_preview = top_age_blocks[: min(16, len(top_age_blocks))]
             top_resid_preview = top_resid_blocks[: min(16, len(top_resid_blocks))]
-            print(f"[D{D_agent} seed{seed}] fovea_top_age_head={top_age_preview} fovea_top_resid_head={top_resid_preview}")
+            log(f"[D{D_agent} seed{seed}] fovea_top_age_head={top_age_preview} fovea_top_resid_head={top_resid_preview}")
         active_count = int(active_idx.size) if active_idx.size else 0
         obs_active_rate = float(obs_active_hits) / float(obs_active_steps) if obs_active_steps else 0.0
         obs_active_blocks = sorted({int(i) // block_size_agent for i in obs_active_idx})
@@ -1740,21 +1780,21 @@ def run_task(
         if len(obs_active_blocks) > 8:
             obs_active_blocks = obs_active_blocks[:8]
         if emit:
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] active_obs_metrics active_count={active_count} "
                 f"obs_active_count={obs_active_count} obs_active_rate={obs_active_rate:.3f} "
                 f"active_blocks={active_blocks_list} obs_active_blocks={obs_active_blocks}"
             )
             top_age_hits = len(set(blocks) & set(top_age_blocks)) if top_age_blocks else 0
             top_resid_hits = len(set(blocks) & set(top_resid_blocks)) if top_resid_blocks else 0
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] fovea_overlap top_age_hits={top_age_hits} "
                 f"top_resid_hits={top_resid_hits} top_k={top_k}"
             )
             full_obs = int(len(obs_dims_actual) >= int(D_agent) and k_eff >= int(B_int))
             cov_debt = float(trace.get("coverage_debt", 0.0))
             cov_violation = int(full_obs and cov_debt > 1e-6)
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] coverage_check full_obs={full_obs} "
                 f"coverage_debt={cov_debt:.6f} coverage_debt_full_obs_violation={cov_violation}"
             )
@@ -1766,35 +1806,35 @@ def run_task(
         same_block_avg = float(np.mean(same_block_err)) if same_block_err else 0.0
         diff_block_avg = float(np.mean(diff_block_err)) if diff_block_err else 0.0
         if emit:
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] sparse_metrics mae_pos={mae_pos_avg:.6f} "
                 f"mae_pos_unobs={mae_pos_unobs_avg:.6f} "
                 f"pos_frac={pos_frac_avg:.6f} mae_zero={mae_zero_avg:.6f}"
             )
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] block_metrics change_rate={change_rate:.6f} "
                 f"mae_same_block={same_block_avg:.6f} mae_diff_block={diff_block_avg:.6f}"
             )
             permit_rate = float(permit_param_true) / float(permit_param_total) if permit_param_total else 0.0
-            print(f"[D{D_agent} seed{seed}] permit_param_rate={permit_rate:.6f} permit_param_true={permit_param_true}")
+            log(f"[D{D_agent} seed{seed}] permit_param_rate={permit_rate:.6f} permit_param_true={permit_param_true}")
         first_avg = float(np.mean(first_seen_err)) if first_seen_err else 0.0
         reap_avg = float(np.mean(reappear_err)) if reappear_err else 0.0
         ratio = (reap_avg / first_avg) if first_avg > 0 else 0.0
         if emit:
-            print(
+            log(
                 f"[D{D_agent} seed{seed}] occlusion_metrics first_err={first_avg:.6f} "
                 f"reappear_err={reap_avg:.6f} ratio={ratio:.6f}"
             )
 
     coverage_hit_rate = float(coverage_hits) / float(coverage_steps_total) if coverage_steps_total else 0.0
     if coverage_diag_enabled:
-        print(
+        log(
             f"[coverage summary] steps={coverage_steps_total} hit_rate={coverage_hit_rate:.6f} "
             f"square_blocks_seen={sorted(coverage_square_blocks_seen)} "
             f"covered_blocks_seen={sorted(coverage_covered_blocks_seen)}"
         )
     if transport_test_active:
-        print(
+        log(
             "[summary diff/transport] "
             f"diff0_match={diff_zero_match} diff0_mismatch={diff_zero_mismatch} "
             f"diffnz_match={diff_nonzero_match} diffnz_mismatch={diff_nonzero_mismatch}"
@@ -1903,6 +1943,13 @@ def main() -> None:
     parser.add_argument("--warm-fovea-blocks", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--visualize-steps", type=int, default=0, help="Print ASCII environment/agent/prediction grids for the first N steps.")
+    parser.add_argument(
+        "--cli-tag",
+        nargs="?",
+        const="cli",
+        default="",
+        help="Emit only tagged CLI output and suppress other logs.",
+    )
     parser.add_argument("--n-max", type=int, default=256)
     parser.add_argument("--l-work-max", type=float, default=48.0)
     parser.add_argument("--force-block-anchors", action="store_true")
@@ -1999,8 +2046,10 @@ def main() -> None:
         debug_full_state=args.debug_full_state,
         force_selected_blocks=args.force_selected_blocks,
         visualize_steps=args.visualize_steps,
+        cli_tag=args.cli_tag,
     )
-    print("[SUMMARY]", vars(args), summary)
+    if not args.cli_tag:
+        print("[SUMMARY]", vars(args), summary)
 
 
 if __name__ == "__main__":
