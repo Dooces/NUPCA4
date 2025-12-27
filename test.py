@@ -245,6 +245,24 @@ def _obs_mask_grid(obs_dims: set[int], *, side: int, n_colors: int, n_shapes: in
     return grid
 
 
+def _check_block_partition(blocks: List[List[int]], D_agent: int) -> Tuple[bool, str]:
+    dims_seen: set[int] = set()
+    for block_id, dims in enumerate(blocks):
+        for dim in dims:
+            if dim in dims_seen:
+                return False, f"dim {dim} appears in multiple blocks (first seen before block {block_id})"
+            dims_seen.add(int(dim))
+    missing = set(range(int(D_agent))) - dims_seen
+    extra = dims_seen - set(range(int(D_agent)))
+    if missing:
+        missing_head = sorted(missing)[:8]
+        return False, f"missing dims (head)={missing_head} count={len(missing)}"
+    if extra:
+        extra_head = sorted(extra)[:8]
+        return False, f"extra dims (head)={extra_head} count={len(extra)}"
+    return True, "ok"
+
+
 def _print_visualization(
     step_idx: int,
     true_delta: tuple[int, int],
@@ -292,6 +310,11 @@ def _print_visualization(
     prev_grid = _occupancy_grid(prev_vec[:base_dim], **grid_kwargs)
     pred_grid = _occupancy_grid(pred_vec[:base_dim], **grid_kwargs)
     obs_grid = _obs_mask_grid(obs_dims, side=side, n_colors=n_colors, n_shapes=n_shapes)
+    if len(obs_grid) != int(side) or any(len(row) != int(side) for row in obs_grid):
+        raise AssertionError(
+            f"Observation mask grid malformed: expected {side}x{side}, got "
+            f"{len(obs_grid)}x{max((len(r) for r in obs_grid), default=0)}"
+        )
     env_occ = _occupancy_array(
         env_source_vec[:env_source_dim],
         side=side,
@@ -931,6 +954,8 @@ def run_task(
             binding_rotations=bool(binding_rotations),
             grid_side=int(side),
             grid_channels=int(n_colors + n_shapes),
+            grid_color_channels=int(n_colors),
+            grid_shape_channels=int(n_shapes),
             grid_base_dim=int(base_dim),
             periph_bins=int(periph_bins),
             periph_blocks=int(periph_blocks),
@@ -977,6 +1002,8 @@ def run_task(
             force_block_anchors=bool(force_block_anchors),
             grid_side=int(side),
             grid_channels=1,
+            grid_color_channels=1,
+            grid_shape_channels=0,
             grid_base_dim=int(base_dim),
             periph_bins=int(periph_bins),
             periph_blocks=int(periph_blocks),
@@ -1036,6 +1063,30 @@ def run_task(
         linear_world.reset()
         vis_n_colors = 0
         vis_n_shapes = 0
+    D_source = "world" if dense_world else "cli"
+    print(
+        f"[INIT] world_created=True world={world} D_world={world_dim} "
+        f"D_agent={D_agent} D_source={D_source} B={B_int}"
+    )
+    buffer_last = np.asarray(agent.state.buffer.x_last, dtype=float).reshape(-1)
+    buffer_prior = np.asarray(agent.state.buffer.x_prior, dtype=float).reshape(-1)
+    if buffer_last.shape[0] != int(D_agent) or buffer_prior.shape[0] != int(D_agent):
+        raise AssertionError(
+            "Invariant violation: buffer sizes changed after agent init "
+            f"(x_last={buffer_last.shape}, x_prior={buffer_prior.shape}, D_agent={D_agent})."
+        )
+    blocks_partition = getattr(agent.state, "blocks", []) or []
+    blocks_ok, blocks_msg = _check_block_partition(blocks_partition, int(D_agent))
+    print(f"[INIT] block_partition_ok={blocks_ok} detail={blocks_msg}")
+    if not blocks_ok:
+        raise AssertionError(f"Invariant violation: block partition invalid ({blocks_msg}).")
+    if blocks_partition:
+        block_sizes = [len(b) for b in blocks_partition]
+        print(
+            f"[INIT] block_sizes count={len(block_sizes)} min={min(block_sizes)} "
+            f"max={max(block_sizes)} sum={sum(block_sizes)}"
+        )
+    print("[INIT] agent_constructed=True (buffers/weights stable after init)")
     periph_ids = _peripheral_block_ids(cfg) if periph_blocks > 0 else []
     coverage_diag_enabled = bool(diagnose_coverage) and world == "square"
     coverage_steps_total = 0
@@ -1142,6 +1193,28 @@ def run_task(
         else:
             top_resid_blocks = []
         blocks = select_fovea(agent.state.fovea, cfg_step)
+        ages_snapshot = np.asarray(getattr(agent.state.fovea, "block_age", []), dtype=float)
+        if int(coverage_cap_G) > 0 and ages_snapshot.size:
+            mandatory_blocks = [
+                int(b)
+                for b in range(int(B))
+                if float(ages_snapshot[b]) >= float(coverage_cap_G)
+            ]
+            if mandatory_blocks and not set(mandatory_blocks).intersection(set(blocks or [])):
+                mandatory_blocks = sorted(
+                    mandatory_blocks, key=lambda b: float(ages_snapshot[b]), reverse=True
+                )
+                blocks = mandatory_blocks[: max(1, int(k_eff))]
+        grid_world = int(side) > 0 and int(n_colors + n_shapes) > 0
+        if ages_snapshot.size and grid_world:
+            alpha_cov_eff = float(alpha_cov)
+            if fovea_use_age:
+                scores = resid_snapshot + alpha_cov_eff * np.log1p(np.maximum(0.0, ages_snapshot))
+            else:
+                scores = resid_snapshot
+            top_score_blocks = np.argsort(-scores)[: min(int(k_eff), scores.size)].tolist()
+            if top_score_blocks:
+                blocks = [int(b) for b in top_score_blocks]
         periph_candidates = list(range(max(0, int(B) - int(periph_blocks)), int(B)))
         blocks, forced_periph_blocks = _enforce_peripheral_blocks(
             blocks,
@@ -1152,7 +1225,28 @@ def run_task(
         motion_probe_budget = max(0, int(getattr(cfg_step, "motion_probe_blocks", 0)))
         motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg_step, motion_probe_budget)
         blocks, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks, cfg_step, motion_probe_blocks)
+        if ages_snapshot.size and grid_world:
+            alpha_cov_eff = float(alpha_cov)
+            if fovea_use_age:
+                scores = resid_snapshot + alpha_cov_eff * np.log1p(np.maximum(0.0, ages_snapshot))
+            else:
+                scores = resid_snapshot
+            top_score_blocks = np.argsort(-scores)[: min(int(k_eff), scores.size)].tolist()
+            if top_score_blocks:
+                blocks = [int(b) for b in top_score_blocks]
         selected_blocks_tuple = tuple(int(b) for b in blocks)
+        max_block_id = len(getattr(agent.state, "blocks", []) or [])
+        if any(int(b) < 0 or int(b) >= max_block_id for b in blocks):
+            raise AssertionError(
+                f"Invariant violation: fovea block id out of range (blocks={blocks}, B={max_block_id})."
+            )
+        if visualize_steps and step_idx < visualize_steps:
+            ages_preview = ages_snapshot[: min(8, ages_snapshot.size)].tolist() if ages_snapshot.size else []
+            resid_preview = resid_snapshot[: min(8, resid_snapshot.size)].tolist() if resid_snapshot.size else []
+            print(
+                f"[fovea debug] step={step_idx} ages_head={ages_preview} "
+                f"resid_head={resid_preview} blocks={blocks}"
+            )
         if periph_test_active:
             periph_present = all(int(b) in blocks for b in periph_ids)
             if periph_present:
@@ -1242,6 +1336,46 @@ def run_task(
             prior_arr = np.asarray(prior, dtype=float).reshape(-1)
         action, next_state, trace = step_pipeline(agent.state, obs, cfg_step)
         agent.state = next_state
+        obs_dims_req = list(obs_dims)
+        obs_dims_actual = sorted(int(dim) for dim in agent.state.buffer.observed_dims)
+        obs_req_set = set(obs_dims_req)
+        obs_act_set = set(obs_dims_actual)
+        if obs_req_set != obs_act_set:
+            req_head = sorted(obs_req_set)[:8]
+            act_head = sorted(obs_act_set)[:8]
+            print(
+                f"[obs mismatch] step={step_idx} req_count={len(obs_req_set)} "
+                f"used_count={len(obs_act_set)} req_head={req_head} used_head={act_head}"
+            )
+        if dense_world and not pred_only and not occluding:
+            if obs_act_set:
+                obs_min = min(obs_act_set)
+                obs_max = max(obs_act_set)
+            else:
+                obs_min = None
+                obs_max = None
+            full_obs_expected = len(obs_req_set) == int(D_agent)
+            if full_obs_expected and len(obs_act_set) != int(D_agent):
+                raise AssertionError(
+                    f"Invariant violation: dense-world obs size={len(obs_act_set)} "
+                    f"expected D_world={D_agent}."
+                )
+            if full_obs_expected and (obs_min != 0 or obs_max != int(D_agent) - 1):
+                raise AssertionError(
+                    f"Invariant violation: dense-world obs bounds min={obs_min} max={obs_max} "
+                    f"expected [0, {int(D_agent) - 1}]."
+                )
+        if log_every > 0 and (step_idx % log_every == 0 or log_every == 1):
+            obs_min = min(obs_act_set) if obs_act_set else None
+            obs_max = max(obs_act_set) if obs_act_set else None
+            print(
+                f"[obs summary] step={step_idx} env_obs_count={len(obs_req_set)} "
+                f"used_obs_count={len(obs_act_set)} used_min={obs_min} used_max={obs_max} "
+                f"req_min={min(obs_req_set) if obs_req_set else None} "
+                f"req_max={max(obs_req_set) if obs_req_set else None} "
+                f"trace_env_full={trace.get('env_full_provided')} "
+                f"trace_use_true_transport={trace.get('use_true_transport')}"
+            )
         if force_rest:
             rest_test_forced_steps += 1
             rest_test_edits_processed += int(trace.get("edits_processed", 0))
@@ -1286,7 +1420,7 @@ def run_task(
             active_blocks = set()
             if active_idx.size:
                 active_blocks = set(int(i) // block_size_agent for i in active_idx)
-            obs_active_idx = np.array([i for i in obs_dims if active_mask[i]], dtype=int)
+            obs_active_idx = np.array([i for i in obs_dims_actual if active_mask[i]], dtype=int)
             obs_active_count = int(obs_active_idx.size)
             if obs_active_count:
                 obs_active_hits += 1
@@ -1317,18 +1451,18 @@ def run_task(
                             same_block_err.append(float(np.mean(err_pos)))
                     prev_active_block = active_block_now
                     prev_active_block_step = step_idx
-            if obs_dims:
-                err = np.abs(prior_arr[obs_dims] - full_x[obs_dims])
+            if obs_dims_actual:
+                err = np.abs(prior_arr[obs_dims_actual] - full_x[obs_dims_actual])
                 mae_obs.append(float(np.mean(err)))
-                if len(obs_dims) > 1:
-                    obs_pred = prior_arr[obs_dims]
-                    obs_true = full_x[obs_dims]
+                if len(obs_dims_actual) > 1:
+                    obs_pred = prior_arr[obs_dims_actual]
+                    obs_true = full_x[obs_dims_actual]
                     if np.std(obs_pred) > 0 and np.std(obs_true) > 0:
                         corr_obs.append(float(np.corrcoef(obs_pred, obs_true)[0, 1]))
             if prior_arr.shape[0] == full_x.shape[0]:
                 mask = np.ones(prior_arr.shape[0], dtype=bool)
-                if obs_dims:
-                    mask[np.asarray(obs_dims, dtype=int)] = False
+                if obs_dims_actual:
+                    mask[np.asarray(obs_dims_actual, dtype=int)] = False
                 if np.any(mask):
                     err_unobs = np.abs(prior_arr[mask] - full_x[mask])
                     mae_unobs.append(float(np.mean(err_unobs)))
@@ -1342,9 +1476,9 @@ def run_task(
                             if pred_only:
                                 corr_unobs_predonly.append(float(np.corrcoef(unobs_pred, unobs_true)[0, 1]))
                 if np.any(active_mask):
-                    if obs_dims:
+                    if obs_dims_actual:
                         obs_mask = np.zeros_like(active_mask, dtype=bool)
-                        obs_mask[np.asarray(obs_dims, dtype=int)] = True
+                        obs_mask[np.asarray(obs_dims_actual, dtype=int)] = True
                     else:
                         obs_mask = np.zeros_like(active_mask, dtype=bool)
                     pos_obs_mask = active_mask & obs_mask
@@ -1355,7 +1489,7 @@ def run_task(
                     if np.any(pos_unobs_mask):
                         err_pos_unobs = np.abs(prior_arr[pos_unobs_mask] - full_x[pos_unobs_mask])
                         mae_pos_unobs.append(float(np.mean(err_pos_unobs)))
-        perc = build_partial_obs(full_x, obs_dims)
+        perc = build_partial_obs(full_x, obs_dims_actual)
         pred_vec = prior_arr if prior_arr is not None else agent.state.buffer.x_last
         pred_vec = np.asarray(pred_vec, dtype=float).reshape(-1)
         occ_env = _occupancy_array(
@@ -1383,7 +1517,7 @@ def run_task(
             f"EXACT_AGENT_PREDICTS={preds}"
         )
         if visualize_steps and step_idx < visualize_steps:
-            obs_set = {int(dim) for dim in obs_dims if 0 <= int(dim) < int(D_agent)}
+            obs_set = {int(dim) for dim in obs_dims_actual if 0 <= int(dim) < int(D_agent)}
             transport_delta = tuple(trace.get("transport_delta", (0, 0)))
             _print_visualization(
                 step_idx=step_idx,
@@ -1502,10 +1636,10 @@ def run_task(
             if occluding:
                 print(f"[D{D_agent} seed{seed}] occluding_step={trace['t']} obs_dims=0")
         if emit and step_idx < step_log_limit:
-            obs_preview = obs_dims[: min(32, len(obs_dims))]
+            obs_preview = obs_dims_actual[: min(32, len(obs_dims_actual))]
             active_preview = active_idx[: min(32, active_idx.size)].tolist() if active_idx.size else []
             obs_active_preview = obs_active_idx[: min(32, obs_active_idx.size)].tolist() if obs_active_idx.size else []
-            print(f"[D{D_agent} seed{seed}] obs_dims_count={len(obs_dims)} obs_dims_head={obs_preview}")
+            print(f"[D{D_agent} seed{seed}] obs_dims_count={len(obs_dims_actual)} obs_dims_head={obs_preview}")
             print(f"[D{D_agent} seed{seed}] active_dims_count={int(active_idx.size)} active_dims_head={active_preview}")
             print(f"[D{D_agent} seed{seed}] obs_active_count={obs_active_count} obs_active_head={obs_active_preview}")
             blocks_preview = blocks[: min(16, len(blocks))]
@@ -1533,7 +1667,7 @@ def run_task(
                 f"[D{D_agent} seed{seed}] fovea_overlap top_age_hits={top_age_hits} "
                 f"top_resid_hits={top_resid_hits} top_k={top_k}"
             )
-            full_obs = int(len(obs_dims) >= int(D_agent) and k_eff >= int(B_int))
+            full_obs = int(len(obs_dims_actual) >= int(D_agent) and k_eff >= int(B_int))
             cov_debt = float(trace.get("coverage_debt", 0.0))
             cov_violation = int(full_obs and cov_debt > 1e-6)
             print(
@@ -1645,7 +1779,8 @@ def main() -> None:
     parser.add_argument("--alpha-cov", type=float, default=0.10)
     parser.add_argument("--coverage-cap-G", type=int, default=50)
     parser.add_argument("--fovea-residual-ema", type=float, default=0.10)
-    parser.add_argument("--fovea-use-age", action="store_true")
+    parser.add_argument("--fovea-use-age", dest="fovea_use_age", action="store_true", default=True)
+    parser.add_argument("--no-fovea-use-age", dest="fovea_use_age", action="store_false")
     parser.add_argument("--fovea-age-min-inc", type=float, default=0.05)
     parser.add_argument("--fovea-age-resid-scale", type=float, default=0.05)
     parser.add_argument("--fovea-age-resid-thresh", type=float, default=0.01)

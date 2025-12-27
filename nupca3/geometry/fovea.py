@@ -32,12 +32,132 @@ Implementation note
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Set, Tuple, List, Sequence
+from typing import Dict, Iterable, Optional, Set, Tuple, List, Sequence
+
+import math
 
 import numpy as np
 
 from ..config import AgentConfig
 from ..types import FoveaState, ObservationBuffer
+
+_BLOCK_CACHE: Dict[Tuple[int, int, int, int, int, int, int, int], List[List[int]]] = {}
+_BLOCK_LOOKUP_CACHE: Dict[Tuple[int, int, int, int, int, int, int, int], Dict[int, int]] = {}
+
+
+def _grid_block_dims(
+    *,
+    side: int,
+    color_channels: int,
+    shape_channels: int,
+    block_cells_y: int,
+    block_cells_x: int,
+    block_y: int,
+    block_x: int,
+) -> List[int]:
+    grid_cells = side * side
+    color_offset = 0
+    shape_offset = grid_cells * color_channels
+    dims: List[int] = []
+    y_start = block_y * block_cells_y
+    x_start = block_x * block_cells_x
+    for y in range(y_start, y_start + block_cells_y):
+        for x in range(x_start, x_start + block_cells_x):
+            cell = y * side + x
+            if color_channels > 0:
+                base = color_offset + cell * color_channels
+                dims.extend(range(base, base + color_channels))
+            if shape_channels > 0:
+                base = shape_offset + cell * shape_channels
+                dims.extend(range(base, base + shape_channels))
+    return dims
+
+
+def build_blocks_from_cfg(cfg: AgentConfig) -> List[List[int]]:
+    """Build block partition aligned to grid when metadata is available."""
+    D = int(getattr(cfg, "D", 0))
+    B = max(1, int(getattr(cfg, "B", getattr(cfg, "n_blocks", 1))))
+    side = int(getattr(cfg, "grid_side", 0))
+    grid_channels = int(getattr(cfg, "grid_channels", 0))
+    color_channels = int(getattr(cfg, "grid_color_channels", 0))
+    shape_channels = int(getattr(cfg, "grid_shape_channels", 0))
+    base_dim = int(getattr(cfg, "grid_base_dim", 0))
+    periph_blocks = max(0, min(int(getattr(cfg, "periph_blocks", 0)), B))
+    key = (D, B, side, grid_channels, color_channels, shape_channels, base_dim, periph_blocks)
+    cached = _BLOCK_CACHE.get(key)
+    if cached is not None:
+        return [dims.copy() for dims in cached]
+
+    if D <= 0:
+        return [[]]
+
+    if base_dim <= 0:
+        base_dim = D
+
+    spatial_blocks = B - periph_blocks
+    grid_cells = side * side
+    can_use_grid = (
+        side > 0
+        and grid_channels > 0
+        and base_dim == grid_cells * grid_channels
+        and spatial_blocks > 0
+    )
+    if can_use_grid:
+        if color_channels <= 0 and shape_channels <= 0:
+            color_channels = grid_channels
+            shape_channels = 0
+        if color_channels + shape_channels != grid_channels:
+            can_use_grid = False
+
+    blocks: List[List[int]] = []
+    if can_use_grid:
+        block_grid_side = int(round(math.sqrt(spatial_blocks)))
+        if block_grid_side * block_grid_side != spatial_blocks:
+            can_use_grid = False
+        elif side % block_grid_side != 0:
+            can_use_grid = False
+        else:
+            block_cells = side // block_grid_side
+            for by in range(block_grid_side):
+                for bx in range(block_grid_side):
+                    dims = _grid_block_dims(
+                        side=side,
+                        color_channels=color_channels,
+                        shape_channels=shape_channels,
+                        block_cells_y=block_cells,
+                        block_cells_x=block_cells,
+                        block_y=by,
+                        block_x=bx,
+                    )
+                    blocks.append(dims)
+
+    if not can_use_grid:
+        base = D // B
+        rem = D % B
+        if B > D:
+            B = D
+            base = 1
+            rem = 0
+        start = 0
+        for b in range(B):
+            size = base + (1 if b < rem else 0)
+            end = start + size
+            blocks.append(list(range(start, end)))
+            start = end
+
+    if can_use_grid and periph_blocks > 0 and base_dim < D:
+        periph_dim = D - base_dim
+        periph_base = periph_dim // periph_blocks
+        periph_rem = periph_dim % periph_blocks
+        start = base_dim
+        for idx in range(periph_blocks):
+            size = periph_base + (1 if idx < periph_rem else 0)
+            end = start + size
+            blocks.append(list(range(start, end)))
+            start = end
+
+    _BLOCK_CACHE[key] = [dims.copy() for dims in blocks]
+    return [dims.copy() for dims in blocks]
 
 
 def init_fovea_state(cfg: AgentConfig, *, block_costs: Optional[Sequence[float]] = None) -> FoveaState:
@@ -83,46 +203,45 @@ def block_slices(cfg: AgentConfig) -> List[Tuple[int, int]]:
     The partition distributes the remainder so that the first (D % B) blocks
     have size ceil(D/B), and the remainder have size floor(D/B).
     """
-    D = int(cfg.D)
-    B = int(cfg.B)
-    if B <= 0:
-        return []
-
-    base = D // B
-    rem = D % B
+    blocks = build_blocks_from_cfg(cfg)
     slices: List[Tuple[int, int]] = []
-    start = 0
-    for b in range(B):
-        size = base + (1 if b < rem else 0)
-        end = min(D, start + max(1, size))
-        slices.append((start, end))
-        start = end
-    # Ensure last slice ends at D.
-    if slices:
-        s0, _ = slices[-1]
-        slices[-1] = (s0, D)
+    for dims in blocks:
+        if not dims:
+            slices.append((0, 0))
+            continue
+        slices.append((min(dims), max(dims) + 1))
     return slices
 
 
 def block_of_dim(k: int, cfg: AgentConfig) -> int:
     """Map dimension index k to its block id under the A16.1 partition."""
-    k = int(k)
-    if k < 0:
-        return 0
-    slices = block_slices(cfg)
-    for b, (s, e) in enumerate(slices):
-        if s <= k < e:
-            return int(b)
-    return int(max(0, len(slices) - 1))
+    D = int(getattr(cfg, "D", 0))
+    B = max(1, int(getattr(cfg, "B", getattr(cfg, "n_blocks", 1))))
+    side = int(getattr(cfg, "grid_side", 0))
+    grid_channels = int(getattr(cfg, "grid_channels", 0))
+    color_channels = int(getattr(cfg, "grid_color_channels", 0))
+    shape_channels = int(getattr(cfg, "grid_shape_channels", 0))
+    base_dim = int(getattr(cfg, "grid_base_dim", 0))
+    periph_blocks = max(0, min(int(getattr(cfg, "periph_blocks", 0)), B))
+    key = (D, B, side, grid_channels, color_channels, shape_channels, base_dim, periph_blocks)
+    lookup = _BLOCK_LOOKUP_CACHE.get(key)
+    if lookup is None:
+        lookup = {}
+        blocks = build_blocks_from_cfg(cfg)
+        for block_id, dims in enumerate(blocks):
+            for dim in dims:
+                lookup[int(dim)] = int(block_id)
+        _BLOCK_LOOKUP_CACHE[key] = lookup
+    return int(lookup.get(int(k), max(0, len(build_blocks_from_cfg(cfg)) - 1)))
 
 
-def dims_for_block(block_id: int, cfg: AgentConfig) -> range:
+def dims_for_block(block_id: int, cfg: AgentConfig) -> List[int]:
     """Return dimension range for a block id."""
-    slices = block_slices(cfg)
+    blocks = build_blocks_from_cfg(cfg)
     b = int(block_id)
-    b = max(0, min(len(slices) - 1, b))
-    s, e = slices[b]
-    return range(s, e)
+    if b < 0 or b >= len(blocks):
+        return []
+    return list(blocks[b])
 
 
 # =============================================================================
@@ -222,6 +341,13 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
     residuals = np.asarray(fovea.block_residual, dtype=float)
 
     use_age = bool(getattr(cfg, "fovea_use_age", True))
+    if use_age and budget_units <= 1.0 and ages.size:
+        # Deterministic sweep for single-block budgets to avoid getting stuck.
+        if B > 1 and getattr(fovea, "current_blocks", None):
+            seed = min(int(b) for b in fovea.current_blocks)
+            return [int((seed + 1) % B)]
+        best_age = int(np.argmax(ages))
+        return [best_age]
     if residual_only or not use_age:
         scores = residuals.copy()
     else:
