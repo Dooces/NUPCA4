@@ -345,13 +345,16 @@ class NUPCA3GridAgent:
 
         self.cfg = AgentConfig(
             D=self.D,
-            B=256,
-            fovea_blocks_per_step=64,
+            B=self.D,
+            fovea_blocks_per_step=BUDGET,
             fovea_log_every=0,
+            allow_selected_blocks_override=True,
         )
         self.agent = NUPCA3Agent(self.cfg)
         self.agent.reset(seed=int(seed))
         self.underlay_mask = np.zeros((self.H, self.W), dtype=bool)
+        self.pred_prev = np.zeros(self.D, dtype=int)
+        self.rng = np.random.default_rng(seed)
         self.logger = logging.getLogger("nupca3_grid_harness")
         self.logger.setLevel(logging.INFO)
         if not self.logger.handlers:
@@ -360,6 +363,26 @@ class NUPCA3GridAgent:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.propagate = False
+
+    def _choose_fovea(self, mismatch):
+        budget = min(BUDGET, self.D)
+        if float(np.max(mismatch)) < 1e-12:
+            return set(
+                self.rng.choice(np.arange(self.D), size=budget, replace=False).tolist()
+            )
+
+        k_main = max(0, budget - PROBE_K)
+        main_idx = np.argsort(mismatch)[-k_main:] if k_main > 0 else np.array([], dtype=int)
+
+        remaining = np.setdiff1d(np.arange(self.D), main_idx, assume_unique=False)
+        k_probe = min(PROBE_K, remaining.size)
+        probe_idx = (
+            self.rng.choice(remaining, size=k_probe, replace=False)
+            if k_probe > 0
+            else np.array([], dtype=int)
+        )
+
+        return set(np.concatenate([main_idx, probe_idx]).tolist())
 
     def _log_step(self, *, action, trace, obs_vec, pred_display, mismatch, idx):
         state = self.agent.state
@@ -416,7 +439,7 @@ class NUPCA3GridAgent:
                 "candidates": learning_candidates,
             },
             "observation": {
-                "obs_count": int(obs_vec.size),
+                "obs_count": int(len(idx)),
                 "seen_count": int(len(idx)),
             },
             "prediction": {
@@ -430,23 +453,21 @@ class NUPCA3GridAgent:
         if obs_vec.size != self.D:
             obs_vec = np.resize(obs_vec, (self.D,))
 
-        x_partial = {int(i): float(v) for i, v in enumerate(obs_vec)}
-        env_obs = EnvObs(x_partial=x_partial, opp=0.0, danger=0.0)
+        mismatch_prev = (obs_vec.astype(int) != self.pred_prev).astype(float)
+        O = self._choose_fovea(mismatch_prev)
+        idx = np.fromiter(O, dtype=int)
+        x_partial = {int(i): float(obs_vec[int(i)]) for i in idx}
+        env_obs = EnvObs(x_partial=x_partial, opp=0.0, danger=0.0, selected_blocks=tuple(idx.tolist()))
         action, trace = self.agent.step(env_obs)
-        self.agent.step(env_obs)
 
         pred_vec = np.asarray(getattr(self.agent.state.buffer, "x_prior", np.zeros(self.D)), dtype=float)
         if pred_vec.size != self.D:
             pred_vec = np.resize(pred_vec, (self.D,))
         pred_display = np.rint(pred_vec).astype(int)
 
-        observed_dims = sorted(int(k) for k in getattr(self.agent.state.buffer, "observed_dims", set()))
         seen = np.zeros(self.D, dtype=int)
-        if observed_dims:
-            idx = np.array(observed_dims, dtype=int)
+        if idx.size:
             seen[idx] = obs_vec[idx].astype(int)
-        else:
-            idx = np.array([], dtype=int)
 
         unknown = np.ones((self.H, self.W), dtype=bool)
         if idx.size:
@@ -455,6 +476,7 @@ class NUPCA3GridAgent:
             unknown[ys, xs] = False
 
         mismatch = (obs_vec.astype(int) != pred_display).astype(float)
+        self.pred_prev = pred_display.copy()
         self._log_step(
             action=action,
             trace=trace,
