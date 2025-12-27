@@ -43,7 +43,7 @@ from .step_pipeline import step_pipeline
 
 from .geometry.buffer import init_observation_buffer
 from .geometry.block_spec import BlockSpec, BlockView, build_block_specs
-from .geometry.fovea import init_fovea_state
+from .geometry.fovea import init_fovea_state, build_blocks_from_cfg
 from .geometry.streams import coarse_bin_count
 
 from .memory.library import init_library
@@ -174,7 +174,7 @@ class NUPCA3Agent:
         # Core dimensions
         D = int(getattr(cfg, "D", getattr(cfg, "state_dim", getattr(cfg, "obs_dim", 64))))
         B = int(getattr(cfg, "B", getattr(cfg, "n_blocks", 2)))
-        blocks = _build_blocks(D, B)
+        blocks = build_blocks_from_cfg(cfg)
         block_specs = build_block_specs(blocks)
         block_view = BlockView(block_specs)
         block_costs = np.asarray([float(spec.cost) for spec in block_specs], dtype=float)

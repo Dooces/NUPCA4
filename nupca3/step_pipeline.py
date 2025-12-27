@@ -1571,7 +1571,9 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     _dbg(f'cfg.D={D}', state=state)
     x_prev = np.asarray(getattr(state.buffer, "x_last", np.zeros(D)), dtype=float).reshape(-1)
     if x_prev.shape[0] != D:
-        x_prev = np.resize(x_prev, (D,))
+        raise AssertionError(
+            f"Invariant violation: buffer.x_last has shape {x_prev.shape}, expected D={D}."
+        )
     x_prev_pre = x_prev.copy()
     prev_observed_dims = set(getattr(state.buffer, "observed_dims", set()) or set())
 
@@ -1597,7 +1599,9 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     if env_full is not None:
         temp_vec = np.asarray(env_full, dtype=float).reshape(-1)
         if temp_vec.shape[0] != D:
-            temp_vec = np.resize(temp_vec, (D,))
+            raise AssertionError(
+                f"Invariant violation: env_obs.x_full has shape {temp_vec.shape}, expected D={D}."
+            )
         true_full_vec = temp_vec
 
     coarse_prev_snapshot = getattr(state, "coarse_prev", None)
@@ -1638,11 +1642,43 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     update_fovea_routing_scores(state.fovea, x_prev, cfg, t=int(getattr(state, "t", 0)))
     _apply_pending_transport_disagreement(state, cfg)
     blocks_t = select_fovea(state.fovea, cfg)
+    G = int(getattr(cfg, "coverage_cap_G", 0))
+    ages_now = np.asarray(
+        getattr(state.fovea, "block_age", np.zeros(int(getattr(cfg, "B", 0)))), dtype=float
+    )
+    budget = max(1, int(getattr(cfg, "fovea_blocks_per_step", 0)))
+    if G > 0 and ages_now.size:
+        mandatory = [int(b) for b in range(int(getattr(cfg, "B", 0))) if float(ages_now[b]) >= float(G)]
+        if mandatory and not set(mandatory).intersection(set(blocks_t or [])):
+            mandatory = sorted(mandatory, key=lambda b: float(ages_now[b]), reverse=True)
+            blocks_t = mandatory[: min(len(mandatory), budget)]
+    use_age = bool(getattr(cfg, "fovea_use_age", True))
+    grid_world = int(getattr(cfg, "grid_side", 0)) > 0 and int(getattr(cfg, "grid_channels", 0)) > 0
+    if ages_now.size and grid_world:
+        residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
+        alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
+        if use_age:
+            scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages_now))
+        else:
+            scores = residuals
+        top_blocks = np.argsort(-scores)[: min(budget, scores.size)].tolist()
+        if top_blocks:
+            blocks_t = [int(b) for b in top_blocks]
     periph_candidates = _peripheral_block_ids(cfg)
     blocks_t, forced_periph_blocks = _enforce_peripheral_blocks(blocks_t or [], cfg, periph_candidates)
     motion_probe_budget = max(0, int(getattr(cfg, "motion_probe_blocks", 0)))
     motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg, motion_probe_budget)
     blocks_t, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks_t or [], cfg, motion_probe_blocks)
+    if ages_now.size and grid_world:
+        residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
+        alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
+        if use_age:
+            scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages_now))
+        else:
+            scores = residuals
+        top_blocks = np.argsort(-scores)[: min(budget, scores.size)].tolist()
+        if top_blocks:
+            blocks_t = [int(b) for b in top_blocks]
     _dbg(f'A16.3 select_fovea -> n_blocks={len(blocks_t) if blocks_t is not None else 0}', state=state)
     state.fovea.current_blocks = set(int(b) for b in blocks_t)
     _dbg(f'A16.3 current_blocks={len(state.fovea.current_blocks)}', state=state)
@@ -1706,10 +1742,37 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         periph_dims_present = int(len(forced_periph_dims & O_req))
 
     # Mask incoming sparse cue to O_req and bounds
+    env_obs_dims = {
+        int(k) for k in (getattr(env_obs, "x_partial", {}) or {}).keys() if 0 <= int(k) < D
+    }
     cue_t = _filter_cue_to_Oreq(getattr(env_obs, "x_partial", {}) or {}, O_req, D)
     _dbg(f'cue_in|x_partial|={len(getattr(env_obs,"x_partial",{}) or {})}', state=state)
     O_t = set(cue_t.keys())
     _dbg(f'A16.5 cue_t filtered -> |O_t|={len(O_t)}', state=state)
+    if env_obs_dims:
+        env_min = min(env_obs_dims)
+        env_max = max(env_obs_dims)
+    else:
+        env_min = None
+        env_max = None
+    if O_req:
+        req_min = min(O_req)
+        req_max = max(O_req)
+    else:
+        req_min = None
+        req_max = None
+    if O_t:
+        used_min = min(O_t)
+        used_max = max(O_t)
+    else:
+        used_min = None
+        used_max = None
+    _dbg(
+        f'A16.5 obs_sets env_size={len(env_obs_dims)} env_min={env_min} env_max={env_max} '
+        f'req_size={len(O_req)} req_min={req_min} req_max={req_max} '
+        f'used_size={len(O_t)} used_min={used_min} used_max={used_max}',
+        state=state,
+    )
 
     if O_t:
         obs_idx = np.array(sorted(O_t), dtype=int)
@@ -1848,9 +1911,13 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     x_t = np.asarray(x_t, dtype=float).reshape(-1)
     prior_t = np.asarray(prior_t, dtype=float).reshape(-1)
     if x_t.shape[0] != D:
-        x_t = np.resize(x_t, (D,))
+        raise AssertionError(
+            f"Invariant violation: posterior x_t has shape {x_t.shape}, expected D={D}."
+        )
     if prior_t.shape[0] != D:
-        prior_t = np.resize(prior_t, (D,))
+        raise AssertionError(
+            f"Invariant violation: prior_t has shape {prior_t.shape}, expected D={D}."
+        )
     if obs_idx.size:
         mae_pos_post_transport = float(np.mean(np.abs(prior_t[obs_idx] - obs_vals)))
     else:
@@ -2811,6 +2878,19 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             "maint_debt": float(maint_debt),
             "Q_struct_len": int(len(getattr(macro_t, "Q_struct", []) or [])),
             "observed_dims": int(len(state.buffer.observed_dims)),
+            "obs_env_size": int(len(env_obs_dims)),
+            "obs_env_min": int(env_min) if env_min is not None else None,
+            "obs_env_max": int(env_max) if env_max is not None else None,
+            "obs_req_size": int(len(O_req)),
+            "obs_req_min": int(req_min) if req_min is not None else None,
+            "obs_req_max": int(req_max) if req_max is not None else None,
+            "obs_used_size": int(len(O_t)),
+            "obs_used_min": int(used_min) if used_min is not None else None,
+            "obs_used_max": int(used_max) if used_max is not None else None,
+            "obs_filtered_count": int(len(O_req) - len(O_t)),
+            "env_full_provided": bool(env_full is not None),
+            "use_true_transport": bool(use_true_transport),
+            "transport_debug_env_grid": bool(use_env_grid),
             "edits_processed": int(edits_processed_t),
             "rest_permitted_t": bool(rest_perm_t),
             "rest_unsafe_reason": str(rest_perm_reason),
