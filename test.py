@@ -437,6 +437,30 @@ def _print_visualization(
             )
 
 
+def _block_grid_bounds(
+    block_dims: List[int],
+    *,
+    side: int,
+    channels: int,
+    base_dim: int,
+) -> tuple[int, int, int, int] | None:
+    if not block_dims or side <= 0 or channels <= 0 or base_dim <= 0:
+        return None
+    grid_cells = int(side) * int(side)
+    max_cell = min(grid_cells - 1, (int(base_dim) - 1) // int(channels)) if grid_cells > 0 else -1
+    cells = []
+    for dim in block_dims:
+        if 0 <= int(dim) < int(base_dim):
+            cell = int(dim) // int(channels)
+            if 0 <= cell <= max_cell:
+                cells.append(cell)
+    if not cells:
+        return None
+    rows = [cell // int(side) for cell in cells]
+    cols = [cell % int(side) for cell in cells]
+    return min(rows), max(rows), min(cols), max(cols)
+
+
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -882,6 +906,7 @@ def run_task(
     D_agent = int(world_dim) if dense_world else D_cli
     avg_block_size = float(D_agent) / float(B_int) if B_int > 0 else float(D_agent)
     avg_block_size = max(1.0, avg_block_size)
+    budget_units = float(obs_budget) / float(obs_cost_val) if obs_cost_val > 0 else 0.0
 
     def _budget_to_blocks(budget: float) -> int:
         if budget <= 0.0:
@@ -899,6 +924,10 @@ def run_task(
         k_max = k_min
     if int(min_fovea_blocks) > 0:
         k_fixed = max(k_fixed, min(int(B), int(min_fovea_blocks)))
+    print(
+        f"[BUDGET] obs_budget={obs_budget} obs_cost={obs_cost_val} budget_units={budget_units:.3f} "
+        f"avg_block_size={avg_block_size:.3f} blocks_selected={k_fixed}"
+    )
     step_idx = 0
     obs_dims: List[int] = []
     transport_span_effective = int(transport_span_blocks)
@@ -1137,6 +1166,10 @@ def run_task(
     step_log_limit = 25
     permit_param_true = 0
     permit_param_total = 0
+    diff_zero_match = 0
+    diff_zero_mismatch = 0
+    diff_nonzero_match = 0
+    diff_nonzero_mismatch = 0
 
     for step_idx in range(int(steps)):
         rest_permitted_prev = bool(getattr(agent.state, "rest_permitted_prev", False))
@@ -1251,6 +1284,30 @@ def run_task(
             obs_dims = []
         if occluding:
             obs_dims = []
+        if visualize_steps and step_idx < visualize_steps:
+            obs_head = obs_dims[: min(16, len(obs_dims))]
+            obs_tail = obs_dims[-min(16, len(obs_dims)) :] if obs_dims else []
+            print(
+                f"[obs debug] step={step_idx} k_eff={k_eff} blocks={blocks} "
+                f"obs_count={len(obs_dims)} obs_head={obs_head} obs_tail={obs_tail}"
+            )
+            block_partitions = getattr(agent.state, "blocks", []) or []
+            channels = max(1, int(n_colors + n_shapes)) if world in {"moving", "square"} else 1
+            for block_id in blocks:
+                if int(block_id) < 0 or int(block_id) >= len(block_partitions):
+                    print(f"[obs debug] block_id={block_id} bounds=invalid")
+                    continue
+                bounds = _block_grid_bounds(
+                    [int(dim) for dim in block_partitions[int(block_id)]],
+                    side=side,
+                    channels=channels,
+                    base_dim=int(base_dim),
+                )
+                if bounds is None:
+                    print(f"[obs debug] block_id={block_id} bounds=periph_or_empty")
+                else:
+                    r0, r1, c0, c1 = bounds
+                    print(f"[obs debug] block_id={block_id} bounds=r{r0}:{r1} c{c0}:{c1}")
 
         # Environment evolves, then we reveal only the selected dims.
         true_delta: Tuple[int, int] = (0, 0)
@@ -1476,6 +1533,7 @@ def run_task(
         perc = build_partial_obs(full_x, obs_dims_actual)
         pred_vec = prior_arr if prior_arr is not None else agent.state.buffer.x_last
         pred_vec = np.asarray(pred_vec, dtype=float).reshape(-1)
+        pred_source = "prior" if prior_arr is not None else "buffer_last"
         occ_env = _occupancy_array(
             full_x[:int(base_dim)],
             side=side,
@@ -1493,7 +1551,7 @@ def run_task(
         diff_mask = np.asarray(occ_env, dtype=bool) != np.asarray(occ_pred, dtype=bool)
         diff_count = int(np.sum(diff_mask)) if diff_mask.size else 0
         trace["diff_count"] = diff_count
-        print(f"[diff check] step={step_idx} diff_count={diff_count}")
+        print(f"[diff check] step={step_idx} diff_count={diff_count} pred_source={pred_source}")
         preds = prior_arr.tolist() if prior_arr is not None else None
         print(
             f"[TRACE step={step_idx}] EXACT_ENV={full_x.tolist()} "
@@ -1544,6 +1602,14 @@ def run_task(
             transport_test_total += 1
             if match:
                 transport_test_matches += 1
+            if diff_count == 0 and match:
+                diff_zero_match += 1
+            elif diff_count == 0 and not match:
+                diff_zero_mismatch += 1
+            elif diff_count != 0 and match:
+                diff_nonzero_match += 1
+            else:
+                diff_nonzero_mismatch += 1
             print(
                 f"[transport check] step={step_idx} true_delta={true_delta} "
                 f"transport_delta={tdelta} match={match}"
@@ -1692,6 +1758,12 @@ def run_task(
             f"[coverage summary] steps={coverage_steps_total} hit_rate={coverage_hit_rate:.6f} "
             f"square_blocks_seen={sorted(coverage_square_blocks_seen)} "
             f"covered_blocks_seen={sorted(coverage_covered_blocks_seen)}"
+        )
+    if transport_test_active:
+        print(
+            "[summary diff/transport] "
+            f"diff0_match={diff_zero_match} diff0_mismatch={diff_zero_mismatch} "
+            f"diffnz_match={diff_nonzero_match} diffnz_mismatch={diff_nonzero_mismatch}"
         )
 
     return {
