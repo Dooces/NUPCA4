@@ -170,8 +170,10 @@ def main() -> None:
         debug_full_state=args.debug_full_state,
         force_selected_blocks=args.force_selected_blocks,
         visualize_steps=args.visualize_steps,
+        cli_tag=args.cli_tag,
     )
-    print("[SUMMARY]", vars(args), summary)
+    if not args.cli_tag:
+        print("[SUMMARY]", vars(args), summary)
 
 
 if __name__ == "__main__":
