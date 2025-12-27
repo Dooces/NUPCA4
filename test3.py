@@ -433,6 +433,7 @@ class NUPCA3GridAgent:
         x_partial = {int(i): float(v) for i, v in enumerate(obs_vec)}
         env_obs = EnvObs(x_partial=x_partial, opp=0.0, danger=0.0)
         action, trace = self.agent.step(env_obs)
+        self.agent.step(env_obs)
 
         pred_vec = np.asarray(getattr(self.agent.state.buffer, "x_prior", np.zeros(self.D)), dtype=float)
         if pred_vec.size != self.D:
