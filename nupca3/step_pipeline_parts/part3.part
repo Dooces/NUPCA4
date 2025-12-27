@@ -1,0 +1,750 @@
+    probe_vec = np.asarray([float(getattr(obs, "opp", 0.0)), float(getattr(obs, "danger", 0.0))], dtype=float)
+
+    # Features: low-dimensional internal summaries.
+    fovea = getattr(state, "fovea", None)
+    if fovea is None:
+        feature_vec = np.zeros(4, dtype=float)
+        return probe_vec, feature_vec
+
+    br = np.asarray(getattr(fovea, "block_residual", np.zeros(0)), dtype=float)
+    ba = np.asarray(getattr(fovea, "block_age", np.zeros(0)), dtype=float)
+
+    if observed_dims:
+        od = sorted(int(k) for k in observed_dims)
+        mean_abs_err = float(np.mean(abs_error[od]))
+    else:
+        mean_abs_err = 0.0
+
+    feature_vec = np.asarray(
+        [
+            float(np.mean(br)) if br.size else 0.0,
+            float(np.std(br)) if br.size else 0.0,
+            float(np.mean(ba)) if ba.size else 0.0,
+            float(mean_abs_err),
+        ],
+        dtype=float,
+    )
+    return probe_vec, feature_vec
+
+
+def _build_training_mask(*, obs_mask: np.ndarray, x_obs: np.ndarray, cfg: AgentConfig) -> np.ndarray:
+    """Objective shaping: focus updates on active, observed signal."""
+    mask = obs_mask.astype(float)
+    if not np.any(mask):
+        return mask
+    if bool(getattr(cfg, "train_active_only", False)):
+        thresh = float(getattr(cfg, "train_active_threshold", 0.0))
+        active = np.abs(x_obs) > thresh
+        mask = mask * active.astype(float)
+    if bool(getattr(cfg, "train_weight_by_value", False)):
+        power = float(getattr(cfg, "train_value_power", 1.0))
+        power = max(power, 0.0)
+        weights = np.abs(x_obs) ** power
+        mask = mask * weights
+    return mask
+def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple[int, AgentState, Dict[str, Any]]:
+    """
+    Advance the agent by one timestep.
+
+    Inputs:
+      state: current AgentState
+      env_obs: environment observation (sparse cue in env_obs.x_partial)
+      cfg: AgentConfig
+
+    Outputs:
+      action: int action selected for this timestep
+      next_state: updated AgentState (mutated in place in this snapshot style)
+      trace: dict diagnostics (runner expects a dict)
+    """
+    D = _cfg_D(state, cfg)
+    _dbg('enter', state=state)
+    _dbg(f'cfg.D={D}', state=state)
+    x_prev = np.asarray(getattr(state.buffer, "x_last", np.zeros(D)), dtype=float).reshape(-1)
+    if x_prev.shape[0] != D:
+        raise AssertionError(
+            f"Invariant violation: buffer.x_last has shape {x_prev.shape}, expected D={D}."
+        )
+    x_prev_pre = x_prev.copy()
+    prev_observed_dims = set(getattr(state.buffer, "observed_dims", set()) or set())
+
+    env_full_diag = getattr(env_obs, "x_full", None)
+    allow_full_state = bool(getattr(env_obs, "allow_full_state", False))
+    env_full = env_full_diag if allow_full_state else None
+    env_grid_mass = np.zeros(0, dtype=float)
+    transport_source = "buffer_infer"
+    force_true_delta = bool(getattr(cfg, "transport_force_true_delta", False))
+    env_shift: Tuple[int, int] | None = None
+    use_env_grid = bool(getattr(cfg, "transport_debug_env_grid", False))
+    if env_full is not None and use_env_grid:
+        full_arr = np.asarray(env_full, dtype=float).reshape(-1)
+        env_grid_mass = grid_cell_mass(full_arr, cfg)
+        prev_grid_mass = getattr(state, "grid_prev_mass", None)
+        if prev_grid_mass is not None and env_grid_mass.shape == prev_grid_mass.shape and env_grid_mass.size > 0:
+            grid_shift = compute_grid_shift(prev_grid_mass, env_grid_mass, cfg)
+            env_shift = grid_shift
+            transport_source = "grid"
+        state.grid_prev_mass = env_grid_mass.copy() if env_grid_mass.size else np.zeros(0, dtype=float)
+    else:
+        state.grid_prev_mass = np.zeros(0, dtype=float)
+
+    true_full_vec: np.ndarray | None = None
+    if env_full is not None:
+        temp_vec = np.asarray(env_full, dtype=float).reshape(-1)
+        if temp_vec.shape[0] != D:
+            raise AssertionError(
+                f"Invariant violation: env_obs.x_full has shape {temp_vec.shape}, expected D={D}."
+            )
+        true_full_vec = temp_vec
+
+    coarse_prev_snapshot = getattr(state, "coarse_prev", None)
+    use_true_transport = bool(getattr(cfg, "transport_use_true_full", False))
+    coarse_true = np.zeros(0, dtype=float)
+    coarse_true_size = 0
+    if use_true_transport and true_full_vec is not None:
+        coarse_true = extract_coarse(true_full_vec, cfg)
+        coarse_true_size = coarse_true.size
+    coarse_shift_hint = tuple(getattr(state, "coarse_shift", (0, 0)))
+    if (
+        use_true_transport
+        and coarse_true_size > 0
+        and coarse_prev_snapshot is not None
+        and coarse_prev_snapshot.shape == coarse_true.shape
+    ):
+        coarse_shift_hint = compute_transport_shift(coarse_prev_snapshot, coarse_true, cfg)
+    env_true_delta_hint = getattr(env_obs, "true_delta", None)
+    if force_true_delta and env_true_delta_hint is not None:
+        env_shift = tuple(int(v) for v in env_true_delta_hint)
+
+    # -------------------------------------------------------------------------
+    # A14.7: rest(t) from lagged predicates
+    _dbg('A14.7 compute rest_t from lagged predicates', state=state)
+    # -------------------------------------------------------------------------
+    rest_t = bool(getattr(state, "rest_permitted_prev", True)
+                  and getattr(state, "demand_prev", False)
+                  and (not getattr(state, "interrupt_prev", False)))
+    _dbg(
+        f'rest_t={rest_t} rest_permitted_prev={getattr(state,"rest_permitted_prev",None)} '
+        f'demand_prev={getattr(state,"demand_prev",None)} interrupt_prev={getattr(state,"interrupt_prev",None)}',
+        state=state,
+    )
+
+    # -------------------------------------------------------------------------
+    # A16.3: select fovea blocks for this step (uses t-1 tracking)
+    # -------------------------------------------------------------------------
+    periph_dims = _peripheral_dim_set(D, cfg)
+    routing_vec = x_prev
+    periph_full = getattr(env_obs, "periph_full", None)
+    if periph_dims and periph_full is not None:
+        routing_vec = x_prev.copy()
+        full_arr = np.asarray(periph_full, dtype=float).reshape(-1)
+        if full_arr.size < D:
+            full_arr = np.resize(full_arr, (D,))
+        for dim in periph_dims:
+            if 0 <= dim < full_arr.size:
+                routing_vec[int(dim)] = float(full_arr[int(dim)])
+    update_fovea_routing_scores(state.fovea, routing_vec, cfg, t=int(getattr(state, "t", 0)))
+    _apply_pending_transport_disagreement(state, cfg)
+    blocks_t = select_fovea(state.fovea, cfg)
+    G = int(getattr(cfg, "coverage_cap_G", 0))
+    ages_now = np.asarray(
+        getattr(state.fovea, "block_age", np.zeros(int(getattr(cfg, "B", 0)))), dtype=float
+    )
+    budget = max(1, int(getattr(cfg, "fovea_blocks_per_step", 0)))
+    if G > 0 and ages_now.size:
+        mandatory = [int(b) for b in range(int(getattr(cfg, "B", 0))) if float(ages_now[b]) >= float(G)]
+        if mandatory and not set(mandatory).intersection(set(blocks_t or [])):
+            mandatory = sorted(mandatory, key=lambda b: float(ages_now[b]), reverse=True)
+            blocks_t = mandatory[: min(len(mandatory), budget)]
+    periph_candidates = _peripheral_block_ids(cfg)
+    blocks_t, forced_periph_blocks = _enforce_peripheral_blocks(blocks_t or [], cfg, periph_candidates)
+    motion_probe_budget = max(0, int(getattr(cfg, "motion_probe_blocks", 0)))
+    if budget <= 1:
+        motion_probe_budget = 0
+    motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg, motion_probe_budget)
+    blocks_t, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks_t or [], cfg, motion_probe_blocks)
+    selected_blocks = tuple(getattr(env_obs, "selected_blocks", ()) or ())
+    if selected_blocks and bool(getattr(cfg, "allow_selected_blocks_override", False)):
+        blocks_t = [int(b) for b in selected_blocks]
+    _dbg(f'A16.3 select_fovea -> n_blocks={len(blocks_t) if blocks_t is not None else 0}', state=state)
+    state.fovea.current_blocks = set(int(b) for b in blocks_t)
+    _dbg(f'A16.3 current_blocks={len(state.fovea.current_blocks)}', state=state)
+    log_every = int(getattr(cfg, "fovea_log_every", 0))
+    if log_every > 0 and (int(getattr(state, "t", 0)) % log_every == 0):
+        _dbg(f'A16.3 blocks={list(blocks_t)}', state=state)
+        _dbg(f'current_blocks={sorted(list(state.fovea.current_blocks))}', state=state)
+
+    # Rolling visit counts per block over a sliding window.
+    window = int(getattr(cfg, "fovea_visit_window", 256))
+    if window > 0:
+        visit_queue = getattr(state, "fovea_visit_window", None)
+        visit_counts = getattr(state, "fovea_visit_counts", None)
+        if visit_queue is None or visit_counts is None or len(getattr(visit_counts, "shape", [])) != 1:
+            visit_queue = deque()
+            visit_counts = np.zeros(int(cfg.B), dtype=int)
+        if int(visit_counts.shape[0]) != int(cfg.B):
+            visit_counts = np.resize(visit_counts, (int(cfg.B),))
+            visit_counts = np.asarray(visit_counts, dtype=int)
+        if len(visit_queue) >= window:
+            oldest = visit_queue.popleft()
+            for b in oldest:
+                if 0 <= int(b) < int(cfg.B):
+                    visit_counts[int(b)] -= 1
+        current = [int(b) for b in blocks_t if 0 <= int(b) < int(cfg.B)]
+        visit_queue.append(current)
+        for b in current:
+            visit_counts[int(b)] += 1
+        state.fovea_visit_window = visit_queue
+        state.fovea_visit_counts = visit_counts
+        if log_every > 0 and (int(getattr(state, "t", 0)) % log_every == 0):
+            if visit_counts.size:
+                v_min = int(np.min(visit_counts))
+                v_med = float(np.median(visit_counts))
+                v_max = int(np.max(visit_counts))
+                _dbg(
+                    f'A16.2 visit_counts(window={window}): min={v_min} median={v_med:.1f} max={v_max}',
+                    state=state,
+                )
+
+    # A16.5 requested observation set
+    O_req = make_observation_set(blocks_t, cfg)
+    _dbg(f'A16.5 make_observation_set -> |O_req|={len(O_req)}', state=state)
+    forced_periph_dims: Set[int] = set()
+    missing_periph_dims: List[int] = []
+    periph_dims_present = 0
+    if forced_periph_blocks:
+        for b in forced_periph_blocks:
+            forced_periph_dims.update(dims_for_block(b, cfg))
+        if forced_periph_dims:
+            missing_periph_dims = sorted(
+                int(dim) for dim in forced_periph_dims if dim not in O_req
+            )
+            if missing_periph_dims:
+                missing_head = missing_periph_dims[: min(8, len(missing_periph_dims))]
+                _dbg(
+                    f'A16.5 periph dims missing from O_req: count={len(missing_periph_dims)} '
+                    f'head={missing_head}',
+                    state=state,
+                )
+        periph_dims_present = int(len(forced_periph_dims & O_req))
+
+    # Mask incoming sparse cue to O_req and bounds
+    env_obs_dims = {
+        int(k) for k in (getattr(env_obs, "x_partial", {}) or {}).keys() if 0 <= int(k) < D
+    }
+    cue_t = _filter_cue_to_Oreq(getattr(env_obs, "x_partial", {}) or {}, O_req, D)
+    _dbg(f'cue_in|x_partial|={len(getattr(env_obs,"x_partial",{}) or {})}', state=state)
+    O_t = set(cue_t.keys())
+    _dbg(f'A16.5 cue_t filtered -> |O_t|={len(O_t)}', state=state)
+    if env_obs_dims:
+        env_min = min(env_obs_dims)
+        env_max = max(env_obs_dims)
+    else:
+        env_min = None
+        env_max = None
+    if O_req:
+        req_min = min(O_req)
+        req_max = max(O_req)
+    else:
+        req_min = None
+        req_max = None
+    if O_t:
+        used_min = min(O_t)
+        used_max = max(O_t)
+    else:
+        used_min = None
+        used_max = None
+    _dbg(
+        f'A16.5 obs_sets env_size={len(env_obs_dims)} env_min={env_min} env_max={env_max} '
+        f'req_size={len(O_req)} req_min={req_min} req_max={req_max} '
+        f'used_size={len(O_t)} used_min={used_min} used_max={used_max}',
+        state=state,
+    )
+
+    if O_t:
+        obs_idx = np.array(sorted(O_t), dtype=int)
+        obs_vals = np.array([float(cue_t[int(i)]) for i in obs_idx], dtype=float)
+    else:
+        obs_idx = np.zeros(0, dtype=int)
+        obs_vals = np.zeros(0, dtype=float)
+
+    _update_observed_history(state, obs_idx, cfg, extra_dims=periph_dims)
+
+
+    (
+        shift,
+        x_prev_post,
+        transport_best_candidate,
+        transport_runner_candidate,
+        transport_margin_val,
+        transport_confidence_prob,
+        transport_prob_diff,
+        transport_source_hint,
+        transport_candidates_info,
+        transport_null_evidence,
+        transport_posterior_entropy,
+        transport_score_spread,
+        transport_tie_flag,
+        transport_best_overlap,
+    ) = _select_transport_delta(
+        x_prev_pre,
+        obs_idx,
+        obs_vals,
+        cfg,
+        state,
+        env_shift,
+        coarse_shift_hint,
+        true_full_vec,
+        env_true_delta_hint,
+        force_true_delta,
+    )
+    x_prev = x_prev_post
+    shift = tuple(int(v) for v in shift)
+    _update_transport_learning_state(state, cfg, transport_best_candidate, shift, env_true_delta_hint)
+    state.transport_last_delta = shift
+    state.coarse_shift = shift
+    if transport_null_evidence:
+        transport_confidence = 0.0
+        transport_prob_diff = 0.0
+        transport_margin_val = 0.0
+    else:
+        transport_confidence = transport_confidence_prob
+    state.transport_confidence = float(transport_confidence)
+    state.transport_margin = float(transport_margin_val)
+    transport_source = transport_source_hint
+    transport_effect = float(np.mean(np.abs(x_prev_post - x_prev_pre))) if x_prev_pre.size else 0.0
+    transport_applied_norm = float(transport_effect)
+    confidence_margin_threshold = float(getattr(cfg, "transport_confidence_margin", 0.25))
+    if transport_prob_diff < confidence_margin_threshold:
+        state.transport_disagreement_scores = _compute_transport_disagreement_blocks(
+            transport_best_candidate,
+            transport_runner_candidate,
+            cfg,
+        )
+    else:
+        state.transport_disagreement_scores = {}
+    state.transport_disagreement_margin = float(transport_prob_diff)
+    transport_score_margin = 0.0
+    if transport_best_candidate is not None and transport_runner_candidate is not None:
+        transport_score_margin = float(transport_best_candidate.score - transport_runner_candidate.score)
+    hc_margin = float(getattr(cfg, "transport_high_confidence_margin", 0.05))
+    hc_overlap = max(1, int(getattr(cfg, "transport_high_confidence_overlap", 2)))
+    runner_exists = transport_runner_candidate is not None
+    margin_ok = (not runner_exists) or (transport_score_margin >= hc_margin)
+    first_step = int(getattr(state, "t", 0)) == 0
+    base_confidence = (not transport_null_evidence) and margin_ok
+    if first_step and obs_idx.size:
+        base_confidence = True
+    if first_step:
+        transport_high_confidence = base_confidence
+    else:
+        transport_high_confidence = base_confidence and transport_best_overlap >= hc_overlap
+    if not prev_observed_dims and int(getattr(state, "t", 0)) > 0:
+        transport_high_confidence = False
+    if not transport_high_confidence and first_step and bool(state.buffer.observed_dims):
+        transport_high_confidence = True
+    if obs_idx.size:
+        mae_pos_pre_transport = float(np.mean(np.abs(obs_vals - x_prev_pre[obs_idx])))
+        mae_pos_post_transport = float("nan")
+    else:
+        mae_pos_pre_transport = float("nan")
+        mae_pos_post_transport = float("nan")
+
+    selected_blocks = tuple(getattr(env_obs, "selected_blocks", ()) or ())
+    periph_blocks_cfg = max(0, int(getattr(cfg, "periph_blocks", 0)))
+    B_cfg = max(0, int(getattr(cfg, "B", 0)))
+    if periph_blocks_cfg > 0:
+        periph_block_ids = tuple(range(max(0, B_cfg - periph_blocks_cfg), B_cfg))
+    else:
+        periph_block_ids = tuple()
+    n_periph_blocks_selected = sum(1 for block in selected_blocks if block in periph_block_ids)
+    n_fine_blocks_selected = max(0, len(selected_blocks) - n_periph_blocks_selected)
+    periph_included = bool(n_periph_blocks_selected)
+
+    pos_dims = getattr(env_obs, "pos_dims", None) or set()
+    pos_idx = np.array(sorted({int(dim) for dim in pos_dims if 0 <= int(dim) < D}), dtype=int)
+    pos_unobs_idx = np.zeros(0, dtype=int)
+    pos_obs_mask = np.zeros(0, dtype=bool)
+    if pos_idx.size:
+        pos_obs_mask = np.isin(pos_idx, obs_idx) if obs_idx.size else np.zeros(pos_idx.shape, dtype=bool)
+        pos_unobs_idx = pos_idx[~pos_obs_mask]
+    true_vals = None
+    if true_full_vec is not None and pos_idx.size:
+        true_vals = true_full_vec[pos_idx]
+
+    mae_pos_unobs_pre_transport = 0.0
+    mae_pos_unobs_post_transport = 0.0
+    true_vals_unobs = None
+    if pos_unobs_idx.size and true_vals is not None:
+        true_vals_unobs = true_vals[~pos_obs_mask]
+        mae_pos_unobs_pre_transport = float(np.mean(np.abs(x_prev_pre[pos_unobs_idx] - true_vals_unobs)))
+        mae_pos_unobs_post_transport = float(np.mean(np.abs(x_prev_post[pos_unobs_idx] - true_vals_unobs)))
+
+    periph_selected = periph_included
+
+    # -------------------------------------------------------------------------
+    # A13 (perception): complete/clamp observed dims into prior
+    # -------------------------------------------------------------------------
+    x_t, Sigma_prior, prior_t = complete(
+        cue_t,
+        mode="perception",
+        state=state,
+        cfg=cfg,
+        transport_shift=shift,
+    )
+    _dbg('A13 complete(perception) begin', state=state)
+
+    x_t = np.asarray(x_t, dtype=float).reshape(-1)
+    prior_t = np.asarray(prior_t, dtype=float).reshape(-1)
+    if x_t.shape[0] != D:
+        raise AssertionError(
+            f"Invariant violation: posterior x_t has shape {x_t.shape}, expected D={D}."
+        )
+    if prior_t.shape[0] != D:
+        raise AssertionError(
+            f"Invariant violation: prior_t has shape {prior_t.shape}, expected D={D}."
+        )
+    if obs_idx.size:
+        mae_pos_post_transport = float(np.mean(np.abs(prior_t[obs_idx] - obs_vals)))
+    else:
+        mae_pos_post_transport = float("nan")
+    _dbg('A13 complete(perception) end', state=state)
+    _compute_peripheral_metrics(state, cfg, prior_t, env_obs, obs_idx, obs_vals, D, periph_dims)
+    clamp_delta = x_t - prior_t
+    not_obs_mask = np.ones(D, dtype=bool)
+    if obs_idx.size:
+        not_obs_mask[obs_idx] = False
+    outside_idx = np.nonzero(not_obs_mask)[0]
+    delta_outside_vals = clamp_delta[outside_idx] if outside_idx.size else np.zeros(0, dtype=float)
+    delta_outside_O = float(np.mean(np.abs(delta_outside_vals))) if outside_idx.size else 0.0
+    if O_t:
+        obs_idx = np.array(sorted(O_t), dtype=int)
+        mean_abs_clamp = float(np.mean(np.abs(clamp_delta[obs_idx]))) if obs_idx.size else 0.0
+    else:
+        mean_abs_clamp = 0.0
+    posterior_obs_mae = _prior_obs_mae(obs_idx, obs_vals, x_t)
+    innov_energy = float(np.mean(np.abs(clamp_delta))) if clamp_delta.size else 0.0
+    innovation_mean_abs = innov_energy
+
+    mae_pos_prior = float("nan")
+    mae_pos_prior_unobs = 0.0
+    if pos_idx.size and true_vals is not None:
+        prior_vals = np.asarray(prior_t[pos_idx], dtype=float)
+        diff_prior = prior_vals - true_vals
+        finite_prior = np.isfinite(diff_prior)
+        if finite_prior.any():
+            mae_pos_prior = float(np.mean(np.abs(diff_prior[finite_prior])))
+        if pos_unobs_idx.size and true_vals_unobs is not None:
+            prior_unobs_vals = np.asarray(prior_t[pos_unobs_idx], dtype=float)
+            diff_prior_unobs = prior_unobs_vals - true_vals_unobs
+            finite_unobs = np.isfinite(diff_prior_unobs)
+            if finite_unobs.any():
+                mae_pos_prior_unobs = float(np.mean(np.abs(diff_prior_unobs[finite_unobs])))
+
+    periph_missing_count = int(len(missing_periph_dims))
+    _dbg(
+        f'A13 transport_diag delta={shift} transport_mae_pre={mae_pos_pre_transport:.6f} '
+        f'transport_mae_post={mae_pos_post_transport:.6f} mae_pos_prior={mae_pos_prior:.6f} '
+        f'mae_pos_prior_unobs={mae_pos_prior_unobs:.6f} mae_pos_unobs_pre={mae_pos_unobs_pre_transport:.6f} '
+        f'mae_pos_unobs_post={mae_pos_unobs_post_transport:.6f} trans_norm={transport_applied_norm:.6f} '
+        f'transport_effect={transport_effect:.6f} transport_confidence={state.transport_confidence:.6f} '
+        f'transport_margin={state.transport_margin:.6f} '
+        f'transport_source={transport_source} periph_dims_missing_count={periph_missing_count} '
+        f'periph_selected={periph_selected} transport_candidates={len(transport_candidates_info)}',
+        state=state,
+    )
+
+    _dbg(
+        f'A13 clamp_stats: obs_dims={len(O_t)} mean_abs_delta={mean_abs_clamp:.6f} '
+        f'delta_outside={delta_outside_O:.6f} mae_pos_prior={mae_pos_prior:.6f} '
+        f'mae_pos_prior_unobs={mae_pos_prior_unobs:.6f}',
+        state=state,
+    )
+    Sigp_diag = np.diag(Sigma_prior).copy() if np.asarray(Sigma_prior).ndim == 2 else np.asarray(Sigma_prior, dtype=float).reshape(-1)
+    if Sigp_diag.shape[0] != D:
+        Sigp_diag = np.resize(Sigp_diag, (D,))
+    finite_mask = np.isfinite(Sigp_diag)
+    if np.any(finite_mask):
+        _dbg(
+            f'A7 prior_sigma_diag: mean={float(np.mean(Sigp_diag[finite_mask])):.6f} '
+            f'min={float(np.min(Sigp_diag[finite_mask])):.6f} max={float(np.max(Sigp_diag[finite_mask])):.6f}',
+            state=state,
+        )
+
+    # -------------------------------------------------------------------------
+    # Prediction error on observed dims for A16.2 tracking and A17 diagnostics
+    # -------------------------------------------------------------------------
+    error_vec = np.zeros(D, dtype=float)
+    if obs_idx.size:
+        error_vec[obs_idx] = obs_vals - prior_t[obs_idx]
+    abs_error = np.abs(error_vec)
+    if obs_idx.size:
+        active_thresh = float(getattr(cfg, "train_active_threshold", 0.0))
+        active_obs_mask = np.abs(obs_vals) > active_thresh
+        active_obs_count = int(np.sum(active_obs_mask))
+        active_obs_err = float(np.mean(abs_error[obs_idx][active_obs_mask])) if active_obs_count else 0.0
+        _dbg(
+            f'A16.2 active_obs: count={active_obs_count} mean_abs_err={active_obs_err:.6f}',
+            state=state,
+        )
+        prior_obs_mae = float(np.mean(abs_error[obs_idx]))
+    else:
+        prior_obs_mae = float("nan")
+
+    worlds = _build_world_hypotheses(
+        state,
+        cfg,
+        D,
+        cue_t,
+        obs_idx,
+        obs_vals,
+        transport_candidates_info,
+        transport_best_candidate,
+        prior_t,
+        x_t,
+        Sigp_diag,
+    )
+    _update_block_signals(state, cfg, worlds, D)
+    finite_world_maes = [float(w.prior_mae) for w in worlds if np.isfinite(w.prior_mae)]
+    if finite_world_maes:
+        best_world_mae = float(min(finite_world_maes))
+        expected_world_mae = float(
+            sum(w.weight * float(w.prior_mae) for w in worlds if np.isfinite(w.prior_mae))
+        )
+    else:
+        best_world_mae = float("nan")
+        expected_world_mae = float("nan")
+    weight_entropy = 0.0
+    for world in worlds:
+        w = float(world.weight)
+        if w > 0.0 and np.isfinite(w):
+            weight_entropy -= w * math.log(w)
+    multi_world_summary = [
+        {
+            "delta": tuple(world.delta),
+            "weight": float(world.weight),
+            "prior_mae": float(world.prior_mae),
+            "likelihood": float(world.likelihood),
+            "score": float(world.metadata.get("score", 0.0)),
+        }
+        for world in worlds
+    ]
+    multi_world_count = len(worlds)
+    support_window = _support_window_union(state)
+
+    # Update observation buffer (dense estimate and observed dims)
+    state.buffer.x_prior = prior_t.copy()
+    state.buffer.x_last = x_t.copy()
+    _dbg(f'BUFFER update x_last; D={D}', state=state)
+    coarse_buffer = extract_coarse(state.buffer.x_last, cfg)
+    state.buffer.observed_dims = set(int(k) for k in O_t if 0 <= int(k) < D)
+    _dbg(f'BUFFER observed_dims={len(state.buffer.observed_dims)}', state=state)
+
+    coarse_prev = getattr(state, "coarse_prev", None)
+    coarse_prev_norm, coarse_prev_nonzero, coarse_prev_head = _coarse_summary(coarse_prev)
+    use_true_source = use_true_transport and coarse_true_size > 0
+    coarse_curr = coarse_true if use_true_source else coarse_buffer
+    if use_true_source:
+        transport_source = "debug_env"
+    coarse_curr_norm, coarse_curr_nonzero, coarse_curr_head = _coarse_summary(coarse_curr)
+
+    if "coarse_prev" in state.__dataclass_fields__:
+        if (
+            coarse_curr.size > 0
+            and coarse_prev is not None
+            and coarse_prev.shape == coarse_curr.shape
+        ):
+            coarse_shift = compute_transport_shift(coarse_prev, coarse_curr, cfg)
+            if coarse_shift == (0, 0) and not np.allclose(coarse_prev, coarse_curr):
+                delta = float(np.linalg.norm(coarse_curr - coarse_prev))
+                nonzero_prev = int(np.count_nonzero(coarse_prev))
+                nonzero_curr = int(np.count_nonzero(coarse_curr))
+                _dbg(
+                    f'A13 transport_no_shift delta={delta:.6f} prev_nz={nonzero_prev} curr_nz={nonzero_curr}',
+                    state=state,
+                )
+        state.coarse_prev = coarse_curr.copy() if coarse_curr.size else np.zeros(0, dtype=float)
+
+
+    _ensure_node_band_levels(state, cfg)
+    gist_vec = _compute_peripheral_gist(x_prev, cfg)
+    _update_context_register(state, gist_vec, cfg)
+
+    # -------------------------------------------------------------------------
+    # A5 salience (uses lagged stress + lagged scores)
+    # -------------------------------------------------------------------------
+    stress_signals_lagged = get_stress_signals(state)
+    sal = compute_salience(
+        state=state,
+        stress=stress_signals_lagged,
+        scores_prev=getattr(state, "scores_prev", None),
+        cfg=cfg,
+        observed_dims=state.buffer.observed_dims,
+    )
+    _dbg('A5 compute_salience', state=state)
+
+    # -------------------------------------------------------------------------
+    # A4/A5 working set selection
+    # -------------------------------------------------------------------------
+    A_t = select_working_set(state, salience=sal.activations, cfg=cfg)
+    _dbg('A4/A5 select_working_set', state=state)
+    state.active_set = set(int(nid) for nid in getattr(A_t, "active", []) or [])
+
+    _update_context_tags(state, cfg)
+    _update_coverage_debts(state, cfg)
+
+    L_eff = float(getattr(A_t, "effective_load", 0.0))
+    _dbg(f'L_eff={L_eff:.3f} active_set={len(getattr(state,"active_set",[]) or [])}', state=state)
+
+    # Optional binding/equivariance: select a transform per active node.
+    if bool(getattr(cfg, "binding_enabled", False)):
+        side = int(getattr(cfg, "grid_side", 0))
+        channels = int(getattr(cfg, "grid_channels", 0))
+        base_dim = int(getattr(cfg, "grid_base_dim", 0) or D)
+        if side > 0 and channels > 0:
+            cache = getattr(state, "_binding_cache", {})
+            cache_key = (side, channels, base_dim, int(getattr(cfg, "binding_shift_radius", 1)), bool(getattr(cfg, "binding_rotations", True)))
+            maps = cache.get(cache_key)
+            if maps is None:
+                rots = [0, 90, 180, 270] if bool(getattr(cfg, "binding_rotations", True)) else [0]
+                maps = build_binding_maps(
+                    D=D,
+                    side=side,
+                    channels=channels,
+                    base_dim=base_dim,
+                    shift_radius=int(getattr(cfg, "binding_shift_radius", 1)),
+                    rotations=rots,
+                )
+                cache[cache_key] = maps
+                state._binding_cache = cache
+            observed_dims = set(state.buffer.observed_dims)
+            for nid in state.active_set:
+                node = state.library.nodes.get(int(nid))
+                if node is None:
+                    continue
+                binding = select_best_binding_by_fit(
+                    mask=getattr(node, "mask", None),
+                    W=getattr(node, "W", np.zeros((D, D))),
+                    b=getattr(node, "b", np.zeros(D)),
+                    input_mask=getattr(node, "input_mask", None),
+                    x_prev=x_prev,
+                    cue_t=cue_t,
+                    maps=maps,
+                )
+                if binding is None:
+                    binding = select_best_binding(mask=getattr(node, "mask", None), observed_dims=observed_dims, maps=maps)
+                if binding is not None:
+                    setattr(node, "binding_map", binding)
+
+    # -------------------------------------------------------------------------
+    # A5/A12 activity logging for structural proposals
+    # -------------------------------------------------------------------------
+    activation_log = getattr(state, "activation_log", {})
+    activation_max = int(getattr(cfg, "activation_log_max", 200))
+    for nid, a_j in (getattr(A_t, "weights", {}) or {}).items():
+        log = list(activation_log.get(int(nid), []))
+        log.append((int(getattr(state, "t", 0)), float(a_j)))
+        if len(log) > activation_max:
+            log = log[-activation_max:]
+        activation_log[int(nid)] = log
+    state.activation_log = activation_log
+
+    # Track last active step for incumbents (A12.3 PRUNE)
+    for nid in state.active_set:
+        node = state.library.nodes.get(int(nid))
+        if node is not None:
+            node.last_active_step = int(getattr(state, "t", 0))
+
+    # -------------------------------------------------------------------------
+    # A16.2: update fovea tracking after applying observation at t
+    # (kept after A4.3 retrieval so retrieval keys to t-1 greedy_cov stats)
+    # -------------------------------------------------------------------------
+    ages_before = np.asarray(getattr(state.fovea, "block_age", []), dtype=float).copy()
+    update_fovea_tracking(
+        state.fovea,
+        state.buffer,
+        cfg,
+        abs_error=abs_error,
+        observed_dims=state.buffer.observed_dims,
+    )
+    ages_after = np.asarray(getattr(state.fovea, "block_age", []), dtype=float)
+    if ages_before.size and ages_after.size:
+        delta_age_mean = float(np.mean(ages_after) - np.mean(ages_before))
+        _dbg(f'A16.2 age_delta_mean={delta_age_mean:.3f} rest_t={rest_t}', state=state)
+        resids = np.asarray(getattr(state.fovea, "block_residual", []), dtype=float)
+        if resids.size:
+            age_min = float(np.min(ages_after))
+            age_max = float(np.max(ages_after))
+            age_mean = float(np.mean(ages_after))
+            resid_min = float(np.min(resids))
+            resid_max = float(np.max(resids))
+            resid_mean = float(np.mean(resids))
+            top_age = np.argsort(-ages_after)[: min(5, ages_after.size)]
+            top_resid = np.argsort(-resids)[: min(5, resids.size)]
+            _dbg(
+                'A16.2 coverage_stats: '
+                f'age_mean={age_mean:.3f} age_min={age_min:.3f} age_max={age_max:.3f} '
+                f'resid_mean={resid_mean:.3f} resid_min={resid_min:.3f} resid_max={resid_max:.3f} '
+                f'top_age={list(top_age)} top_resid={list(top_resid)}',
+                state=state,
+            )
+            alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
+            score = resids + alpha_cov * np.log1p(np.maximum(0.0, ages_after))
+            top_score = np.argsort(-score)[: min(3, score.size)]
+            top_terms = [
+                (
+                    int(b),
+                    float(resids[b]),
+                    float(ages_after[b]),
+                    float(alpha_cov * np.log1p(max(0.0, ages_after[b]))),
+                    float(score[b]),
+                )
+                for b in top_score
+            ]
+            _dbg(
+                f'A16.2 score_terms top3=(b,resid,age,age_term,score)={top_terms}',
+                state=state,
+            )
+    _dbg('A16.2 update_fovea_tracking', state=state)
+
+    # -------------------------------------------------------------------------
+    # A12.4 persistent residuals + residual stats + transition logging
+    # -------------------------------------------------------------------------
+    persistent = getattr(state, "persistent_residuals", {})
+    residual_stats = getattr(state, "residual_stats", {})
+    observed_transitions = getattr(state, "observed_transitions", {})
+
+    beta_R = float(getattr(cfg, "beta_R", 0.10))
+    split_beta = float(getattr(cfg, "split_stats_beta", 0.10))
+    trans_max = int(getattr(cfg, "transition_log_max", 128))
+
+    for block_id, dims in enumerate(getattr(state, "blocks", []) or []):
+        block_dims = set(int(d) for d in dims)
+        obs_in_block = block_dims & set(state.buffer.observed_dims)
+        if not obs_in_block:
+            continue
+
+        idx = np.array(sorted(obs_in_block), dtype=int)
+        resid_block = float(np.mean(np.abs(error_vec[idx]))) if idx.size else 0.0
+
+        rstate = persistent.get(int(block_id))
+        if rstate is None:
+            rstate = PersistentResidualState()
+        rstate.value = (1.0 - beta_R) * float(getattr(rstate, "value", 0.0)) + beta_R * resid_block
+        rstate.coverage_visits = int(getattr(rstate, "coverage_visits", 0)) + 1
+        rstate.last_update_step = int(getattr(state, "t", 0))
+        persistent[int(block_id)] = rstate
+
+        stats = residual_stats.get(int(block_id))
+        if stats is None:
+            stats = FootprintResidualStats(dims=sorted(list(block_dims)))
+        stats.update(error_vec, beta=split_beta)
+        residual_stats[int(block_id)] = stats
+
+        log = list(observed_transitions.get(int(block_id), []))
+        dims_tuple = tuple(int(k) for k in idx)
+        x_tau_vals = x_prev[idx].copy()
+        x_tau_plus_1_vals = x_t[idx].copy()
+        log.append(
+            TransitionRecord(
+                tau=int(getattr(state, "t", 0)),
+                dims=dims_tuple,
