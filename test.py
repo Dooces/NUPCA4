@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-NUPCA3 axioms harness (uses in-repo implementation).
-
-This harness exercises the real nupca3 pipeline and enforces A16 foveation
-discipline by filtering observations to the greedy_cov-selected blocks *before*
-each agent step.
-
-It intentionally avoids re-implementing learning logic. Any improvements or
-failures in output reflect the current codebase, not a parallel harness.
-"""
+"""NUPCA3 axioms harness entrypoint."""
 
 from __future__ import annotations
 
@@ -2054,6 +2045,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-  
