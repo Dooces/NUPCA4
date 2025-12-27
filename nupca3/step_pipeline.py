@@ -854,11 +854,11 @@ def _build_coarse_observation(
     periph_dims: Set[int] | None = None,
 ) -> np.ndarray:
     """Create a low-resolution peripheral observation vector."""
-    full = getattr(env_obs, "x_full", None)
+    periph_full = getattr(env_obs, "periph_full", None)
     dims = periph_dims if periph_dims is not None else set()
     obs_vec = np.zeros(max(0, D), dtype=float)
-    if dims and full is not None:
-        full_arr = np.asarray(full, dtype=float).reshape(-1)
+    if dims and periph_full is not None:
+        full_arr = np.asarray(periph_full, dtype=float).reshape(-1)
         if full_arr.size < D:
             full_arr = np.resize(full_arr, (D,))
         for dim in dims:
@@ -895,7 +895,7 @@ def _compute_peripheral_metrics(
     periph_count = len(periph_dims)
     obs_set = {int(dim) for dim in obs_idx if np.isfinite(dim)}
     if periph_count > 0:
-        if getattr(env_obs, "x_full", None) is not None and periph_obs.size:
+        if getattr(env_obs, "periph_full", None) is not None and periph_obs.size:
             observed_periph = periph_count
         else:
             observed_periph = int(sum(1 for dim in periph_dims if dim in obs_set))
@@ -1577,7 +1577,9 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     x_prev_pre = x_prev.copy()
     prev_observed_dims = set(getattr(state.buffer, "observed_dims", set()) or set())
 
-    env_full = getattr(env_obs, "x_full", None)
+    env_full_diag = getattr(env_obs, "x_full", None)
+    allow_full_state = bool(getattr(env_obs, "allow_full_state", False))
+    env_full = env_full_diag if allow_full_state else None
     env_grid_mass = np.zeros(0, dtype=float)
     transport_source = "buffer_infer"
     force_true_delta = bool(getattr(cfg, "transport_force_true_delta", False))
@@ -2871,7 +2873,8 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             "obs_used_min": int(used_min) if used_min is not None else None,
             "obs_used_max": int(used_max) if used_max is not None else None,
             "obs_filtered_count": int(len(O_req) - len(O_t)),
-            "env_full_provided": bool(env_full is not None),
+            "env_full_provided": bool(env_full_diag is not None),
+            "env_full_used": bool(env_full is not None),
             "use_true_transport": bool(use_true_transport),
             "transport_debug_env_grid": bool(use_env_grid),
             "edits_processed": int(edits_processed_t),

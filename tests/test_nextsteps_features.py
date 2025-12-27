@@ -110,6 +110,7 @@ def test_uncertainty_drives_fovea_selection() -> None:
         fovea_blocks_per_step=1,
         alpha_cov=0.0,
         fovea_uncertainty_weight=1.0,
+        fovea_use_age=False,
     )
     residuals = np.array([0.1, 0.05, 0.0, 0.0], dtype=float)
     uncertainties = np.array([0.0, 10.0, 0.0, 0.0], dtype=float)
@@ -155,7 +156,7 @@ def test_peripheral_coherence_residual_with_full_observation() -> None:
     agent = NUPCA3Agent(cfg)
     full_obs = EnvObs(
         x_partial={i: float(i + 1) for i in range(cfg.D)},
-        x_full=np.arange(cfg.D, dtype=float),
+        periph_full=np.arange(cfg.D, dtype=float),
     )
     agent.step(full_obs)
     assert 0.0 <= agent.state.peripheral_confidence <= 1.0
@@ -209,7 +210,7 @@ def test_peripheral_coherence_residual_detects_unobserved_dims() -> None:
     full = np.zeros(cfg.D, dtype=float)
     full[-2:] = 5.0
 
-    _, trace = agent.step(EnvObs(x_partial={0: 0.0}, x_full=full))
+    _, trace = agent.step(EnvObs(x_partial={0: 0.0}, periph_full=full))
     residual = float(trace["peripheral_residual"])
     assert residual > 0.0
 
