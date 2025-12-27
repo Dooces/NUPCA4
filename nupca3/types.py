@@ -240,6 +240,8 @@ class ExpertNode:
     b: np.ndarray
     Sigma: np.ndarray
     input_mask: Optional[np.ndarray] = None
+    out_idx: Optional[np.ndarray] = None
+    in_idx: Optional[np.ndarray] = None
 
     # Canonical internal names:
     reliability: float = 1.0
@@ -269,6 +271,10 @@ class ExpertNode:
         self.W = np.asarray(self.W, dtype=float)
         self.b = np.asarray(self.b, dtype=float).reshape(-1)
         self.Sigma = np.asarray(self.Sigma, dtype=float)
+        if self.out_idx is not None:
+            self.out_idx = np.asarray(self.out_idx, dtype=int).reshape(-1)
+        if self.in_idx is not None:
+            self.in_idx = np.asarray(self.in_idx, dtype=int).reshape(-1)
 
         # Synchronize (pi, L) <-> (reliability, cost)
         if self.pi is not None:

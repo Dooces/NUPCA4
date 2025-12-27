@@ -33,6 +33,7 @@ from ..types import (
     AcceptanceResult, TransitionRecord, infer_footprint
 )
 from ..config import AgentConfig
+from ..memory.expert import predict
 
 # =============================================================================
 # Permission Checks (A12.3)
@@ -116,8 +117,6 @@ def compute_merge_mse(node: Node, transitions: List[TransitionRecord], timesteps
         return float("inf")
 
     mask = node.mask
-    W, b = node.W, node.b
-
     se_sum = 0.0
     count = 0
 
@@ -129,7 +128,7 @@ def compute_merge_mse(node: Node, transitions: List[TransitionRecord], timesteps
             continue
 
         x_tau_full, x_tau_plus_1_full = trans.full_vectors(state_dim)
-        mu_pred = W @ x_tau_full + b
+        mu_pred = predict(node, x_tau_full)
         eval_dims = active_dims & trans.observed_dims_tau_plus_1
         if not eval_dims:
             continue
@@ -265,8 +264,8 @@ def compute_distinguishability(
     count = 0
     for trans in transitions:
         x_tau_full, _ = trans.full_vectors(state_dim)
-        mu_new = new_node.W @ x_tau_full + new_node.b
-        mu_existing = existing_node.W @ x_tau_full + existing_node.b
+        mu_new = predict(new_node, x_tau_full)
+        mu_existing = predict(existing_node, x_tau_full)
 
         if not active_dims:
             continue

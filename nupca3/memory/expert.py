@@ -25,6 +25,18 @@ from ..types import ExpertNode
 
 def predict(node: ExpertNode, x: np.ndarray) -> np.ndarray:
     """Local 1-step prediction mu_j(t+1|t) = W_j x + b_j, masked to node.mask."""
+    def _compact_indices():
+        out_idx = getattr(node, "out_idx", None)
+        in_idx = getattr(node, "in_idx", None)
+        if out_idx is None:
+            out_idx = np.where(node.mask > 0.5)[0]
+        if in_idx is None:
+            in_mask_local = getattr(node, "input_mask", None)
+            if in_mask_local is None:
+                in_mask_local = node.mask
+            in_idx = np.where(np.asarray(in_mask_local) > 0.5)[0]
+        return np.asarray(out_idx, dtype=int), np.asarray(in_idx, dtype=int)
+
     binding = getattr(node, "binding_map", None)
     if binding is not None:
         fwd = np.asarray(getattr(binding, "forward", []), dtype=int)
@@ -38,7 +50,13 @@ def predict(node: ExpertNode, x: np.ndarray) -> np.ndarray:
         if in_mask is None:
             in_mask = node.mask
         x_masked = x_canon * in_mask
-        y_canon = node.W @ x_masked + node.b
+        if node.W.ndim == 2 and node.W.shape == (D, D):
+            y_canon = node.W @ x_masked + node.b
+        else:
+            out_idx, in_idx = _compact_indices()
+            y_canon = np.zeros(D, dtype=float)
+            if out_idx.size and in_idx.size:
+                y_canon[out_idx] = node.W @ x_masked[in_idx] + node.b[out_idx]
         y_world = np.zeros_like(y_canon)
         for i in range(D):
             j = int(fwd[i])
@@ -49,7 +67,14 @@ def predict(node: ExpertNode, x: np.ndarray) -> np.ndarray:
     if in_mask is None:
         in_mask = node.mask
     x_masked = x * in_mask
-    return node.W @ x_masked + node.b
+    D = x.shape[0]
+    if node.W.ndim == 2 and node.W.shape == (D, D):
+        return node.W @ x_masked + node.b
+    out_idx, in_idx = _compact_indices()
+    y = np.zeros(D, dtype=float)
+    if out_idx.size and in_idx.size:
+        y[out_idx] = node.W @ x_masked[in_idx] + node.b[out_idx]
+    return y
 
 
 def precision_vector(node: ExpertNode) -> np.ndarray:
@@ -128,18 +153,42 @@ def sgd_update(
     x_in = x_t.copy()
     x_in[~in_mask] = 0.0
 
-    # Current prediction
-    y_hat = node.W @ x_in + node.b
-    err = (y_target - y_hat)
-    err = err * out_mask
-    err[~out_mask_b] = 0.0
+    if node.W.ndim == 2 and node.W.shape == (D, D):
+        # Current prediction
+        y_hat = node.W @ x_in + node.b
+        err = (y_target - y_hat)
+        err = err * out_mask
+        err[~out_mask_b] = 0.0
 
-    # SGD update: W[k,:] += lr * err[k] * x_in[:]
-    # Only update output rows where out_mask is true.
-    rows = np.where(out_mask_b)[0]
-    for k in rows:
-        node.W[k, in_mask] += lr * err[k] * x_in[in_mask]
-        node.b[k] += lr * err[k]
+        # SGD update: W[k,:] += lr * err[k] * x_in[:]
+        # Only update output rows where out_mask is true.
+        rows = np.where(out_mask_b)[0]
+        for k in rows:
+            node.W[k, in_mask] += lr * err[k] * x_in[in_mask]
+            node.b[k] += lr * err[k]
+    else:
+        out_idx = getattr(node, "out_idx", None)
+        in_idx = getattr(node, "in_idx", None)
+        if out_idx is None:
+            out_idx = np.where(node.mask > 0.5)[0]
+        if in_idx is None:
+            in_idx = np.where(in_mask)[0]
+        out_idx = np.asarray(out_idx, dtype=int)
+        in_idx = np.asarray(in_idx, dtype=int)
+        if out_idx.size == 0 or in_idx.size == 0:
+            return
+        x_in_compact = x_in[in_idx]
+        y_hat_out = node.W @ x_in_compact + node.b[out_idx]
+        err_out = (y_target[out_idx] - y_hat_out)
+        out_mask_local = out_mask[out_idx]
+        out_mask_b_local = out_mask_local > 0.0
+        if not np.any(out_mask_b_local):
+            return
+        err_out = err_out * out_mask_local
+        rows = np.where(out_mask_b_local)[0]
+        for r in rows:
+            node.W[r, :] += lr * err_out[r] * x_in_compact
+            node.b[out_idx[r]] += lr * err_out[r]
 
     # Update diagonal covariance estimate for updated outputs.
     if node.Sigma.ndim == 2:
@@ -147,6 +196,12 @@ def sgd_update(
     else:
         diag = node.Sigma.copy()
     alpha = float(np.clip(sigma_ema, 0.0, 1.0))
-    diag[rows] = (1.0 - alpha) * diag[rows] + alpha * (err[rows] ** 2)
+    if node.W.ndim == 2 and node.W.shape == (D, D):
+        diag[rows] = (1.0 - alpha) * diag[rows] + alpha * (err[rows] ** 2)
+    else:
+        diag[out_idx[rows]] = (1.0 - alpha) * diag[out_idx[rows]] + alpha * (err_out[rows] ** 2)
     diag = np.maximum(diag, 1e-8)
-    node.Sigma = np.diag(diag)
+    if node.Sigma.ndim == 2:
+        node.Sigma = np.diag(diag)
+    else:
+        node.Sigma = diag

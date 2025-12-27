@@ -62,7 +62,7 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
     mask = np.ones(D, dtype=float)
     anchor_cost = base_cost + dim_cost * float(np.count_nonzero(mask))
     W = np.zeros((D, D), dtype=float)
-    Sigma = np.eye(D, dtype=float)
+    Sigma = np.ones(D, dtype=float)
     node = ExpertNode(
         node_id=node_id,
         mask=mask,
@@ -85,13 +85,16 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
             mask[np.array(block_dims, dtype=int)] = 1.0
         block_cost = base_cost + dim_cost * float(np.count_nonzero(mask))
 
-        W = np.zeros((D, D), dtype=float)
-        Sigma = np.eye(D, dtype=float)
+        out_idx = np.array(block_dims, dtype=int) if block_dims else np.zeros(0, dtype=int)
+        in_mask = mask.copy()
+        in_idx = out_idx.copy()
+        W = np.zeros((len(out_idx), len(in_idx)), dtype=float)
+        Sigma = np.ones(D, dtype=float)
         block_anchor = bool(getattr(cfg, "force_block_anchors", False))
         local_node = ExpertNode(
             node_id=node_id,
             mask=mask,
-            input_mask=mask.copy(),
+            input_mask=in_mask,
             W=W,
             b=np.zeros(D),
             Sigma=Sigma,
@@ -99,6 +102,8 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
             cost=float(block_cost),
             is_anchor=block_anchor,
             footprint=int(b),
+            out_idx=out_idx,
+            in_idx=in_idx,
         )
         lib.nodes[node_id] = local_node
         lib.footprint_index.setdefault(b, []).append(node_id)
@@ -114,17 +119,20 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
                 dims = blocks[bb]
                 if dims:
                     input_mask[np.array(dims, dtype=int)] = 1.0
+            in_idx = np.where(input_mask > 0.5)[0].astype(int)
             transport_node = ExpertNode(
                 node_id=node_id,
                 mask=mask,
                 input_mask=input_mask,
-                W=np.zeros((D, D), dtype=float),
+                W=np.zeros((len(out_idx), len(in_idx)), dtype=float),
                 b=np.zeros(D),
-                Sigma=np.eye(D, dtype=float),
+                Sigma=np.ones(D, dtype=float),
                 reliability=1.0,
                 cost=float(block_cost),
                 is_anchor=False,
                 footprint=int(b),
+                out_idx=out_idx,
+                in_idx=in_idx,
             )
             setattr(transport_node, "transport", True)
             lib.nodes[node_id] = transport_node
