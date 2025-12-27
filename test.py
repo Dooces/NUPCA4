@@ -1215,6 +1215,8 @@ def run_task(
             top_score_blocks = np.argsort(-scores)[: min(int(k_eff), scores.size)].tolist()
             if top_score_blocks:
                 blocks = [int(b) for b in top_score_blocks]
+        if fovea_use_age and grid_world and int(B) > 1 and int(k_eff) == 1:
+            blocks = [int(step_idx) % int(B)]
         periph_candidates = list(range(max(0, int(B) - int(periph_blocks)), int(B)))
         blocks, forced_periph_blocks = _enforce_peripheral_blocks(
             blocks,
@@ -1225,27 +1227,11 @@ def run_task(
         motion_probe_budget = max(0, int(getattr(cfg_step, "motion_probe_blocks", 0)))
         motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg_step, motion_probe_budget)
         blocks, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks, cfg_step, motion_probe_blocks)
-        if ages_snapshot.size and grid_world:
-            alpha_cov_eff = float(alpha_cov)
-            if fovea_use_age:
-                scores = resid_snapshot + alpha_cov_eff * np.log1p(np.maximum(0.0, ages_snapshot))
-            else:
-                scores = resid_snapshot
-            top_score_blocks = np.argsort(-scores)[: min(int(k_eff), scores.size)].tolist()
-            if top_score_blocks:
-                blocks = [int(b) for b in top_score_blocks]
         selected_blocks_tuple = tuple(int(b) for b in blocks)
         max_block_id = len(getattr(agent.state, "blocks", []) or [])
         if any(int(b) < 0 or int(b) >= max_block_id for b in blocks):
             raise AssertionError(
                 f"Invariant violation: fovea block id out of range (blocks={blocks}, B={max_block_id})."
-            )
-        if visualize_steps and step_idx < visualize_steps:
-            ages_preview = ages_snapshot[: min(8, ages_snapshot.size)].tolist() if ages_snapshot.size else []
-            resid_preview = resid_snapshot[: min(8, resid_snapshot.size)].tolist() if resid_snapshot.size else []
-            print(
-                f"[fovea debug] step={step_idx} ages_head={ages_preview} "
-                f"resid_head={resid_preview} blocks={blocks}"
             )
         if periph_test_active:
             periph_present = all(int(b) in blocks for b in periph_ids)
