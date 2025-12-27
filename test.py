@@ -538,6 +538,17 @@ class MovingColorShapeWorld:
         self.last_dx = 0
         self.last_dy = 0
         self.object_size = max(1, int(object_size))
+        self.vx = 0
+        self.vy = 0
+
+    def _sample_velocity(self) -> tuple[int, int]:
+        while True:
+            dx = int(self.rng.integers(-1, 2))
+            dy = int(self.rng.integers(-1, 2))
+            if dx != 0 or dy != 0:
+                break
+        speed = int(self.rng.integers(self.speed_min, self.speed_max + 1))
+        return dx * speed, dy * speed
 
     @property
     def D(self) -> int:
@@ -548,19 +559,16 @@ class MovingColorShapeWorld:
         self.y = int(self.rng.integers(self.side))
         self.color = int(self.rng.integers(self.n_colors))
         self.shape = int(self.rng.integers(self.n_shapes))
+        self.vx, self.vy = self._sample_velocity()
         self.last_dx = 0
         self.last_dy = 0
         return self._encode()
 
     def step(self) -> np.ndarray:
-        dx, dy = int(self.rng.integers(-1, 2)), int(self.rng.integers(-1, 2))
-        speed = int(self.rng.integers(self.speed_min, self.speed_max + 1))
-        dx *= speed
-        dy *= speed
-        self.last_dx = dx
-        self.last_dy = dy
-        self.x = (self.x + dx) % self.side
-        self.y = (self.y + dy) % self.side
+        self.last_dx = self.vx
+        self.last_dy = self.vy
+        self.x = (self.x + self.vx) % self.side
+        self.y = (self.y + self.vy) % self.side
 
         if self.rng.random() < self.p_color_shift:
             self.color = int(self.rng.integers(self.n_colors))
