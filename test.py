@@ -1943,7 +1943,13 @@ def main() -> None:
     parser.add_argument("--warm-fovea-blocks", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--visualize-steps", type=int, default=0, help="Print ASCII environment/agent/prediction grids for the first N steps.")
-    parser.add_argument("--cli-tag", type=str, default="", help="Emit only tagged CLI output and suppress other logs.")
+    parser.add_argument(
+        "--cli-tag",
+        nargs="?",
+        const="cli",
+        default="",
+        help="Emit only tagged CLI output and suppress other logs.",
+    )
     parser.add_argument("--n-max", type=int, default=256)
     parser.add_argument("--l-work-max", type=float, default=48.0)
     parser.add_argument("--force-block-anchors", action="store_true")
