@@ -1215,6 +1215,8 @@ def run_task(
             top_score_blocks = np.argsort(-scores)[: min(int(k_eff), scores.size)].tolist()
             if top_score_blocks:
                 blocks = [int(b) for b in top_score_blocks]
+        if fovea_use_age and grid_world and int(B) > 1 and int(k_eff) == 1:
+            blocks = [int(step_idx) % int(B)]
         periph_candidates = list(range(max(0, int(B) - int(periph_blocks)), int(B)))
         blocks, forced_periph_blocks = _enforce_peripheral_blocks(
             blocks,

@@ -1672,6 +1672,16 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     selected_blocks = tuple(getattr(env_obs, "selected_blocks", ()) or ())
     if selected_blocks:
         blocks_t = [int(b) for b in selected_blocks]
+    if ages_now.size and grid_world:
+        residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros_like(ages_now)), dtype=float)
+        alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
+        if use_age:
+            scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages_now))
+        else:
+            scores = residuals
+        top_blocks = np.argsort(-scores)[: min(budget, scores.size)].tolist()
+        if top_blocks:
+            blocks_t = [int(b) for b in top_blocks]
     _dbg(f'A16.3 select_fovea -> n_blocks={len(blocks_t) if blocks_t is not None else 0}', state=state)
     state.fovea.current_blocks = set(int(b) for b in blocks_t)
     _dbg(f'A16.3 current_blocks={len(state.fovea.current_blocks)}', state=state)
