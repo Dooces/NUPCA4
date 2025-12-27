@@ -1,3 +1,5 @@
+import json
+import logging
 import numpy as np
 from dataclasses import dataclass
 
@@ -350,6 +352,78 @@ class NUPCA3GridAgent:
         self.agent = NUPCA3Agent(self.cfg)
         self.agent.reset(seed=int(seed))
         self.underlay_mask = np.zeros((self.H, self.W), dtype=bool)
+        self.logger = logging.getLogger("nupca3_grid_harness")
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.handlers:
+            handler = logging.FileHandler("output.txt", mode="w", encoding="utf-8")
+            formatter = logging.Formatter("%(message)s")
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.propagate = False
+
+    def _log_step(self, *, action, trace, obs_vec, pred_display, mismatch, idx):
+        state = self.agent.state
+        learn_cache = getattr(state, "learn_cache", None)
+        working_set = getattr(learn_cache, "A_t", None) if learn_cache is not None else None
+        active_nodes = list(getattr(working_set, "active", [])) if working_set is not None else []
+        active_weights = dict(getattr(working_set, "weights", {})) if working_set is not None else {}
+
+        node_info = []
+        nodes = getattr(getattr(state, "library", None), "nodes", {}) or {}
+        for node_id in active_nodes:
+            node = nodes.get(node_id)
+            if node is None:
+                node_info.append({"node_id": int(node_id), "status": "missing"})
+                continue
+            node_info.append(
+                {
+                    "node_id": int(node_id),
+                    "weight": float(active_weights.get(node_id, 0.0)),
+                    "footprint": int(getattr(node, "footprint", -1)),
+                    "parents": sorted(int(p) for p in getattr(node, "parents", set())),
+                    "children": sorted(int(c) for c in getattr(node, "children", set())),
+                    "is_anchor": bool(getattr(node, "is_anchor", False)),
+                }
+            )
+
+        learning_candidates = trace.get("learning_candidates", {}) if isinstance(trace, dict) else {}
+        learning_active = bool(learning_candidates)
+        learning_reason = "learning_candidates_present" if learning_active else "no_learning_candidates"
+
+        log_payload = {
+            "t": int(trace.get("t", getattr(state, "t", 0))) if isinstance(trace, dict) else int(getattr(state, "t", 0)),
+            "action": int(action),
+            "rest": bool(trace.get("rest", False)) if isinstance(trace, dict) else False,
+            "permit_param": bool(trace.get("permit_param", False)) if isinstance(trace, dict) else False,
+            "errors": {
+                "mismatch_mean": float(np.mean(mismatch)),
+                "mismatch_max": float(np.max(mismatch)),
+                "prior_obs_mae": float(trace.get("prior_obs_mae", float("nan"))) if isinstance(trace, dict) else float("nan"),
+                "posterior_obs_mae": float(trace.get("posterior_obs_mae", float("nan"))) if isinstance(trace, dict) else float("nan"),
+            },
+            "dag_constellation": {
+                "active_count": int(len(active_nodes)),
+                "active_nodes": node_info,
+            },
+            "abstraction": {
+                "edits_processed": int(trace.get("edits_processed", 0)) if isinstance(trace, dict) else 0,
+                "rest_queue_len": int(trace.get("rest_queue_len", 0)) if isinstance(trace, dict) else 0,
+                "rest_cycles_needed": int(trace.get("rest_cycles_needed", 0)) if isinstance(trace, dict) else 0,
+            },
+            "learning": {
+                "active": learning_active,
+                "reason": learning_reason,
+                "candidates": learning_candidates,
+            },
+            "observation": {
+                "obs_count": int(obs_vec.size),
+                "seen_count": int(len(idx)),
+            },
+            "prediction": {
+                "pred_nonzero": int(np.count_nonzero(pred_display)),
+            },
+        }
+        self.logger.info(json.dumps(log_payload, sort_keys=True))
 
     def step(self, obs_full: np.ndarray):
         obs_vec = np.asarray(obs_full, dtype=float).reshape(-1)
@@ -358,6 +432,7 @@ class NUPCA3GridAgent:
 
         x_partial = {int(i): float(v) for i, v in enumerate(obs_vec)}
         env_obs = EnvObs(x_partial=x_partial, opp=0.0, danger=0.0)
+        action, trace = self.agent.step(env_obs)
         self.agent.step(env_obs)
 
         pred_vec = np.asarray(getattr(self.agent.state.buffer, "x_prior", np.zeros(self.D)), dtype=float)
@@ -380,6 +455,14 @@ class NUPCA3GridAgent:
             unknown[ys, xs] = False
 
         mismatch = (obs_vec.astype(int) != pred_display).astype(float)
+        self._log_step(
+            action=action,
+            trace=trace,
+            obs_vec=obs_vec,
+            pred_display=pred_display,
+            mismatch=mismatch,
+            idx=idx,
+        )
         return pred_display, mismatch, seen, unknown, idx
 
 
