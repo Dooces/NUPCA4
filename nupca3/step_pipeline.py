@@ -1641,7 +1641,18 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     # -------------------------------------------------------------------------
     # A16.3: select fovea blocks for this step (uses t-1 tracking)
     # -------------------------------------------------------------------------
-    update_fovea_routing_scores(state.fovea, x_prev, cfg, t=int(getattr(state, "t", 0)))
+    periph_dims = _peripheral_dim_set(D, cfg)
+    routing_vec = x_prev
+    periph_full = getattr(env_obs, "periph_full", None)
+    if periph_dims and periph_full is not None:
+        routing_vec = x_prev.copy()
+        full_arr = np.asarray(periph_full, dtype=float).reshape(-1)
+        if full_arr.size < D:
+            full_arr = np.resize(full_arr, (D,))
+        for dim in periph_dims:
+            if 0 <= dim < full_arr.size:
+                routing_vec[int(dim)] = float(full_arr[int(dim)])
+    update_fovea_routing_scores(state.fovea, routing_vec, cfg, t=int(getattr(state, "t", 0)))
     _apply_pending_transport_disagreement(state, cfg)
     blocks_t = select_fovea(state.fovea, cfg)
     G = int(getattr(cfg, "coverage_cap_G", 0))
@@ -1662,7 +1673,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     motion_probe_blocks = _select_motion_probe_blocks(prev_observed_dims, cfg, motion_probe_budget)
     blocks_t, motion_probe_blocks_used = _enforce_motion_probe_blocks(blocks_t or [], cfg, motion_probe_blocks)
     selected_blocks = tuple(getattr(env_obs, "selected_blocks", ()) or ())
-    if selected_blocks:
+    if selected_blocks and bool(getattr(cfg, "allow_selected_blocks_override", False)):
         blocks_t = [int(b) for b in selected_blocks]
     _dbg(f'A16.3 select_fovea -> n_blocks={len(blocks_t) if blocks_t is not None else 0}', state=state)
     state.fovea.current_blocks = set(int(b) for b in blocks_t)
@@ -1766,7 +1777,6 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         obs_idx = np.zeros(0, dtype=int)
         obs_vals = np.zeros(0, dtype=float)
 
-    periph_dims = _peripheral_dim_set(D, cfg)
     _update_observed_history(state, obs_idx, cfg, extra_dims=periph_dims)
 
 

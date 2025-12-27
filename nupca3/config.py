@@ -131,6 +131,8 @@ class AgentConfig:
     fovea_disagreement_weight: float = 0.0
     fovea_innovation_weight: float = 0.0
     fovea_periph_demand_weight: float = 0.0
+    # Allow env-provided selected_blocks to override fovea selection.
+    allow_selected_blocks_override: bool = False
 
     # Allowed transport span (blocks) for expert input masks.
     transport_span_blocks: int = 0
