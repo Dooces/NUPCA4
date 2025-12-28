@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict
 import math
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Set, List
 
 import numpy as np
 
@@ -39,13 +39,13 @@ from ..state.baselines import (commit_tilde_prev, normalize_margins,
 from ..state.macrostate import evolve_macrostate, rest_permitted
 from ..state.margins import compute_arousal, compute_stress
 from ..state.stability import update_stability_metrics
-from ..types import (AgentState, EnvObs, FootprintResidualStats,
+from ..types import (AgentState, Action, EnvObs, FootprintResidualStats,
                      LearningCache, Margins, PersistentResidualState,
                      StepTrace, TransitionRecord)
 
 from .fovea import FoveaSignals, apply_signals_and_select
 from .learning import (_build_training_mask, _derive_margins,
-                       _feature_probe_vectors)
+                       _feature_probe_vectors, LearningProcessor)
 from .logging import _dbg
 from .observations import (_cfg_D, _coarse_summary, _compute_peripheral_gist,
                            _compute_peripheral_metrics, _ensure_node_band_levels,
@@ -56,11 +56,15 @@ from .observations import (_cfg_D, _coarse_summary, _compute_peripheral_gist,
                            _update_context_tags, _update_observed_history)
 from .transport import (_compute_transport_disagreement_blocks,
                         _select_transport_delta,
-                        _update_transport_learning_state)
+                        _update_transport_learning_state,
+                        synthesize_action)
 from .worlds import _build_world_hypotheses, _compute_block_signals
 
 
-def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple[int, AgentState, Dict[str, Any]]:
+learning_processor = LearningProcessor()
+
+
+def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple[Action, AgentState, Dict[str, Any]]:
     """
     Advance the agent by one timestep.
 
@@ -70,7 +74,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
       cfg: AgentConfig
 
     Outputs:
-      action: int action selected for this timestep
+      action: Action action selected for this timestep
       next_state: updated AgentState (mutated in place in this snapshot style)
       trace: dict diagnostics (runner expects a dict)
     """
@@ -491,6 +495,10 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     if obs_idx.size:
         error_vec[obs_idx] = obs_vals - prior_t[obs_idx]
     abs_error = np.abs(error_vec)
+    mean_delta = float(np.mean(abs_error[obs_idx])) if obs_idx.size else 0.0
+    learning_processor.update_streaks(mean_delta)
+    state.low_streak = learning_processor.low_streak
+    state.high_streak = learning_processor.high_streak
     if obs_idx.size:
         active_thresh = float(getattr(cfg, "train_active_threshold", 0.0))
         active_obs_mask = np.abs(obs_vals) > active_thresh
@@ -954,8 +962,8 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     # -------------------------------------------------------------------------
     commit_t = commit_gate(rest=rest_t, h=int(budget.h), c=list(getattr(rollout, "c", [])), cfg=cfg)
     _dbg(f'A8 commit_gate with h={int(budget.h)} c_len={len(list(getattr(rollout,"c",[]) or []))}', state=state)
-    action = int(select_action(commit=commit_t, rollout=rollout, cfg=cfg))
-    _dbg(f'A8 select_action -> action={action} commit={bool(commit_t)}', state=state)
+    action = synthesize_action(state)
+    _dbg(f'A13.10 synthesize_action -> action={action} commit={bool(commit_t)}', state=state)
 
     # -------------------------------------------------------------------------
     # A15 hard dynamics update of (E, D, drift_P)
@@ -1431,6 +1439,8 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             "coverage_debt": float(coverage_debt),
             "coverage_debt_delta": float(coverage_debt - coverage_debt_prev),
             "maint_debt": float(maint_debt),
+            "low_streak": getattr(state, "low_streak", 0),
+            "high_streak": getattr(state, "high_streak", 0),
             "Q_struct_len": int(len(getattr(macro_t, "Q_struct", []) or [])),
             "observed_dims": int(len(state.buffer.observed_dims)),
             "obs_env_size": int(len(env_obs_dims)),
@@ -1559,4 +1569,6 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
 
     _dbg('returning (action, state, trace_dict)', state=state)
     return action, state, trace_dict
+
+
 __all__ = ["step_pipeline"]

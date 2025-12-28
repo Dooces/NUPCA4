@@ -12,7 +12,7 @@ from rich.console import Group
 from nupca3.agent import NUPCA3Agent
 from nupca3.config import AgentConfig
 from nupca3.geometry.fovea import make_observation_set, select_fovea, update_fovea_routing_scores
-from nupca3.types import EnvObs
+from nupca3.types import EnvObs, Action, CurriculumCommand
 
 # ============================================================
 # OPTIONS (edit these)
@@ -133,9 +133,7 @@ class SemanticOcclusionEnv:
     Visible frame uses z-order overwrite (occlusion).
     Motion is deterministic: constant velocities + wall bounces.
     Elastic collisions only apply to selected kinds (ELASTIC_KINDS).
-    Curriculum:
-      - if mean_delta < ADD_DELTA_THRESHOLD for STREAK_STEPS -> add a shape (until MAX_SHAPES)
-      - if mean_delta > HIGH_STREAK_THRESHOLD for STREAK_STEPS -> remove a shape (down to MIN_SHAPES)
+    Curriculum is enacted by agent-issued Action commands (ADD_SHAPE / REMOVE_SHAPE).
     """
     def __init__(self, H=HEIGHT, W=WIDTH, seed=1):
         self.H = int(H)
@@ -143,8 +141,12 @@ class SemanticOcclusionEnv:
         self.rng = np.random.default_rng(seed)
         self.t = 0
         self.objs: list[Obj] = []
-        self.low_streak = 0
-        self.high_streak = 0
+
+    def apply_action(self, action: Action):
+        if action.command == CurriculumCommand.ADD_SHAPE and len(self.objs) < MAX_SHAPES:
+            self._spawn_obj()
+        elif action.command == CurriculumCommand.REMOVE_SHAPE and len(self.objs) > MIN_SHAPES:
+            self._remove_one()
 
     def _new_velocity(self):
         vx = float(self.rng.choice([-0.75, -0.5, 0.5, 0.75]))
@@ -311,26 +313,16 @@ class SemanticOcclusionEnv:
         for o in self.objs:
             self._bounce_walls(o)
 
-    def update_curriculum(self, mean_delta: float):
-        if mean_delta < ADD_DELTA_THRESHOLD:
-            self.low_streak += 1
-        else:
-            self.low_streak = max(0, self.low_streak - 2)
 
-        if mean_delta > HIGH_STREAK_THRESHOLD:
-            self.high_streak += 1
-        else:
-            self.high_streak = max(0, self.high_streak - 2)
 
-        if self.low_streak >= STREAK_STEPS and len(self.objs) < MAX_SHAPES:
-            self._spawn_obj()
-            self.low_streak = 0
-            self.high_streak = 0
-
-        if self.high_streak >= STREAK_STEPS and len(self.objs) > MIN_SHAPES:
-            self._remove_one()
-            self.low_streak = 0
-            self.high_streak = 0
+@dataclass
+class StepOut:
+    action: Action
+    pred: np.ndarray
+    mismatch: np.ndarray
+    seen: np.ndarray
+    unknown: np.ndarray
+    fidx: np.ndarray
 
 
 # ============================================================
@@ -411,7 +403,7 @@ class NUPCA3GridAgent:
 
         log_payload = {
             "t": int(trace.get("t", getattr(state, "t", 0))) if isinstance(trace, dict) else int(getattr(state, "t", 0)),
-            "action": int(action),
+            "action": int(action.value),
             "rest": bool(trace.get("rest", False)) if isinstance(trace, dict) else False,
             "permit_param": bool(trace.get("permit_param", False)) if isinstance(trace, dict) else False,
             "errors": {
@@ -490,7 +482,14 @@ class NUPCA3GridAgent:
             mismatch=mismatch,
             idx=idx,
         )
-        return pred_display, mismatch, seen, unknown, idx
+        return StepOut(
+            action=action,
+            pred=pred_display,
+            mismatch=mismatch,
+            seen=seen,
+            unknown=unknown,
+            fidx=idx,
+        )
 
 
 # ============================================================
@@ -532,8 +531,8 @@ if __name__ == "__main__":
 
     t = 0
     obs = env.render_visible()
-    pred, mismatch, seen, unk, fidx = agent.step(obs)
-    mean_delta = float(np.mean(mismatch))
+    step_out = agent.step(obs)
+    env.apply_action(step_out.action)
 
     with Live(screen=True, refresh_per_second=FPS) as live:
         while True:
@@ -542,10 +541,11 @@ if __name__ == "__main__":
             env.step_physics()
             obs = env.render_visible()
 
-            pred, mismatch, seen, unk, fidx = agent.step(obs)
-            mean_delta = float(np.mean(mismatch))
+            step_out = agent.step(obs)
+            env.apply_action(step_out.action)
 
-            env.update_curriculum(mean_delta)
+            low_streak = int(getattr(agent.agent.state, "low_streak", 0))
+            high_streak = int(getattr(agent.agent.state, "high_streak", 0))
 
             live.update(
                 render_dashboard(
@@ -553,15 +553,15 @@ if __name__ == "__main__":
                     H=HEIGHT,
                     W=WIDTH,
                     env_vec=obs,
-                    pred_vec=pred,
-                    seen_vec=seen,
-                    unknown_mask=unk,
-                    fovea_idx=fidx,
-                    mismatch=mismatch,
+                    pred_vec=step_out.pred,
+                    seen_vec=step_out.seen,
+                    unknown_mask=step_out.unknown,
+                    fovea_idx=step_out.fidx,
+                    mismatch=step_out.mismatch,
                     tracks_alive=len(getattr(agent.agent.state.fovea, "current_blocks", set())),
                     underlay_mask=agent.underlay_mask,
                     n_shapes=len(env.objs),
-                    low_streak=env.low_streak,
-                    high_streak=env.high_streak,
+                    low_streak=low_streak,
+                    high_streak=high_streak,
                 )
             )

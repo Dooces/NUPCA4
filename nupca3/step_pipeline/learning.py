@@ -91,3 +91,24 @@ def _derive_margins(
         cfg=cfg,
     )
     return margins, rawE, rawD, rawS
+
+
+class LearningProcessor:
+    def __init__(self):
+        self.low_streak: int = 0
+        self.high_streak: int = 0
+
+    def update_streaks(self, mean_delta: float) -> None:
+        ADD_DELTA_THRESHOLD = 0.02
+        HIGH_DELTA_THRESHOLD = 0.10
+        STREAK_STEPS = 20  # Align with original test harness constant
+
+        if mean_delta < ADD_DELTA_THRESHOLD:
+            self.low_streak += 1
+            self.high_streak = 0
+        elif mean_delta > HIGH_DELTA_THRESHOLD:
+            self.high_streak += 1
+            self.low_streak = 0
+        else:
+            self.low_streak = 0
+            self.high_streak = 0

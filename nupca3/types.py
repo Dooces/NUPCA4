@@ -44,7 +44,18 @@ from .geometry.block_spec import BlockSpec, BlockView
 # =============================================================================
 
 # Discrete action space (A1): most sims treat action as an integer.
-Action = int
+from enum import Enum
+
+class CurriculumCommand(Enum):
+    NONE = "none"
+    ADD_SHAPE = "add_shape"
+    REMOVE_SHAPE = "remove_shape"
+
+@dataclass
+class Action:
+    command: CurriculumCommand = CurriculumCommand.NONE
+    # Preserve scalar action if needed for other domains (stubbed as int)
+    value: int = 0
 
 
 # =============================================================================

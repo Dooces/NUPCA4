@@ -13,7 +13,7 @@ import numpy as np
 from ..config import AgentConfig
 from ..geometry.fovea import block_of_dim
 from ..geometry.streams import apply_transport, periph_block_size
-from ..types import AgentState
+from ..types import AgentState, Action, CurriculumCommand
 
 from .observations import _cfg_D
 
@@ -552,3 +552,20 @@ def _update_transport_learning_state(
         biases = {key: value for key, value in biases.items() if key in keep_keys}
 
     state.transport_biases = biases
+
+
+def synthesize_action(state: AgentState) -> Action:
+    STREAK_STEPS = 20
+    low_streak = getattr(state, 'low_streak', 0)
+    high_streak = getattr(state, 'high_streak', 0)
+
+    action = Action()
+    if low_streak >= STREAK_STEPS:
+        action.command = CurriculumCommand.ADD_SHAPE
+        state.low_streak = 0
+        state.high_streak = 0
+    elif high_streak >= STREAK_STEPS:
+        action.command = CurriculumCommand.REMOVE_SHAPE
+        state.low_streak = 0
+        state.high_streak = 0
+    return action
