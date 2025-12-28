@@ -21,9 +21,6 @@ Several components require environment/task definitions or user-provided probe f
 ## Run
 
 ```bash
-python example_agent.py
+python test4.py
 ```
 
-## Notes
-
-This is a structural scaffold intended to be filled with your precise axiom math; it is not presented as a final learning system.
