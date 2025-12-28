@@ -157,15 +157,16 @@ def _consolidate_world_hypotheses(state: AgentState, cfg: AgentConfig, worlds: L
     return grouped
 
 
-def _update_block_signals(state: AgentState, cfg: AgentConfig, worlds: List[WorldHypothesis], D: int) -> None:
+def _compute_block_signals(
+    state: AgentState,
+    cfg: AgentConfig,
+    worlds: List[WorldHypothesis],
+    D: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     B = int(getattr(cfg, "B", 0))
-    fovea = state.fovea
     if B <= 0:
         zeros = np.zeros(0, dtype=float)
-        fovea.block_disagreement = zeros
-        fovea.block_innovation = zeros
-        fovea.block_periph_demand = zeros
-        return
+        return zeros, zeros, zeros
     ranges = block_slices(cfg)
     values = np.zeros((len(worlds), B), dtype=float) if worlds else np.zeros((0, B), dtype=float)
     deltas = np.zeros((len(worlds), B), dtype=float) if worlds else np.zeros((0, B), dtype=float)
@@ -202,7 +203,7 @@ def _update_block_signals(state: AgentState, cfg: AgentConfig, worlds: List[Worl
     else:
         disagreement = np.zeros(B, dtype=float)
         innovation = np.zeros(B, dtype=float)
-    age = np.asarray(getattr(fovea, "block_age", np.zeros(B)), dtype=float)
+    age = np.asarray(getattr(state.fovea, "block_age", np.zeros(B)), dtype=float)
     if age.size != B:
         age = np.resize(age, (B,))
     periph_value = float(np.nan_to_num(state.peripheral_residual, nan=0.0))
@@ -213,9 +214,11 @@ def _update_block_signals(state: AgentState, cfg: AgentConfig, worlds: List[Worl
     else:
         normalized_weight = weight / weight_sum
     periph_demand = periph_value * normalized_weight
-    fovea.block_disagreement = np.asarray(disagreement, dtype=float)
-    fovea.block_innovation = np.asarray(innovation, dtype=float)
-    fovea.block_periph_demand = np.asarray(periph_demand, dtype=float)
+    return (
+        np.asarray(disagreement, dtype=float),
+        np.asarray(innovation, dtype=float),
+        np.asarray(periph_demand, dtype=float),
+    )
 
 
 def _select_multi_world_candidates(

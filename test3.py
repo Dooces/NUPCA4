@@ -349,6 +349,11 @@ class NUPCA3GridAgent:
             fovea_blocks_per_step=BUDGET,
             fovea_log_every=0,
             allow_selected_blocks_override=True,
+            grid_side=self.H,
+            grid_channels=1,
+            grid_color_channels=1,
+            grid_shape_channels=0,
+            grid_base_dim=self.D,
         )
         self.agent = NUPCA3Agent(self.cfg)
         self.agent.reset(seed=int(seed))

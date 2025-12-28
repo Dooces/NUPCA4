@@ -1,279 +1,120 @@
-## PROGRESS
-- Added transport-config options, bias/offset bookkeeping, and rotation-aware `apply_transport`.
-- Extended transport candidate generation to sample rotations, offsets, and weight scoring from learned wins; persisted state updates after each step.
-- Verified targeted stream tests plus the full suite to confirm the new transforms and biasing stay axiom-faithful.
-- Logged `posterior_obs_mae` separately and covered acceptance cases A/D/E with dedicated unit tests to keep prior/prediction, peripheral coherence, and multi-world reporting observable.
+2) Fovea is not being directed properly in the actual run (as evidenced by output.txt + state)
+The fatal issue: observation budget is being silently violated
 
-## Implementation Guardrails (must-read)
+In test4.py, you configure:
 
-1. **Observation budget integrity (no hidden full-state access).**
-   All computations that use ground-truth values must be provably sourced from explicit observed indices:
+B = D (one dim per block),
 
-* Primary observations: (\Omega_t) with values (y_t).
-* If you introduce a peripheral/coarse channel (y^{bg}_t), you must define an explicit index set (\Omega^{bg}_t) and cost/budget for it (even if “cheap”), and treat it as observation.
-  **Prohibited:** computing any “coherence residual” against unobserved ground truth outside (\Omega_t \cup \Omega^{bg}_t), or using debug/full-state diagnostics as learning or scoring inputs.
+fovea_blocks_per_step = 32 (budget = 32 “blocks”),
 
-2. **Per-step invariant is an assertion, not a guideline.**
-   Enforce (by code structure and/or asserts) that:
+…but the run log shows the actual observation set size is far larger because make_observation_set() expands to a circle:
 
-* priors (\hat{x}_{t|t-1}) are produced before seeing (y_t),
-* (e^{\text{obs}}_t) is computed only from priors on (\Omega_t),
-* posteriors (\hat{x}_{t|t}) never overwrite priors before metrics/logging,
-* no “prediction metric” is computed on posterior/clamped state.
+From output.txt step traces (468 steps total):
 
-3. **Posterior is never an optimization target for “prediction.”**
-   Posterior/perception metrics may be logged, but do not use posterior-vs-truth to:
+obs_count: min 32, max 400, mean 233.7, median 231.5
 
-* update world weights,
-* claim predictive performance,
-* drive transport/motion selection.
-  World competition must be driven by prior-vs-observed error on (\Omega_t).
+Fraction of steps:
 
-4. **Merge/prune safety: never merge on a single-step view.**
-   World merging is allowed only if worlds are near-identical on a rolling evidence support window (S_t=\cup_{i=t-L}^t \Omega_i) (and optional REST audit if permitted and budgeted).
-   **Prohibited:** merging because worlds match on current (\Omega_t) alone (aliasing collapse).
+obs_count > 64: 92.5%
 
-5. **Innovation-driven attention must be feedback-safe.**
-   If (|\Delta|_b) is used in demand/coverage pressure, it must be gated to avoid “self-chasing,” e.g.:
+obs_count > 128: 82.3%
 
-* decay/EMA,
-* age-weighting (prefer blocks not recently observed),
-* or computing innovation demand using *prior-only* disagreement rather than raw clamp-induced changes.
-  **Goal:** innovation helps route attention, not trap it.
+obs_count == 400 (full grid): 3.4%
 
-6. **Debug/full-state signals are diagnostics only.**
-   Any “true grid,” “ASCII diff,” or full-state access in the harness must be firewalled from learning, scoring, world weights, merge decisions, or attention policy—unless explicitly declared as an observation channel with a budgeted cost.
+This is not a small deviation; it changes the regime from “foveated partial observation” to “often near-global observation.”
 
----
+Concrete inconsistency in the saved state (rested.pkl)
 
-# ROLL OUT PLAN (PLAINTEXT / NOTEPAD SAFE)
+At the end of the run, the persistent state shows:
 
-0. PURPOSE / NON-NEGOTIABLES
+len(state.fovea.current_blocks) = 32
 
----
+len(state.buffer.observed_dims) = 194
 
-Goal:
+overlap: only 30 dims are both “selected blocks” and “observed dims”
 
-* Separate prediction/recall (PRIOR) from perception after cue/clamp (POSTERIOR) so metrics cannot be “won by clamping”.
-* Optionally support multiple parallel hypotheses (“multi-worlds”) under ambiguity (esp. motion/transport).
-* Add a peripheral low-res full-field stream that reduces fovea burden without deleting accountability.
+164 observed dims were not in the selected block set
 
-Non-negotiables:
+That mismatch is exactly what the circular expansion creates when B = D (each block = one dim). Under strict A16 semantics, observed dims should be the dims of the selected blocks, not an expanded superset.
 
-* Keep ONE completion operator concept (Complete()), but run it in distinct modes and store both outputs.
-* Learning accountability signal is PRIOR vs OBSERVATION on observed indices (obs_idx).
-* Innovation (prior->posterior change) is NOT the sole error signal; it is routing/diagnostic/candidate/coverage input.
-* Never delete background dims from coherence checking; use confidence/precision weighting, not hard masking.
-* Enforce canonical per-step ordering as an explicit invariant.
+Second structural issue: test4 runs fovea selection twice per step
 
-Definitions:
+You are calling select_fovea() in test4.py to choose indices for the environment, and the agent pipeline also runs its own fovea selection internally (A16.3 planning). That’s why output.txt contains 936 select_fovea events for 468 steps (two per step).
 
-* Omega_t = obs_idx (indices observed at step t)
-* y_t = observed values on Omega_t
-* x_prior = x_hat_{t|t-1}
-* x_post  = x_hat_{t|t}
-* e_obs_t = y_t - x_prior[Omega_t]
-* Delta_t = x_post - x_prior
+This is not new (zip3 already did it), but it matters because it means the harness is not a clean “agent chooses O_t → env returns y_t on O_t” loop driven by the pipeline’s own planned selection. The pipeline does have an override mechanism (EnvObs.selected_blocks + allow_selected_blocks_override), but test4.py does not populate selected_blocks, so internal planning and external sensing can drift.
 
-1. PHASE 1: PER-STEP ORDERING INVARIANT (MUST IMPLEMENT)
+3) REST is happening and appears to be doing its intended job (with one major compliance gap)
+What’s working (based on output.txt)
 
----
+REST occurs: 142 / 468 steps were logged with rest: true.
 
-Per-step invariant (canonical sequence):
-(1) Compute PRIOR(s): x_hat_{t|t-1}  (or per-world x_hat^{(k)}*{t|t-1})
-(2) Observe y_t on Omega_t
-(3) Compute POSTERIOR(s): x_hat*{t|t} = Complete(x_hat_{t|t-1}, y_t on Omega_t)
-(4) Compute/log e_obs_t and Delta_t using the PRIOR from step (1)
-(5) ONLY THEN update any buffers / learning state / candidates / resampling / caches
+During REST, structural work is performed:
 
-Prohibited:
+edits_processed: min 16, max 32, mean 16.5 per REST step
 
-* Computing “prediction” metrics after step (3) on clamped/posterior states.
-* Overwriting x_prior before logging e_obs_t.
-* Labeling posterior/perception metrics as “prediction”.
+rest_queue_len is typically 16, with an early spike up to 152, which then gets worked down (consistent with backlog processing).
 
-2. PHASE 2: METRICS THAT ACTUALLY MEASURE PREDICTION
+Learning is disabled in REST:
 
----
+learning.active is never true when rest: true in the trace, which matches A10/A14 expectations.
 
-Single-world required per-step logs:
+The compliance gap: “REST-purged pixels” is not implemented in the persisted “rested” state
 
-* prior_obs_mae_t = MAE(e_obs_t)  (true predictive loss on what was seen)
-* innov_energy_t  = MAE(Delta_t) or ||Delta_t|| (how much perception rewrote worldview)
-* posterior metrics allowed, but labeled strictly as posterior/perception (never “prediction”)
+Your axiom file in zip6 (axioms/NUPCA3_axioms_v1.6.2.md) explicitly states (v1.6 intent):
 
-Required litmus run:
+raw observation buffer may be used during REST,
 
-* Show a case where posterior match is high but prior_obs_mae is still high,
-  and both are logged distinctly (proves invariant is respected).
+must be purged before leaving REST (“no pixels after REST”),
 
-3. PHASE 3: MULTI-WORLD PARALLEL HYPOTHESES (FIXED K)
+and feeding raw pixels directly into x(t) is explicitly called out as non-compliant until an encoder boundary exists.
 
----
+In the saved rested.pkl, state.buffer.x_last and state.buffer.x_prior are present and populated. In this harness, those are effectively raw grid/pixel-coded values. The “drain REST backlog then save rested state” procedure therefore does not produce a “post-REST durable state with no pixels.”
 
-World representation (K fixed):
-For k = 1..K store:
+This is an axiomatic noncompliance relative to the v1.6.2 addendum and also contradicts what the save path implies by naming (“rested”).
 
-* x_prior^{(k)} = x_hat^{(k)}_{t|t-1}
-* x_post^{(k)}  = x_hat^{(k)}_{t|t}
-* delta^{(k)}   = world-specific motion/transport hypothesis (dx,dy or transform)
-* w^{(k)}       = world weight (credence)
-* metadata^{(k)}: coverage debt, last-good blocks, etc.
+4) The persistent state is saving too much (content-wise), and the root cause is structural
+Observed: rested.pkl is extremely large
 
-Per-step multi-world scoring (ANCHOR TO PRIOR vs OBS):
+rested.pkl in zip6 is ~130 MB.
 
-* e^{(k)}(Omega_t) = y_t - x_prior^{(k)}[Omega_t]
-* score/likelihood l^{(k)} monotone decreasing in MAE(e^{(k)}(Omega_t))
-  Example: l^{(k)} ~ exp(-lambda * MAE(e^{(k)}(Omega_t)))
-* weight update:
-  w^{(k)} <- normalize( w^{(k)} * l^{(k)} )
+output.txt is ~419 KB (reasonable).
 
-Per-world posterior:
+Why it’s so large (confirmed by inspecting the loaded state)
 
-* x_post^{(k)} = Complete(x_prior^{(k)}, y_t on Omega_t)
-* Delta^{(k)}  = x_post^{(k)} - x_prior^{(k)}
+The dominant contributor is state.observed_transitions:
 
-4. PHASE 3B: REQUIRED MULTI-WORLD REPORTING (EXPLICIT)
+It stores per-block TransitionRecords.
 
----
+Each TransitionRecord currently stores observed_dims_tau_plus_1 as a full set of observed dims.
 
-Log per step (and in summary):
+Because B = D and because your actual obs_count is often ~200+, the system records many transitions per step, each duplicating a large observed-dims set.
 
-* best_world_prior_mae_t = min_k MAE(e^{(k)}(Omega_t))
-* expected_prior_mae_t   = sum_k w^{(k)} * MAE(e^{(k)}(Omega_t))
-* posterior metrics separately (never labeled prediction)
-* (optional) weight_entropy_t = -sum_k w^{(k)} log w^{(k)}
+This creates an O(|O|²) growth pattern in memory footprint per step when the observation set is large.
 
-5. PHASE 4: PRUNE / CLONE / MERGE (WITH ANTI-ALIAS MERGE GUARD)
+Even if you fix the circular expansion, this remains inherently heavier than necessary when B = D, but with strict fovea budgets it becomes manageable. With circular expansion, it becomes pathological.
 
----
+5) Is the agent learning?
 
-Budget discipline (required):
+Within the constraints of this harness, there is evidence of learning in the logged metrics:
 
-* K is constant (no uncontrolled branching).
-* Prune low-weight worlds; clone/replace as needed to maintain K.
+prior_obs_mae drops substantially over the run:
 
-Merge guard (critical):
+mean over first 50 steps: ~0.895
 
-* Do NOT merge worlds just because they match on current Omega_t (they may be aliased).
-* Define relevant support window:
-  S_t = union_{i=t-L..t} Omega_i   (recent evidence window of observed dims/blocks)
+mean over last 50 steps: ~0.366 (about 59% reduction)
 
-Merge condition:
+Learning updates are gated and sparse:
 
-* Only merge world k and j if they are near-identical over S_t:
-  MAE( x_prior^{(k)}[S_t] - x_prior^{(j)}[S_t] ) < eps_merge
-  (and optionally their delta hypotheses are compatible / redundant)
+learning.active is true on 26 operating steps (and never during REST).
 
-Optional REST audit guard (only if allowed by your axioms):
+However, because observation is frequently near-global (due to the circle expansion), this is not a clean test of “learning under foveated partial observability,” and it is not a clean test of A16-driven attention either.
 
-* During REST only, sample additional audit dims A_t (cheap) and require near-identity on (S_t U A_t)
-* Purpose: prevent merging worlds that are merely currently aliased.
+Fail (structural/axiomatic issues that materially break the run)
 
-6. PHASE 5: ATTENTION / FOVEATION DRIVEN BY DISAGREEMENT + INNOVATION
+Observation budget violation caused by the new circular expansion in make_observation_set() when grid_side > 0. This breaks the practical meaning of A16 foveation in test4 and cascades into state/log blowups.
 
----
+“Rested” snapshot is not REST-purged: raw buffer content remains in rested.pkl, contradicting the v1.6.2 “no pixels after REST” addendum (and the file name implies the opposite).
 
-Multi-world disagreement routing:
+Persistence content is excessive: observed_transitions duplicates large observed-dims sets per block transition; with the expanded observation set this becomes pathological and is the main reason the saved state is ~130 MB.
 
-* For each block b, compute disagreement across worlds on PRIOR:
-  disagree_b ~ Var_k( x_prior^{(k)}[block_b] )  (or similar)
-* Use disagreement to pick fovea blocks to disambiguate hypotheses under budget.
-
-Innovation wiring (explicit):
-
-* Compute blockwise innovation:
-  |Delta|_b = MAE( Delta_t[block_b] )  (single-world)
-  or weight-avg across worlds (multi-world)
-* Feed |Delta|_b into coverage debt / candidate pressure / routing.
-* Keep learning loss anchored to e_obs (prior-vs-observed), not innovation alone.
-
-7. PHASE 6: PERIPHERAL (LOW-RES FULL-FIELD) + FOVEA (HIGH-RES SELECTIVE)
-
----
-
-Peripheral stream requirements:
-
-* Runs continuously on full input at low resolution / coarse features.
-* Produces:
-  (a) baseline coarse prediction: x_bg_prior = x_hat^{bg}_{t|t-1}  (or feature map phi(x))
-  (b) per-block confidence/precision: c_bg[b] (or uncertainty proxy)
-
-Critical rule:
-
-* Peripheral does NOT delete background dims; it down-weights them for fovea routing,
-  but keeps them eligible for coherence violation detection.
-
-Operational coherence violation diagnostic (required):
-
-* Compute a cheap coarse/global residual regardless of fovea choice.
-  Example: r_bg_t = MAE( phi(y_coarse_t) - phi(x_bg_prior) )
-* This runs every step (or at a fixed cadence), independent of what the fovea chose.
-* r_bg_t is used for:
-  (a) “background violated” alarms/sanity checks
-  (b) novelty component in fovea demand
-
-Residual demand for fovea routing:
-For each block b:
-
-* d_b proportional to:
-  uncertainty_bg[b] + novelty_bg[b] + disagreement_b + |Delta|_b
-* Choose fovea blocks maximizing d_b (not hard forced; allow exploration / overrides)
-
-Peripheral coherence residual is only valid if it uses an explicit, budgeted peripheral observation set (Omega_bg_t); otherwise compute coherence only on observed support (Omega_t / S_t) and do not expect “detect without looking.”
-
-
-8. PHASE 7: “TWO HYPOTHESES SAME OUTCOME” HANDLING (EXPLICIT)
-
----
-
-Case A: Aliasing (same outcome on current Omega_t only)
-
-* Worlds have similar e^{(k)}(Omega_t); weights remain tied.
-* Correct: keep multiple worlds alive; do not force collapse.
-* Use disagreement-driven foveation to seek disambiguating evidence.
-
-Case B: True equivalence (same outcome across relevant support / audit)
-
-* Worlds are redundant on S_t (and optional REST audit).
-* Correct: merge/compress; treat as equivalence class to avoid wasted capacity.
-
-9. ACCEPTANCE TESTS (MUST DEMONSTRATE)
-
----
-
-A) Posterior-high / prior-low:
-
-* Show posterior/perception match high while prior_obs_mae high, both logged distinctly.
-  (Covered by `tests/test_nextsteps_features.py::test_prior_posterior_mae_logging`.)
-
-B) Motion ambiguity:
-
-* Two motion/transport hypotheses stay alive under aliasing and only collapse after disambiguating fovea observations.
-  (Pending a dedicated multi-step trace / observation scenario.)
-
-C) Merge guard:
-
-* Worlds do not merge just because they match on current Omega_t; merge only when matching on S_t (and/or REST audit).
-  (Pending instrumentation of rolling support windows.)
-
-D) Peripheral coherence:
-
-* Background deviation triggers coherence residual/alarm even when down-weighted for attention and even if fovea didn’t look there.
-  (Covered by `tests/test_nextsteps_features.py::test_peripheral_coherence_residual_detects_unobserved_dims`.)
-
-E) Multi-world metric sanity:
-
-* Logs include best_world_prior_mae_t and expected_prior_mae_t, plus posterior metrics labeled separately.
-  (Covered by `tests/test_nextsteps_features.py::test_multi_world_summary_present_and_weights_normalized`.)
-
-10. IMPLEMENTATION ORDER (PRACTICAL SEQUENCING)
-
----
-
-1. [x] Implement prior/posterior storage + enforce per-step invariant + fix metric labeling.
-2. [x] Add multi-world container (fixed K) + scoring by prior-vs-observed + required reporting.
-3. [x] Add prune/clone + merge using S_t merge guard (and optional REST audit).
-4. [x] Add disagreement-driven foveation and blockwise innovation wiring into coverage/candidate pressure.
-5. [x] Add peripheral baseline + confidence + ALWAYS-ON coherence residual diagnostic.
-6. [ ] Run acceptance tests A–E and freeze invariants (A/D/E covered via new unit tests; B/C remain to be scripted).
+test4.py should provide a peripheral/full-field gist channel (separate sensor) to the agent

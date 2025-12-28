@@ -10,7 +10,8 @@ from typing import Dict, Iterable, List, Set, Tuple
 import numpy as np
 
 from ..config import AgentConfig
-from ..geometry.streams import dims_for_block, extract_coarse, periph_block_size
+from ..geometry.fovea import dims_for_block
+from ..geometry.streams import extract_coarse, periph_block_size
 from ..memory.salience import infer_node_band_level
 from ..types import AgentState, EnvObs
 
@@ -186,13 +187,13 @@ def _update_coverage_debts(state: AgentState, cfg: AgentConfig) -> None:
     state.node_band_levels = node_levels
 
 
-def _update_block_uncertainty(state: AgentState, sigma_diag: np.ndarray | None, cfg: AgentConfig) -> None:
-    """Keep a cached uncertainty per block derived from the latest Sigma diagonal."""
+def compute_block_uncertainty(sigma_diag: np.ndarray | None, cfg: AgentConfig) -> np.ndarray | None:
+    """Return per-block uncertainties derived from the latest Sigma diagonal."""
     if sigma_diag is None:
-        return
+        return None
     B = int(getattr(cfg, "B", 0))
     if B <= 0:
-        return
+        return None
     diag = np.asarray(sigma_diag, dtype=float).reshape(-1)
     if not diag.size:
         diag = np.zeros(0, dtype=float)
@@ -212,7 +213,7 @@ def _update_block_uncertainty(state: AgentState, sigma_diag: np.ndarray | None, 
         finite_vals = vals[np.isfinite(vals)]
         block_unc[b] = float(np.mean(finite_vals)) if finite_vals.size else default_unc
 
-    state.fovea.block_uncertainty = block_unc
+    return block_unc
 
 
 def _update_observed_history(

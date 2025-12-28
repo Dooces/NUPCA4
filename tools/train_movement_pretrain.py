@@ -508,10 +508,43 @@ class MovementTrainer:
 
 
 def persist_state(agent: NUPCA3Agent, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as fid:
-        pickle.dump(agent.state, fid)
-    print(f"Persisted state to {path}")
+    state = agent.state
+    buffer = getattr(state, "buffer", None)
+    saved_buffer: tuple[np.ndarray, np.ndarray, set[int]] | None = None
+    if buffer is not None:
+        saved_buffer = (
+            buffer.x_last.copy(),
+            buffer.x_prior.copy(),
+            set(buffer.observed_dims),
+        )
+        buffer.x_last = np.zeros_like(buffer.x_last)
+        buffer.x_prior = np.zeros_like(buffer.x_prior)
+        buffer.observed_dims = set()
+
+    macro = getattr(state, "macro", None)
+    saved_macro: tuple[bool, int, int] | None = None
+    if macro is not None:
+        saved_macro = (
+            bool(macro.rest),
+            int(getattr(macro, "T_rest", 0)),
+            int(getattr(macro, "T_since", 0)),
+        )
+        macro.rest = True
+        macro.T_rest = max(1, saved_macro[1])
+        macro.T_since = 0
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as fid:
+            pickle.dump(state, fid)
+        print(f"Persisted restful state to {path}")
+    finally:
+        if buffer is not None and saved_buffer is not None:
+            buffer.x_last = saved_buffer[0]
+            buffer.x_prior = saved_buffer[1]
+            buffer.observed_dims = saved_buffer[2]
+        if macro is not None and saved_macro is not None:
+            macro.rest, macro.T_rest, macro.T_since = saved_macro
 
 
 def load_state(agent: NUPCA3Agent, path: Path) -> bool:

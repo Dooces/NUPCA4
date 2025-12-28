@@ -39,7 +39,8 @@ from .types import (
     PersistentResidualState,
 )
 
-from .step_pipeline import _plan_fovea_selection, step_pipeline
+from .step_pipeline import step_pipeline
+from .step_pipeline.fovea import apply_signals_and_select
 
 from .geometry.buffer import init_observation_buffer
 from .geometry.block_spec import BlockSpec, BlockView, build_block_specs
@@ -288,7 +289,7 @@ class NUPCA3Agent:
         pending = getattr(self.state, "pending_fovea_selection", None)
         if pending is None:
             prev_obs = set(getattr(self.state.buffer, "observed_dims", set()) or set())
-            pending = _plan_fovea_selection(
+            pending = apply_signals_and_select(
                 self.state,
                 self.cfg,
                 periph_full=periph_full,

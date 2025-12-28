@@ -4,17 +4,56 @@ Fovea-focused helpers for block selection and budget enforcement.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable, List, Set, Tuple
 
 import numpy as np
 
 from ..config import AgentConfig
 from ..geometry.fovea import block_of_dim, select_fovea, update_fovea_routing_scores
-from ..types import AgentState
+from ..types import AgentState, FoveaState
 
 from .logging import _log_fovea_event
 from .observations import _cfg_D, _peripheral_dim_set
 from .transport import _apply_pending_transport_disagreement
+
+
+@dataclass
+class FoveaSignals:
+    """Container for per-step block signals that the fovea consumes at the next selection."""
+
+    block_disagreement: np.ndarray | None = None
+    block_innovation: np.ndarray | None = None
+    block_periph_demand: np.ndarray | None = None
+    block_uncertainty: np.ndarray | None = None
+
+
+def _coerce_block_array(values: np.ndarray | Iterable[float] | None, B: int) -> np.ndarray | None:
+    if values is None:
+        return None
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if B != arr.shape[0]:
+        arr = np.resize(arr, (max(0, B),))
+    return arr
+
+
+def _apply_signals_to_fovea(fovea: AgentState | FoveaState, cfg: AgentConfig, signals: FoveaSignals) -> None:
+    B = max(0, int(getattr(cfg, "B", 0)))
+    if B <= 0:
+        return
+    arrays = {
+        "block_disagreement": signals.block_disagreement,
+        "block_innovation": signals.block_innovation,
+        "block_periph_demand": signals.block_periph_demand,
+        "block_uncertainty": signals.block_uncertainty,
+    }
+    for attr, value in arrays.items():
+        if value is None:
+            continue
+        coerced = _coerce_block_array(value, B)
+        if coerced is None:
+            continue
+        setattr(fovea, attr, coerced)
 
 
 def _peripheral_block_ids(cfg: AgentConfig) -> List[int]:
@@ -194,7 +233,12 @@ def _plan_fovea_selection(
             if 0 <= dim < full_arr.size:
                 routing_vec[int(dim)] = float(full_arr[int(dim)])
     update_fovea_routing_scores(state.fovea, routing_vec, cfg, t=int(getattr(state, "t", 0)))
-    _apply_pending_transport_disagreement(state, cfg)
+    B = max(0, int(getattr(cfg, "B", 0)))
+    routing_scores = np.asarray(
+        getattr(state.fovea, "routing_scores", np.zeros(B)), dtype=float
+    )
+    routing_scores = _apply_pending_transport_disagreement(state, cfg, routing=routing_scores)
+    state.fovea.routing_scores = routing_scores
     blocks_t = select_fovea(state.fovea, cfg) or []
     G = int(getattr(cfg, "coverage_cap_G", 0))
     ages_now = np.asarray(
@@ -242,3 +286,26 @@ def _plan_fovea_selection(
     }
     _log_fovea_event("plan_fovea_selection", log_details)
     return pending
+
+
+def apply_signals_and_select(
+    state: AgentState,
+    cfg: AgentConfig,
+    *,
+    signals: FoveaSignals | None = None,
+    periph_full: Iterable[float] | np.ndarray | None = None,
+    prev_observed_dims: Set[int] | None = None,
+) -> dict[str, Any]:
+    """Merge pending block signals, refresh routing bias, and plan the next fovea selection."""
+    available_signals = signals if signals is not None else getattr(state, "pending_fovea_signals", None)
+    if available_signals is None:
+        available_signals = FoveaSignals()
+    else:
+        state.pending_fovea_signals = None
+    _apply_signals_to_fovea(state.fovea, cfg, available_signals)
+    return _plan_fovea_selection(
+        state,
+        cfg,
+        periph_full=periph_full,
+        prev_observed_dims=prev_observed_dims,
+    )

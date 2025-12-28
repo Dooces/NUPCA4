@@ -617,6 +617,8 @@ def make_observation_set(blocks: Iterable[int], cfg: AgentConfig) -> set[int]:
     return O
 
 
+
+
 def update_fovea_routing_scores(
     fovea: FoveaState,
     x_prev: np.ndarray,

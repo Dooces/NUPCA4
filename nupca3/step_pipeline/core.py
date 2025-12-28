@@ -22,7 +22,7 @@ from ..edits.proposals import propose_structural_edits
 from ..edits.rest_processor import RestProcessingResult, process_struct_queue
 from ..geometry.binding import (build_binding_maps, select_best_binding,
                                  select_best_binding_by_fit)
-from ..geometry.fovea import update_fovea_tracking
+from ..geometry.fovea import dims_for_block, make_observation_set, update_fovea_tracking
 from ..geometry.streams import (apply_transport, compute_grid_shift,
                                 compute_transport_shift, extract_coarse,
                                 grid_cell_mass)
@@ -43,7 +43,7 @@ from ..types import (AgentState, EnvObs, FootprintResidualStats,
                      LearningCache, Margins, PersistentResidualState,
                      StepTrace, TransitionRecord)
 
-from .fovea import _plan_fovea_selection
+from .fovea import FoveaSignals, apply_signals_and_select
 from .learning import (_build_training_mask, _derive_margins,
                        _feature_probe_vectors)
 from .logging import _dbg
@@ -51,13 +51,13 @@ from .observations import (_cfg_D, _coarse_summary, _compute_peripheral_gist,
                            _compute_peripheral_metrics, _ensure_node_band_levels,
                            _filter_cue_to_Oreq, _peripheral_dim_set,
                            _prior_obs_mae, _support_window_union,
-                           _update_block_uncertainty,
+                           compute_block_uncertainty,
                            _update_coverage_debts, _update_context_register,
                            _update_context_tags, _update_observed_history)
 from .transport import (_compute_transport_disagreement_blocks,
                         _select_transport_delta,
                         _update_transport_learning_state)
-from .worlds import _build_world_hypotheses, _update_block_signals
+from .worlds import _build_world_hypotheses, _compute_block_signals
 
 
 def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple[int, AgentState, Dict[str, Any]]:
@@ -153,7 +153,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     pending_selection = getattr(state, "pending_fovea_selection", None)
     if pending_selection is None:
         periph_full = getattr(env_obs, "periph_full", None)
-        pending_selection = _plan_fovea_selection(
+        pending_selection = apply_signals_and_select(
             state,
             cfg,
             periph_full=periph_full,
@@ -517,7 +517,14 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         x_t,
         Sigp_diag,
     )
-    _update_block_signals(state, cfg, worlds, D)
+    disagreement, innovation, periph_demand = _compute_block_signals(state, cfg, worlds, D)
+    pending_signals = getattr(state, "pending_fovea_signals", None)
+    if pending_signals is None:
+        pending_signals = FoveaSignals()
+    pending_signals.block_disagreement = disagreement
+    pending_signals.block_innovation = innovation
+    pending_signals.block_periph_demand = periph_demand
+    state.pending_fovea_signals = pending_signals
     finite_world_maes = [float(w.prior_mae) for w in worlds if np.isfinite(w.prior_mae)]
     if finite_world_maes:
         best_world_mae = float(min(finite_world_maes))
@@ -793,7 +800,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
 
                 x_tau_block=x_tau_vals,
                 x_tau_plus_1_block=x_tau_plus_1_vals,
-                observed_dims_tau_plus_1=set(state.buffer.observed_dims),
+                observed_dims_tau_plus_1=set(int(k) for k in idx),
             )
         )
         if len(log) > trans_max:
@@ -855,7 +862,13 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     if Sigma_tp1_pred.ndim == 2 and Sigma_tp1_pred.shape[0] == Sigma_tp1_pred.shape[1]:
         sigma_tp1_diag = np.diag(Sigma_tp1_pred).copy()
 
-    _update_block_uncertainty(state, sigma_tp1_diag, cfg)
+    block_uncertainty = compute_block_uncertainty(sigma_tp1_diag, cfg)
+    if block_uncertainty is not None:
+        pending_signals = getattr(state, "pending_fovea_signals", None)
+        if pending_signals is None:
+            pending_signals = FoveaSignals()
+        pending_signals.block_uncertainty = block_uncertainty
+        state.pending_fovea_signals = pending_signals
 
     # -------------------------------------------------------------------------
     # REST structural processing (A12/A14): REST-only, queue ownership preserved

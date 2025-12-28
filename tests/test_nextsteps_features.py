@@ -3,11 +3,17 @@ import numpy as np
 
 from nupca3.agent import NUPCA3Agent
 from nupca3.config import AgentConfig
-from nupca3.geometry.fovea import init_fovea_state, select_fovea, update_fovea_tracking
+from nupca3.geometry.fovea import (
+    dims_for_block,
+    init_fovea_state,
+    make_observation_set,
+    select_fovea,
+    update_fovea_tracking,
+)
 from nupca3.memory.salience import compute_scores
 from nupca3.step_pipeline import (
     _compute_peripheral_gist,
-    _update_block_signals,
+    _compute_block_signals,
     _update_context_register,
     _update_coverage_debts,
 )
@@ -168,6 +174,24 @@ def test_salience_debug_exhaustive_scores_entire_library() -> None:
     assert state.salience_num_nodes_scored == len(library_nodes)
 
 
+def test_make_observation_set_respects_selected_blocks() -> None:
+    cfg = AgentConfig(
+        D=16,
+        B=4,
+        grid_side=4,
+        grid_color_channels=1,
+        grid_shape_channels=0,
+        grid_channels=1,
+        grid_base_dim=16,
+    )
+    blocks = [0, 3]
+    obs_dims = make_observation_set(blocks, cfg)
+    expected_dims: set[int] = set()
+    for block_id in blocks:
+        expected_dims.update(dims_for_block(block_id, cfg))
+    assert set(obs_dims) == expected_dims, "Observation set should match selected block footprints"
+
+
 def test_dag_edges_connect_block_neighbors() -> None:
     cfg = AgentConfig(
         D=12,
@@ -277,10 +301,10 @@ def test_block_signals_reset_without_worlds() -> None:
     cfg = AgentConfig(D=4, B=2)
     agent = NUPCA3Agent(cfg)
     agent.state.peripheral_residual = 0.0
-    _update_block_signals(agent.state, cfg, [], cfg.D)
-    assert np.allclose(agent.state.fovea.block_disagreement, 0.0)
-    assert np.allclose(agent.state.fovea.block_innovation, 0.0)
-    assert np.allclose(agent.state.fovea.block_periph_demand, 0.0)
+    disagreement, innovation, periph_demand = _compute_block_signals(agent.state, cfg, [], cfg.D)
+    assert np.allclose(disagreement, 0.0)
+    assert np.allclose(innovation, 0.0)
+    assert np.allclose(periph_demand, 0.0)
 
 
 def test_update_fovea_tracking_age_counts_steps() -> None:

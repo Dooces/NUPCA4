@@ -454,39 +454,58 @@ def _compute_transport_disagreement_blocks(
     return normalized
 
 
-def _apply_pending_transport_disagreement(state: AgentState, cfg: AgentConfig) -> None:
-    """Apply stored block disagreement scores (from previous step) to routing scores."""
+def _apply_pending_transport_disagreement(
+    state: AgentState,
+    cfg: AgentConfig,
+    routing: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return routing scores updated with stored block disagreement scores."""
     weight = float(getattr(cfg, "transport_disambiguation_weight", 1.0))
     if weight <= 0.0:
         state.transport_disagreement_scores = {}
         state.transport_disagreement_margin = float("inf")
-        return
+        return np.asarray(
+            getattr(state.fovea, "routing_scores", np.zeros(int(getattr(cfg, "B", 0)))),
+            dtype=float,
+        )
+
     margin = float(getattr(state, "transport_disagreement_margin", float("inf")))
     threshold = float(getattr(cfg, "transport_confidence_margin", 0.25))
     scores = getattr(state, "transport_disagreement_scores", {})
     if not scores or margin >= threshold:
         state.transport_disagreement_scores = {}
         state.transport_disagreement_margin = float("inf")
-        return
+        return np.asarray(
+            getattr(state.fovea, "routing_scores", np.zeros(int(getattr(cfg, "B", 0)))),
+            dtype=float,
+        )
+
     B = int(getattr(cfg, "B", 0))
     if B <= 0:
         state.transport_disagreement_scores = {}
         state.transport_disagreement_margin = float("inf")
-        return
-    routing = np.asarray(getattr(state.fovea, "routing_scores", np.zeros(B)), dtype=float)
+        return np.zeros(0, dtype=float)
+
+    if routing is None:
+        routing = np.asarray(getattr(state.fovea, "routing_scores", np.zeros(B)), dtype=float)
+    else:
+        routing = np.asarray(routing, dtype=float).reshape(-1)
     if routing.shape[0] != B:
         routing = np.resize(routing, (B,))
+
     total = sum(scores.values())
     if total <= 0.0:
         state.transport_disagreement_scores = {}
         state.transport_disagreement_margin = float("inf")
-        return
+        return routing
+
     for block_id, val in scores.items():
         if 0 <= block_id < routing.shape[0]:
             routing[block_id] += weight * float(val)
-    state.fovea.routing_scores = routing
+
     state.transport_disagreement_scores = {}
     state.transport_disagreement_margin = float("inf")
+    return routing
 
 
 def _update_transport_learning_state(
