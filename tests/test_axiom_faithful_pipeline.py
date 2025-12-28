@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 
@@ -208,7 +209,13 @@ def test_responsibility_gating_respects_error_threshold() -> None:
 
 
 def test_retrieval_keyed_to_greedy_cov_blocks() -> None:
-    cfg = AgentConfig(D=4, B=2, fovea_blocks_per_step=1, coverage_cap_G=0)
+    cfg = AgentConfig(
+        D=4,
+        B=2,
+        fovea_blocks_per_step=1,
+        coverage_cap_G=0,
+        fovea_use_age=False,
+    )
     agent = NUPCA3Agent(cfg)
 
     # Block 1 should dominate greedy_cov selection.
@@ -244,7 +251,8 @@ def test_retrieval_keyed_to_greedy_cov_blocks() -> None:
     agent.state.library.add_node(node_b0)
     agent.state.library.add_node(node_b1)
 
-    agent.state.incumbents = {0: {node_b0.node_id}, 1: {node_b1.node_id}}
+    agent.state.incumbents_by_block = [{node_b0.node_id}, {node_b1.node_id}]
+    agent.state.incumbents_revision = int(agent.state.library.revision)
     agent.state.active_set = set()
 
     retrieved = get_retrieval_candidates(agent.state, cfg)
@@ -341,3 +349,43 @@ def test_spawn_proposals_enqueue_in_operating() -> None:
 
     assert trace["rest"] is False
     assert trace["Q_struct_len"] >= 1
+
+
+def test_salience_trace_never_full_library() -> None:
+    cfg = AgentConfig(D=8, B=4, fovea_blocks_per_step=1)
+    agent = NUPCA3Agent(cfg)
+    obs = EnvObs(x_partial={0: 1.0})
+
+    _action, trace = agent.step(obs)
+    library_size = int(trace["salience_library_size"])
+    candidate_count = int(trace["salience_candidate_count"])
+    nodes_scored = int(trace["salience_nodes_scored"])
+    ratio = float(trace["salience_candidate_ratio"])
+
+    assert library_size > 0
+    assert 0 < candidate_count < library_size
+    assert nodes_scored == candidate_count
+    expected_ratio = candidate_count / library_size
+    assert math.isclose(ratio, expected_ratio, rel_tol=1e-9)
+
+
+def test_salience_trace_debug_exhaustive_includes_full_library() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=4,
+        fovea_blocks_per_step=1,
+        salience_debug_exhaustive=True,
+    )
+    agent = NUPCA3Agent(cfg)
+    obs = EnvObs(x_partial={0: 1.0})
+
+    _action, trace = agent.step(obs)
+    library_size = int(trace["salience_library_size"])
+    candidate_count = int(trace["salience_candidate_count"])
+    nodes_scored = int(trace["salience_nodes_scored"])
+    ratio = float(trace["salience_candidate_ratio"])
+
+    assert library_size > 0
+    assert candidate_count == library_size
+    assert nodes_scored == library_size
+    assert math.isclose(ratio, 1.0, rel_tol=1e-9)

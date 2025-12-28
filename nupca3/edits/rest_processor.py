@@ -37,10 +37,11 @@ Queue authority note (A14.2):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
+from ..memory.library import link_node_neighbors
 from ..types import (
     AgentState, Node, EditProposal, EditKind,
     AcceptanceResult, TransitionRecord, infer_footprint
@@ -50,6 +51,7 @@ from .acceptance import (
     evaluate_proposal, check_permit_struct, create_merged_node,
     compute_mdl_cost
 )
+from ..incumbents import get_incumbent_bucket
 
 
 # =============================================================================
@@ -108,6 +110,26 @@ def _detach_node_edges(state: AgentState, node_id: int) -> None:
             cnode.parents.discard(node_id)
     node.parents.clear()
     node.children.clear()
+
+
+def _register_dag_node(
+    state: AgentState,
+    node_id: int,
+    footprint: int,
+    *,
+    exclude_ids: Iterable[int] | None = None,
+) -> None:
+    """Ensure node participates in the footprint DAG neighborhood."""
+    lib = state.library
+    if lib is None:
+        return
+    phi = int(footprint)
+    if phi < 0:
+        return
+    bucket = lib.footprint_index.setdefault(phi, [])
+    if int(node_id) not in bucket:
+        bucket.append(int(node_id))
+    link_node_neighbors(lib, int(node_id), phi, exclude_ids=exclude_ids)
 
 
 # =============================================================================
@@ -200,11 +222,18 @@ def apply_merge(
         return result
 
     new_id = library.add_node(merged_node)
-
     footprint = evidence.footprint
-    state.incumbents.setdefault(footprint, set()).add(new_id)
-    state.incumbents[footprint].discard(evidence.expert_a_id)
-    state.incumbents[footprint].discard(evidence.expert_b_id)
+    bucket = get_incumbent_bucket(state, footprint, create=True)
+    if bucket is not None:
+        bucket.add(new_id)
+        bucket.discard(evidence.expert_a_id)
+        bucket.discard(evidence.expert_b_id)
+    _register_dag_node(
+        state,
+        new_id,
+        footprint,
+        exclude_ids={evidence.expert_a_id, evidence.expert_b_id},
+    )
 
     # Remove old nodes (detach edges first)
     _detach_node_edges(state, evidence.expert_a_id)
@@ -241,6 +270,7 @@ def apply_spawn(
 
     library = state.library
     footprint = evidence.footprint
+    bucket = get_incumbent_bucket(state, footprint, create=True)
 
     mask = np.zeros(state.state_dim, dtype=float)
     for dim in evidence.block_dims:
@@ -271,6 +301,7 @@ def apply_spawn(
         reliability=0.5,
         cost=compute_mdl_cost(mask, cfg),
         is_anchor=False,
+        footprint=footprint,
         last_active_step=state.timestep,
         created_step=state.timestep
     )
@@ -284,7 +315,8 @@ def apply_spawn(
 
         _detach_node_edges(state, old_id)
         library.remove_node(old_id)
-        state.incumbents.get(footprint, set()).discard(old_id)
+        if bucket is not None:
+            bucket.discard(old_id)
         state.active_set.discard(old_id)
         state.activation_log.pop(old_id, None)
 
@@ -292,7 +324,11 @@ def apply_spawn(
 
     new_id = library.add_node(new_node)
 
-    state.incumbents.setdefault(footprint, set()).add(new_id)
+    if bucket is None:
+        bucket = get_incumbent_bucket(state, footprint, create=True)
+    if bucket is not None:
+        bucket.add(new_id)
+        _register_dag_node(state, new_id, footprint)
 
     if footprint in state.persistent_residuals:
         state.persistent_residuals[footprint].value = 0.0
@@ -361,6 +397,7 @@ def apply_split(
         reliability=source_node.reliability,
         cost=compute_mdl_cost(mask_1, cfg),
         is_anchor=False,
+        footprint=footprint,
         last_active_step=state.timestep,
         created_step=state.timestep
     )
@@ -373,6 +410,7 @@ def apply_split(
         reliability=source_node.reliability,
         cost=compute_mdl_cost(mask_2, cfg),
         is_anchor=False,
+        footprint=footprint,
         last_active_step=state.timestep,
         created_step=state.timestep
     )
@@ -380,9 +418,14 @@ def apply_split(
     new_id_1 = library.add_node(node_1)
     new_id_2 = library.add_node(node_2)
 
-    state.incumbents.setdefault(footprint, set()).add(new_id_1)
-    state.incumbents[footprint].add(new_id_2)
-    state.incumbents[footprint].discard(evidence.source_node_id)
+    if bucket is None:
+        bucket = get_incumbent_bucket(state, footprint, create=True)
+    if bucket is not None:
+        bucket.add(new_id_1)
+        bucket.add(new_id_2)
+        _register_dag_node(state, new_id_1, footprint, exclude_ids={evidence.source_node_id})
+        _register_dag_node(state, new_id_2, footprint, exclude_ids={evidence.source_node_id})
+        bucket.discard(evidence.source_node_id)
 
     _detach_node_edges(state, evidence.source_node_id)
     library.remove_node(evidence.source_node_id)
@@ -421,8 +464,9 @@ def apply_prune(
     _detach_node_edges(state, node_id)
     library.remove_node(node_id)
 
-    if footprint in state.incumbents:
-        state.incumbents[footprint].discard(node_id)
+    bucket = get_incumbent_bucket(state, footprint)
+    if bucket is not None:
+        bucket.discard(node_id)
 
     state.active_set.discard(node_id)
     state.activation_log.pop(node_id, None)
@@ -560,6 +604,7 @@ def process_struct_queue(
                 except Exception:
                     # Best-effort; keep edit application authoritative.
                     pass
+                state.incumbents_revision = int(state.library.revision)
             else:
                 result.edits_rejected += 1
 

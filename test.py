@@ -55,7 +55,7 @@ def main() -> None:
     parser.add_argument("--occlude-period", type=int, default=0)
     parser.add_argument("--working-set-linger-steps", type=int, default=0)
     parser.add_argument("--transport-span-blocks", type=int, default=0)
-    parser.add_argument("--min-fovea-blocks", type=int, default=0)
+    parser.add_argument("--min-fovea-blocks", type=int, default=8)
     parser.add_argument("--train-active-only", action="store_true")
     parser.add_argument("--train-active-threshold", type=float, default=0.0)
     parser.add_argument("--train-weight-by-value", action="store_true")

@@ -1,0 +1,13 @@
+Logic Flow
+----------
+1. Step pipeline bootstrap: intake `AgentState`, compute dimensionality D and peripheral dims, and capture the previous observation set so A16 selection uses the lagged window.
+2. Fovea planning (A16.3) is centralized in `_plan_fovea_selection`; it reuses pending decisions whenever available and re-plans only when needed, respecting coverage/age/motion-probe budgets.
+3. Transport inference compares the incoming sparse cue against shifted priors, records the candidate beliefs, and evaluates `_transport_high_confidence` via margin/overlap heuristics.
+4. High-confidence gating now guards the applied transport shift: only when the margin/overlap check succeeds do we apply the inferred delta to the prior, update the working buffer, and record the shift; otherwise we fall back to zero motion and keep the buffer stable.
+5. Completion (A13) clamps the sparse cue into the gated prior; error and residual bookkeeping (A16.2, A17) then compute diagnostics from the resulting posterior.
+6. Salience, learning, and transport updates process the new residuals/lags; the macrostate evolves (A14) and budgets/rollout/commitment (A6/A7/A8) finalize the action.
+7. The observation buffer, baselines, and learn cache are updated, and the step trace captures the gated transport delta plus feel/probe diagnostics for downstream audit.
+
+Audit Log
+---------
+- `pytest tests/test_axiom_faithful_pipeline.py` (passes)

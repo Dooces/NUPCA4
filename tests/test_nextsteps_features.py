@@ -3,7 +3,7 @@ import numpy as np
 
 from nupca3.agent import NUPCA3Agent
 from nupca3.config import AgentConfig
-from nupca3.geometry.fovea import select_fovea
+from nupca3.geometry.fovea import init_fovea_state, select_fovea, update_fovea_tracking
 from nupca3.memory.salience import compute_scores
 from nupca3.step_pipeline import (
     _compute_peripheral_gist,
@@ -11,7 +11,7 @@ from nupca3.step_pipeline import (
     _update_context_register,
     _update_coverage_debts,
 )
-from nupca3.types import EnvObs, FoveaState
+from nupca3.types import EnvObs, FoveaState, ObservationBuffer
 
 
 def test_coverage_expert_debt_biases_scores() -> None:
@@ -39,7 +39,7 @@ def test_coverage_expert_debt_biases_scores() -> None:
     state.coverage_expert_debt[0] = 5
     state.coverage_expert_debt[other] = 0
 
-    scores = compute_scores(state, cfg, observed_dims=set())
+    scores = compute_scores(state, cfg, observed_dims=set(), candidate_node_ids=state.library.nodes.keys())
     assert scores[0] > scores[other], "Expert debt should boost node score"
 
 
@@ -77,8 +77,115 @@ def test_coverage_band_debt_biases_scores() -> None:
     state.coverage_band_debt[low_level] = 0
     state.coverage_band_debt[high_level] = 5
 
-    scores = compute_scores(state, cfg, observed_dims=set())
+    scores = compute_scores(state, cfg, observed_dims=set(), candidate_node_ids=state.library.nodes.keys())
     assert scores[high_node] > scores[low_node], "Band debt should bias higher-level nodes"
+
+
+def test_salience_candidate_set_stays_block_keyed() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=4,
+        fovea_blocks_per_step=1,
+        working_set_linger_steps=0,
+        beta_context=0.0,
+        beta_context_node=0.0,
+    )
+    agent = NUPCA3Agent(cfg)
+    state = agent.state
+
+    state.fovea.block_residual = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    state.fovea.current_blocks = {0}
+    state.pending_fovea_selection = {}
+    state.buffer.observed_dims = set()
+    scores = compute_scores(state, cfg, observed_dims=set())
+
+    scored = set(scores.keys())
+    required = {0, 1}
+    assert required.issubset(scored), "Anchor and block-0 node must be scored"
+    extras = scored - required
+    assert len(extras) <= cfg.salience_explore_budget
+    assert len(scored) == len(required) + len(extras)
+    assert state.salience_candidate_ids == scored
+
+def test_salience_candidate_invariant_never_full_library() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=6,
+        fovea_blocks_per_step=1,
+    )
+    agent = NUPCA3Agent(cfg)
+    state = agent.state
+
+    state.fovea.block_residual = np.array([1.0] + [0.0] * (cfg.B - 1), dtype=float)
+    state.fovea.current_blocks = {0}
+    state.buffer.observed_dims = set()
+
+    compute_scores(state, cfg, observed_dims=set())
+
+    total_nodes = len(state.library.nodes)
+    assert total_nodes > 0
+    assert len(state.salience_candidate_ids) < total_nodes
+    assert state.salience_num_nodes_scored == len(state.salience_candidate_ids)
+    assert state.salience_candidate_ids, "Candidate set should not be empty during normal operation"
+
+def test_salience_candidate_limit_enforced() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=8,
+        fovea_blocks_per_step=8,
+        salience_max_candidates=2,
+    )
+    agent = NUPCA3Agent(cfg)
+    state = agent.state
+
+    state.fovea.block_residual = np.ones(cfg.B, dtype=float)
+    state.fovea.block_age = np.zeros(cfg.B, dtype=float)
+    state.fovea.current_blocks = set(range(cfg.B))
+    state.buffer.observed_dims = set()
+
+    compute_scores(state, cfg, observed_dims=set())
+
+    assert state.salience_candidate_limit == 2
+    assert state.salience_candidate_count_raw > state.salience_candidate_limit
+    assert state.salience_candidates_truncated
+    assert len(state.salience_candidate_ids) <= state.salience_candidate_limit
+    assert state.salience_num_nodes_scored == len(state.salience_candidate_ids)
+
+def test_salience_debug_exhaustive_scores_entire_library() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=4,
+        salience_debug_exhaustive=True,
+    )
+    agent = NUPCA3Agent(cfg)
+    state = agent.state
+
+    state.buffer.observed_dims = set()
+    compute_scores(state, cfg, observed_dims=set())
+
+    library_nodes = set(state.library.nodes.keys())
+    assert state.salience_candidate_ids == library_nodes
+    assert state.salience_num_nodes_scored == len(library_nodes)
+
+
+def test_dag_edges_connect_block_neighbors() -> None:
+    cfg = AgentConfig(
+        D=12,
+        B=4,
+        transport_span_blocks=1,
+    )
+    agent = NUPCA3Agent(cfg)
+    lib = agent.state.library
+
+    for footprint, bucket in lib.footprint_index.items():
+        if len(bucket) <= 1:
+            continue
+        for nid in bucket:
+            node = lib.nodes.get(nid)
+            assert node is not None
+            assert node.parents or node.children, (
+                f"Block {footprint} node {nid} should have DAG neighbors"
+            )
 
 
 def test_peripheral_gist_updates_context_register() -> None:
@@ -174,6 +281,64 @@ def test_block_signals_reset_without_worlds() -> None:
     assert np.allclose(agent.state.fovea.block_disagreement, 0.0)
     assert np.allclose(agent.state.fovea.block_innovation, 0.0)
     assert np.allclose(agent.state.fovea.block_periph_demand, 0.0)
+
+
+def test_update_fovea_tracking_age_counts_steps() -> None:
+    cfg = AgentConfig(D=4, B=2)
+    fovea = init_fovea_state(cfg)
+    buf = ObservationBuffer(x_last=np.zeros(cfg.D, dtype=float))
+    err = np.zeros(cfg.D, dtype=float)
+    err[0] = 1.0
+
+    update_fovea_tracking(
+        fovea,
+        buf,
+        cfg,
+        abs_error=err,
+        observed_dims={0},
+    )
+
+    assert fovea.block_residual[0] > 0.0
+    assert math.isclose(fovea.block_age[0], 0.0, abs_tol=1e-9)
+    assert fovea.block_age[1] >= 1.0
+
+    prev_age_block1 = float(fovea.block_age[1])
+    update_fovea_tracking(
+        fovea,
+        buf,
+        cfg,
+        abs_error=None,
+        observed_dims=set(),
+    )
+    assert math.isclose(fovea.block_age[0], 1.0, rel_tol=1e-9)
+    assert math.isclose(fovea.block_age[1], prev_age_block1 + 1.0, rel_tol=1e-7)
+
+    update_fovea_tracking(
+        fovea,
+        buf,
+        cfg,
+        abs_error=err,
+        observed_dims={0},
+    )
+    assert math.isclose(fovea.block_age[0], 0.0, abs_tol=1e-9)
+
+
+def test_salience_skipped_when_stable_and_no_learning() -> None:
+    cfg = AgentConfig(
+        D=8,
+        B=2,
+        fovea_blocks_per_step=1,
+    )
+    agent = NUPCA3Agent(cfg)
+    obs = EnvObs(x_partial={0: 0.5})
+
+    _, trace_first = agent.step(obs)
+    agent.state.learning_candidates_prev = {"candidates": 0}
+    agent.state.proposals_prev = 0
+    _, trace_second = agent.step(obs)
+
+    assert not trace_first["salience_skipped"]
+    assert trace_second["salience_skipped"]
 
 
 def test_prior_posterior_mae_logging() -> None:

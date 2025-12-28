@@ -56,6 +56,7 @@ from ..types import (
     infer_footprint,
     FootprintResidualStats,
 )
+from ..incumbents import get_incumbent_bucket, iter_incumbent_buckets
 
 # Type hint only; implementation uses getattr() for compatibility.
 try:  # pragma: no cover
@@ -78,15 +79,26 @@ def _block_dims(state: AgentState, footprint: int) -> Set[int]:
 
 
 def _node_footprint(state: AgentState, node: Node) -> Optional[int]:
-    """Infer φ(node) from node.mask and state's blocks; return None if invalid."""
+    """Resolve φ(node) from stored block_id or by inferring from mask."""
     blocks = getattr(state, "blocks", [])
-    mask = getattr(node, "mask", None)
-    if mask is None or not blocks:
+    if not blocks:
         return None
+
+    block_id = getattr(node, "block_id", getattr(node, "footprint", -1))
+    if block_id is not None and 0 <= block_id < len(blocks):
+        return int(block_id)
+
+    mask = getattr(node, "mask", None)
+    if mask is None:
+        return None
+
     try:
-        return infer_footprint(mask, blocks)
+        resolved = infer_footprint(mask, blocks)
     except Exception:
         return None
+
+    node.block_id = resolved
+    return resolved
 
 
 def _compute_activation_correlation(
@@ -337,7 +349,6 @@ def propose_merge_by_redundancy(state: AgentState, cfg: object) -> List[EditProp
         return proposals
     nodes = getattr(library, "nodes", {})
 
-    incumbents = getattr(state, "incumbents", {})
     activation_log = getattr(state, "activation_log", {})
     timestep = int(getattr(state, "timestep", 0))
 
@@ -347,7 +358,9 @@ def propose_merge_by_redundancy(state: AgentState, cfg: object) -> List[EditProp
     # MERGE proposals: find correlated incumbent pairs within same footprint
     # =========================================================================
 
-    for footprint, incumbent_ids in incumbents.items():
+    for footprint, incumbent_ids in iter_incumbent_buckets(state):
+        if not incumbent_ids:
+            continue
         # Filter to non-anchor incumbents that exist in library
         ids = [
             int(nid)
@@ -495,7 +508,6 @@ def propose_spawn_from_residual(state: AgentState, cfg: object) -> List[EditProp
     nodes = getattr(library, "nodes", {})
 
     persistent_residuals = getattr(state, "persistent_residuals", {})
-    incumbents = getattr(state, "incumbents", {})
     timestep = int(getattr(state, "timestep", 0))
 
     for footprint, rstate in persistent_residuals.items():
@@ -515,7 +527,7 @@ def propose_spawn_from_residual(state: AgentState, cfg: object) -> List[EditProp
         # Check that incumbents have been given a fair chance.
         # If any high-reliability incumbent hasn't been active recently,
         # we can't conclude it wouldn't help if activated.
-        incumbent_ids = incumbents.get(footprint, set())
+        incumbent_ids = get_incumbent_bucket(state, footprint) or set()
         has_untried_incumbent = False
         last_obs_step = int(getattr(rstate, "last_update_step", 0))
         if last_obs_step <= 0:

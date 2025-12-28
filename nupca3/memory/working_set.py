@@ -22,6 +22,7 @@ from typing import Dict, List, Set, Optional
 from ..config import AgentConfig
 from ..types import AgentState, Node, Library, WorkingSet
 from ..geometry.fovea import select_fovea
+from ..incumbents import get_incumbent_bucket
 
 
 # =============================================================================
@@ -139,7 +140,7 @@ def get_retrieval_candidates(
         return set()
 
     nodes = getattr(library, "nodes", {})
-    incumbents = getattr(state, "incumbents", {})
+
     prev_active = set(getattr(state, "active_set", set()))
 
     # Use the fovea blocks already chosen by the step pipeline.
@@ -169,7 +170,8 @@ def get_retrieval_candidates(
     scored: Dict[int, float] = {}
     for b in fovea_blocks:
         score_b = float(block_scores.get(int(b), 0.0))
-        for node_id in incumbents.get(int(b), set()):
+        bucket = get_incumbent_bucket(state, int(b))
+        for node_id in bucket or set():
             nid = int(node_id)
             if nid in prev_active:
                 continue
@@ -308,9 +310,9 @@ def select_working_set(
                 observed_blocks.add(int(b))
     must_include: Set[int] = set()
     if observed_blocks:
-        incumbents = getattr(state, "incumbents", {})
         for b in observed_blocks:
-            for nid in incumbents.get(int(b), set()):
+            bucket = get_incumbent_bucket(state, int(b))
+            for nid in bucket or set():
                 if nid in nodes and nid not in anchor_set:
                     must_include.add(int(nid))
                     candidate_pool.add(int(nid))

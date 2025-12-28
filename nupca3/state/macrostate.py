@@ -86,7 +86,10 @@ def rest_permitted(
     if s_ext_th >= theta_safe:
         return False, "external_threat"
     if float(arousal) >= theta_ar_rest:
-        return False, "arousal_high"
+        # Permit REST when arousal has reached the high "panic" regime so the
+        # macrostate can consolidate and calm the agent (the original gate
+        # blocked REST in this situation).
+        return True, "arousal_high"
 
     return True, "safe"
 

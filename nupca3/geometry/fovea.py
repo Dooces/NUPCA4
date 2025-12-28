@@ -34,8 +34,10 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Optional, Set, Tuple, List, Sequence
 
+import json
+import logging
 import math
-
+import time
 import numpy as np
 
 from ..config import AgentConfig
@@ -43,6 +45,20 @@ from ..types import FoveaState, ObservationBuffer
 
 _BLOCK_CACHE: Dict[Tuple[int, int, int, int, int, int, int, int], List[List[int]]] = {}
 _BLOCK_LOOKUP_CACHE: Dict[Tuple[int, int, int, int, int, int, int, int], Dict[int, int]] = {}
+
+_FOVEA_GEOM_LOGGER = logging.getLogger("nupca3_grid_harness")
+_FOVEA_GEOM_LOGGER_START = time.perf_counter()
+
+def _log_geom_event(event: str, details: dict[str, object]) -> None:
+    if not _FOVEA_GEOM_LOGGER.handlers:
+        return
+    payload = {"event": event}
+    payload["timestamp"] = float(time.perf_counter() - _FOVEA_GEOM_LOGGER_START)
+    payload.update(details)
+    try:
+        _FOVEA_GEOM_LOGGER.info(json.dumps(payload, sort_keys=True))
+    except Exception:
+        _FOVEA_GEOM_LOGGER.info(f"{event} {details}")
 
 
 def _grid_block_dims(
@@ -162,10 +178,8 @@ def build_blocks_from_cfg(cfg: AgentConfig) -> List[List[int]]:
 
 def init_fovea_state(cfg: AgentConfig, *, block_costs: Optional[Sequence[float]] = None) -> FoveaState:
     """Initialize fovea state arrays."""
-    cap = int(getattr(cfg, "coverage_cap_G", 0))
-    initial_age = int(getattr(cfg, "initial_block_age", cap + 1))
-    if initial_age <= 0:
-        initial_age = 1
+    initial_age = int(getattr(cfg, "initial_block_age", 0))
+    initial_age = max(0, initial_age)
     B = int(cfg.B)
     if B <= 0:
         cost_arr = np.zeros(0, dtype=float)
@@ -187,8 +201,10 @@ def init_fovea_state(cfg: AgentConfig, *, block_costs: Optional[Sequence[float]]
         block_disagreement=np.zeros(B, dtype=float),
         block_innovation=np.zeros(B, dtype=float),
         block_periph_demand=np.zeros(B, dtype=float),
+        block_confidence=np.ones(B, dtype=float),
         routing_last_t=-1,
         current_blocks=set(),
+        coverage_cursor=0,
     )
 
 
@@ -276,47 +292,54 @@ def update_fovea_tracking(
     if B <= 0:
         return
 
-    # Age all blocks (relevance-weighted: low-residual blocks age slowly).
     ages = np.asarray(fovea.block_age, dtype=float)
-    resid = np.asarray(getattr(fovea, "block_residual", np.zeros(B)), dtype=float)
-    min_inc = float(getattr(cfg, "fovea_age_min_inc", 0.10))
-    resid_scale = float(getattr(cfg, "fovea_age_resid_scale", 0.05))
-    resid_thresh = float(getattr(cfg, "fovea_age_resid_thresh", 0.0))
-    min_inc = max(0.0, min(1.0, min_inc))
-    resid_scale = max(resid_scale, 1e-9)
-    resid_norm = resid / (resid + resid_scale)
-    gate = (resid >= resid_thresh).astype(float)
-    ages += (min_inc + (1.0 - min_inc) * resid_norm) * gate
+    ages += 1.0
+
+    D = int(cfg.D)
+    err = np.asarray(abs_error, dtype=float) if abs_error is not None else np.zeros(D, dtype=float)
+    if err.shape[0] != D:
+        err = np.resize(err, (D,))
+
+    obs_blocks: dict[int, list[int]] = {}
+    if observed_dims:
+        for k in observed_dims:
+            kk = int(k)
+            if 0 <= kk < D:
+                b = block_of_dim(kk, cfg)
+                obs_blocks.setdefault(b, []).append(kk)
+    observed_block_ids = {int(b) for b in obs_blocks.keys()}
+
+    beta = float(getattr(cfg, "fovea_residual_ema", 0.10))
+    beta = max(0.0, min(1.0, beta))
+
+    # Update per-block confidence
+    conf = np.asarray(getattr(fovea, "block_confidence", np.ones(B, dtype=float)), dtype=float)
+    if conf.shape[0] != B:
+        conf = np.resize(conf, (B,))
+    conf = np.clip(conf, 0.0, 1.0)
+    beta_up = max(0.0, min(1.0, float(getattr(cfg, "fovea_confidence_beta_up", 0.50))))
+    beta_down = max(0.0, min(1.0, float(getattr(cfg, "fovea_confidence_beta_down", 0.01))))
+    observed_mask = np.zeros(B, dtype=bool)
+    for b in observed_block_ids:
+        if 0 <= b < B:
+            observed_mask[b] = True
+    not_observed_mask = ~observed_mask
+    conf[observed_mask] = (1.0 - beta_up) * conf[observed_mask] + beta_up
+    conf[not_observed_mask] = (1.0 - beta_down) * conf[not_observed_mask]
+    fovea.block_confidence = np.clip(conf, 0.0, 1.0)
+
+    ages[observed_mask] = 0.0
     fovea.block_age = ages
 
     if abs_error is None or observed_dims is None or not observed_dims:
         return
 
-    D = int(cfg.D)
-    err = np.asarray(abs_error, dtype=float)
-    if err.shape[0] != D:
-        # Best-effort: pad/trim.
-        err = np.resize(err, (D,))
-
-    beta = float(getattr(cfg, "fovea_residual_ema", 0.10))
-    beta = max(0.0, min(1.0, beta))
-
-    # Collect observed dims per block.
-    obs_blocks: dict[int, list[int]] = {}
-    for k in observed_dims:
-        kk = int(k)
-        if 0 <= kk < D:
-            b = block_of_dim(kk, cfg)
-            obs_blocks.setdefault(b, []).append(kk)
-
     for b, ks in obs_blocks.items():
         if not ks:
             continue
-        # Mean absolute error over observed dims in this block.
         r = float(np.mean(np.abs(err[ks])))
         old = float(fovea.block_residual[b])
         fovea.block_residual[b] = (1.0 - beta) * old + beta * r
-        # Reset age for observed blocks.
         fovea.block_age[b] = 0.0
 
 
@@ -339,19 +362,38 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
     residual_only = bool(getattr(cfg, "fovea_residual_only", False))
     ages = np.asarray(fovea.block_age, dtype=float)
     residuals = np.asarray(fovea.block_residual, dtype=float)
+    conf = np.asarray(getattr(fovea, "block_confidence", np.ones(B)), dtype=float)
+    if conf.shape[0] != B:
+        conf = np.resize(conf, (B,))
+    conf = np.clip(conf, 0.0, 1.0)
 
     use_age = bool(getattr(cfg, "fovea_use_age", True))
     if use_age and budget_units <= 1.0 and ages.size:
         # Deterministic sweep for single-block budgets to avoid getting stuck.
         if B > 1 and getattr(fovea, "current_blocks", None):
             seed = min(int(b) for b in fovea.current_blocks)
-            return [int((seed + 1) % B)]
-        best_age = int(np.argmax(ages))
-        return [best_age]
+            chosen_single = [int((seed + 1) % B)]
+        else:
+            best_age = int(np.argmax(ages))
+            chosen_single = [best_age]
+        _log_geom_event(
+            "select_fovea_age_deterministic",
+            {
+                "routing_last_t": getattr(fovea, "routing_last_t", -1),
+                "budget_units": budget_units,
+                "use_age": use_age,
+                "chosen": chosen_single,
+            },
+        )
+        return chosen_single
     if residual_only or not use_age:
         scores = residuals.copy()
     else:
         scores = residuals + alpha_cov * np.log1p(np.maximum(0.0, ages))
+
+    w_conf = float(getattr(cfg, "fovea_confidence_weight", 0.0))
+    if w_conf != 0.0:
+        scores = scores + w_conf * (1.0 - conf)
 
     uncertainty_weight = float(getattr(cfg, "fovea_uncertainty_weight", 0.0))
     if uncertainty_weight != 0.0:
@@ -398,6 +440,10 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
 
     periph_blocks = max(0, min(int(getattr(cfg, "periph_blocks", 0)), B))
     periph_ids = [int(b) for b in range(max(0, B - periph_blocks), B)]
+    coverage_score_tol = float(getattr(cfg, "coverage_score_tol", 0.0))
+    coverage_score_threshold = float(getattr(cfg, "coverage_score_threshold", float("-inf")))
+    coverage_step = max(1, int(getattr(cfg, "coverage_cursor_step", 1)))
+    coverage_cursor = int(getattr(fovea, "coverage_cursor", 0)) if B > 0 else 0
 
     G = int(getattr(cfg, "coverage_cap_G", 0))
     mandatory: list[int] = []
@@ -430,10 +476,105 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
     budget_remaining = max(0.0, budget_remaining)
 
     remaining = [b for b in range(B) if b not in used]
+    scores_arr = np.asarray(scores, dtype=float) if scores is not None else np.zeros(0, dtype=float)
+    detail_base = {
+        "routing_last_t": getattr(fovea, "routing_last_t", -1),
+        "scores_max": float(np.max(scores_arr)) if scores_arr.size else None,
+        "scores_min": float(np.min(scores_arr)) if scores_arr.size else None,
+        "periph_blocks": periph_blocks,
+        "periph_ids_sample": periph_ids[: min(len(periph_ids), 5)],
+        "coverage_score_tol": coverage_score_tol,
+        "coverage_score_threshold": coverage_score_threshold,
+        "coverage_step": coverage_step,
+        "coverage_cursor": coverage_cursor,
+        "periph_weight": periph_weight,
+        "routing_weight": routing_weight,
+        "alpha_cov": alpha_cov,
+        "use_age": use_age,
+        "budget_units": budget_units,
+        "budget_remaining_start": float(budget_units),
+        "remaining_len": len(remaining),
+    }
+
+    def _log_selection_result(
+        final_chosen: list[int],
+        *,
+        coverage_trigger_flag: bool,
+        final_budget_remaining: float,
+    ) -> list[int]:
+        info = dict(detail_base)
+        info.update(
+            {
+                "coverage_triggered": coverage_trigger_flag,
+                "chosen_len": len(final_chosen),
+                "chosen_sample": final_chosen[: min(len(final_chosen), 10)],
+                "budget_remaining": float(final_budget_remaining),
+                "budget_used": float(max(0.0, budget_units - final_budget_remaining)),
+            }
+        )
+        _log_geom_event("select_fovea", info)
+        return final_chosen
+
     if not remaining or budget_remaining <= 0.0:
-        return chosen
-    if not remaining:
-        return chosen
+        return _log_selection_result(
+            chosen,
+            coverage_trigger_flag=False,
+            final_budget_remaining=budget_remaining,
+        )
+
+    def _coverage_select_blocks(
+        remaining_set: Set[int],
+        budget_remain: float,
+        cursor: int,
+    ) -> tuple[list[int], float]:
+        selection: list[int] = []
+        idx = cursor % B if B > 0 else 0
+        forced_pick_done = False
+        attempts = 0
+        while remaining_set and (budget_remain > 0.0 or not forced_pick_done) and attempts < 2 * B:
+            if idx in remaining_set:
+                cost_unit = float(norm_costs[idx])
+                pick = False
+                if cost_unit <= budget_remain:
+                    pick = True
+                    budget_remain = max(0.0, budget_remain - cost_unit)
+                elif not forced_pick_done:
+                    pick = True
+                    forced_pick_done = True
+                    budget_remain = 0.0
+                if pick:
+                    selection.append(int(idx))
+                    remaining_set.remove(idx)
+            idx = (idx + coverage_step) % B
+            attempts += 1
+        fovea.coverage_cursor = idx
+        return selection, budget_remain
+
+    coverage_trigger = False
+    if remaining and budget_remaining > 0.0:
+        rem_scores = [float(scores[b]) for b in remaining]
+        if rem_scores:
+            max_score = max(rem_scores)
+            min_score = min(rem_scores)
+            if max_score <= coverage_score_threshold or (max_score - min_score) <= coverage_score_tol:
+                coverage_trigger = True
+    if coverage_trigger:
+        remaining_set = set(remaining)
+        coverage_selected, budget_remaining = _coverage_select_blocks(
+            remaining_set,
+            budget_remaining,
+            coverage_cursor,
+        )
+        for b in coverage_selected:
+            if b in used:
+                continue
+            chosen.append(int(b))
+            used.add(int(b))
+        return _log_selection_result(
+            chosen,
+            coverage_trigger_flag=True,
+            final_budget_remaining=budget_remaining,
+        )
 
     ratio_order = sorted(
         remaining,
@@ -460,7 +601,11 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
         if budget_remaining <= 0.0:
             break
 
-    return chosen
+    return _log_selection_result(
+        chosen,
+        coverage_trigger_flag=False,
+        final_budget_remaining=budget_remaining,
+    )
 
 
 def make_observation_set(blocks: Iterable[int], cfg: AgentConfig) -> set[int]:

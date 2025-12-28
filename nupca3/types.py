@@ -153,8 +153,10 @@ class FoveaState:
     block_disagreement: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     block_innovation: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     block_periph_demand: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    block_confidence: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     routing_last_t: int = -1
     current_blocks: Set[int] = field(default_factory=set)
+    coverage_cursor: int = 0
 
 
 @dataclass
@@ -287,6 +289,15 @@ class ExpertNode:
         else:
             self.L = float(self.cost)
 
+    @property
+    def block_id(self) -> int:
+        """Canonical block identifier for this node (A4.4 footprint)."""
+        return int(getattr(self, "footprint", -1))
+
+    @block_id.setter
+    def block_id(self, value: int) -> None:
+        self.footprint = int(value)
+
 
 # Many modules still import Node / ExpertNode separately.
 Node = ExpertNode
@@ -300,11 +311,13 @@ class ExpertLibrary:
     anchors: anchor node ids
     footprint_index: footprint_id -> list[node_id]
     next_node_id: counter for ID allocation
+    revision: monotonic counter incremented on every structural mutation
     """
     nodes: Dict[int, ExpertNode] = field(default_factory=dict)
     anchors: Set[int] = field(default_factory=set)
     footprint_index: Dict[int, List[int]] = field(default_factory=dict)
     next_node_id: int = 0
+    revision: int = 0
 
     def add_node(self, node: ExpertNode) -> int:
         """Insert node; allocate an id if the provided one collides."""
@@ -316,6 +329,7 @@ class ExpertLibrary:
         else:
             self.next_node_id = max(self.next_node_id, node_id + 1)
         self.nodes[node_id] = node
+        self.revision += 1
         return node_id
 
     def remove_node(self, node_id: int) -> Optional[ExpertNode]:
@@ -330,6 +344,7 @@ class ExpertLibrary:
                 self.footprint_index[phi] = [i for i in ids if i != int(node_id)]
                 if not self.footprint_index[phi]:
                     self.footprint_index.pop(phi, None)
+        self.revision += 1
         return node
 
 
@@ -645,8 +660,8 @@ class AgentState:
       - t, margins, stress, arousal, baselines, macro, fovea, buffer, library
 
     Structural-edit support fields (used by nupca3/edits/*):
-      - incumbents, observed_transitions, activation_log, residual_stats,
-        persistent_residuals, blocks, active_set
+      - incumbents_by_block, incumbents_revision, observed_transitions,
+        activation_log, residual_stats, persistent_residuals, blocks, active_set
 
     Initialization per A14.8:
       - μ_k(0), σ_k^fast(0), σ_k^slow(0) = 0 (in baselines)
@@ -686,7 +701,8 @@ class AgentState:
     block_view: Optional["BlockView"] = None
 
     # ----- Memory / edit support (A4, A12) -----
-    incumbents: Dict[int, Set[int]] = field(default_factory=dict)
+    incumbents_by_block: List[Set[int]] = field(default_factory=list)
+    incumbents_revision: int = 0
     observed_transitions: Dict[int, List[TransitionRecord]] = field(default_factory=dict)
     activation_log: Dict[int, List[Tuple[int, float]]] = field(default_factory=dict)
     residual_stats: Dict[int, FootprintResidualStats] = field(default_factory=dict)
@@ -698,6 +714,14 @@ class AgentState:
     node_band_levels: Dict[int, int] = field(default_factory=dict)
     coverage_expert_debt: Dict[int, int] = field(default_factory=dict)
     coverage_band_debt: Dict[int, int] = field(default_factory=dict)
+    salience_recent_candidates: Dict[int, int] = field(default_factory=dict)
+    salience_num_nodes_scored: int = 0
+    salience_candidate_ids: Set[int] = field(default_factory=set)
+    salience_candidate_limit: int = 0
+    salience_candidate_count_raw: int = 0
+    salience_candidates_truncated: bool = False
+    learning_candidates_prev: Dict[str, Any] = field(default_factory=dict)
+    proposals_prev: int = 0
 
     # ----- Lagged values for timing discipline (A5.2, A5.3, A10.2) -----
     arousal_prev: float = 0.0

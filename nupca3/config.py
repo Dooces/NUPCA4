@@ -93,6 +93,9 @@ class AgentConfig:
     #ITOOKASHORTCUT: v1.5b defines G but does not pin a numeric reference.
     coverage_cap_G: int = 50
 
+    # Starting age for each block; use < G so the coverage emergency path waits for real data.
+    initial_block_age: int = 0
+
     # Implementation-only: sticky retention (NOT part of v1.5b A16).
     # Kept for backwards compatibility with earlier experiments, but unused by
     # the axiom-faithful selector in geometry.fovea.
@@ -131,6 +134,9 @@ class AgentConfig:
     fovea_disagreement_weight: float = 0.0
     fovea_innovation_weight: float = 0.0
     fovea_periph_demand_weight: float = 0.0
+    fovea_confidence_weight: float = 0.10
+    fovea_confidence_beta_up: float = 0.50
+    fovea_confidence_beta_down: float = 0.01
     # Allow env-provided selected_blocks to override fovea selection.
     allow_selected_blocks_override: bool = False
 
@@ -184,6 +190,10 @@ class AgentConfig:
     transport_bias_weight: float = 0.0
     transport_bias_increment: float = 0.1
     transport_bias_max_entries: int = 4
+
+    coverage_score_tol: float = 1e-5
+    coverage_score_threshold: float = -1e-6
+    coverage_cursor_step: int = 1
 
     # Multi-world hypothesis tracking for transport ambiguity (Phase 3).
     multi_world_K: int = 1
@@ -296,6 +306,8 @@ class AgentConfig:
     tau_min: float = 0.5
     tau_max: float = 5.0
     tau_a: float = 0.5
+    # Debug hook: score all nodes when True (override candidate universe).
+    salience_debug_exhaustive: bool = False
 
     # Peripheral channel (optional; used for routing bias in fovea selection)
     periph_bins: int = 0
@@ -477,6 +489,8 @@ class AgentConfig:
     N_max: int = 256
     L_work_max: float = 48.0
     max_candidates: int = 32
+    salience_max_candidates: int = 64
+    salience_explore_budget: int = 2
     max_experts_per_k: int = 2
 
     max_queue: int = 256
@@ -662,6 +676,8 @@ class AgentConfig:
             raise ValueError("fovea_uncertainty_weight must be >= 0.")
         if self.fovea_uncertainty_default < 0.0:
             raise ValueError("fovea_uncertainty_default must be >= 0.")
+        if self.initial_block_age < 0:
+            raise ValueError("initial_block_age must be >= 0.")
         for name in ("alpha_pi", "alpha_deg", "alpha_ctx", "alpha_ctx_relevance", "alpha_ctx_gist"):
             v = getattr(self, name)
             if v < 0.0:

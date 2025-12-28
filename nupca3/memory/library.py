@@ -16,7 +16,8 @@ Axiom coverage: A4.
 
 from __future__ import annotations
 
-from typing import Dict, List, Set
+import logging
+from typing import Dict, Iterable, List, Set
 
 import numpy as np
 
@@ -138,8 +139,60 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
             lib.nodes[node_id] = transport_node
             lib.footprint_index.setdefault(b, []).append(node_id)
             node_id += 1
+    _initialize_dag_neighbors(lib)
     return lib
 
 
 def nodes_in_library(lib: ExpertLibrary) -> List[ExpertNode]:
     return list(lib.nodes.values())
+
+
+LIBRARY_LOGGER = logging.getLogger("nupca3.library")
+
+
+def _initialize_dag_neighbors(lib: ExpertLibrary) -> None:
+    """Connect existing nodes within each footprint to seed the DAG."""
+    for footprint, node_ids in lib.footprint_index.items():
+        for nid in node_ids:
+            link_node_neighbors(lib, nid, int(footprint))
+
+
+def link_node_neighbors(
+    lib: ExpertLibrary,
+    node_id: int,
+    footprint: int,
+    *,
+    exclude_ids: Iterable[int] | None = None,
+) -> None:
+    """Link `node_id` to other nodes in the same footprint."""
+    node = lib.nodes.get(int(node_id))
+    if node is None:
+        return
+    if footprint < 0:
+        return
+    bucket = lib.footprint_index.get(int(footprint), [])
+    if not bucket:
+        return
+    exclude_set: Set[int] = set(int(x) for x in (exclude_ids or []) if x is not None)
+    candidates: list[int] = [
+        int(nid)
+        for nid in bucket
+        if int(nid) not in exclude_set and int(nid) != int(node_id)
+    ]
+    if not candidates:
+        return
+    linked = 0
+    for neighbor_id in candidates:
+        neighbor = lib.nodes.get(neighbor_id)
+        if neighbor is None:
+            continue
+        node.parents.add(neighbor_id)
+        neighbor.children.add(int(node_id))
+        linked += 1
+    if candidates and linked == 0:
+        LIBRARY_LOGGER.warning(
+            "DAG link failed for node=%s footprint=%s candidates=%s",
+            node_id,
+            footprint,
+            candidates,
+        )

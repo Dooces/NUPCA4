@@ -19,13 +19,15 @@ Timing discipline:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Set, List
+from typing import Dict, Iterable, Optional, Set, List, Tuple
 
 import math
 import numpy as np
 
 from ..config import AgentConfig
+from ..geometry.fovea import block_of_dim
 from ..types import AgentState, Node
+from ..incumbents import get_incumbent_bucket
 
 
 # =============================================================================
@@ -243,12 +245,198 @@ def compute_relevance(
     return relevance
 
 
+def _gather_salience_block_candidates(
+    state: AgentState,
+    cfg: AgentConfig,
+    nodes: Dict[int, Node],
+    active_set: Set[int],
+) -> Set[int]:
+    """Roadmap the block footprints that should seed retrieval this step."""
+    candidate_blocks: Set[int] = set()
+    fovea = getattr(state, "fovea", None)
+    if fovea is not None:
+        candidate_blocks.update(int(b) for b in getattr(fovea, "current_blocks", set()) or set())
+
+    pending = getattr(state, "pending_fovea_selection", {}) or {}
+    pending_blocks = pending.get("blocks") or []
+    candidate_blocks.update(int(b) for b in pending_blocks if isinstance(b, (int, np.integer)))
+    forced_blocks = pending.get("forced_periph_blocks") or []
+    candidate_blocks.update(int(b) for b in forced_blocks if isinstance(b, (int, np.integer)))
+
+    observed_dims = set(getattr(state, "observed_dims", set()) or set())
+    if observed_dims:
+        for dim in observed_dims:
+            block_id = block_of_dim(int(dim), cfg)
+            candidate_blocks.add(int(block_id))
+
+    if nodes and active_set:
+        for nid in active_set:
+            node = nodes.get(int(nid))
+            if node is None:
+                continue
+            block_id = getattr(node, "block_id", getattr(node, "footprint", -1))
+            if block_id is None or int(block_id) < 0:
+                continue
+            candidate_blocks.add(int(block_id))
+
+    B = int(getattr(cfg, "B", 0))
+    if B > 0:
+        valid_blocks = {int(b) for b in candidate_blocks if isinstance(b, (int, np.integer)) and 0 <= int(b) < B}
+    else:
+        valid_blocks = {int(b) for b in candidate_blocks if isinstance(b, (int, np.integer)) and b >= 0}
+
+    if not valid_blocks and B > 0:
+        valid_blocks.add(0)
+
+    return valid_blocks
+
+
+def _gather_dag_neighbors(
+    nodes: Dict[int, Node],
+    seed_ids: Set[int],
+    depth: int,
+) -> Set[int]:
+    """Collect DAG neighbors within `depth` hops for the salience frontier."""
+    neighbors: Set[int] = set()
+    frontier = set(int(nid) for nid in seed_ids)
+    visited = set(frontier)
+    for _ in range(depth):
+        next_frontier: Set[int] = set()
+        for nid in frontier:
+            node = nodes.get(int(nid))
+            if node is None:
+                continue
+            parents = getattr(node, "parents", set()) or set()
+            children = getattr(node, "children", set()) or set()
+            for adj in parents:
+                adj_id = int(adj)
+                if adj_id in visited:
+                    continue
+                visited.add(adj_id)
+                next_frontier.add(adj_id)
+            for adj in children:
+                adj_id = int(adj)
+                if adj_id in visited:
+                    continue
+                visited.add(adj_id)
+                next_frontier.add(adj_id)
+        neighbors.update(next_frontier)
+        frontier = next_frontier
+        if not frontier:
+            break
+    return neighbors
+
+
+def _prune_salience_history(
+    state: AgentState,
+    cfg: AgentConfig,
+    nodes: Dict[int, Node],
+) -> Set[int]:
+    """Prune the linger history and surface valid lingering nodes."""
+    linger_steps = int(getattr(cfg, "working_set_linger_steps", 0))
+    if linger_steps <= 0:
+        return set()
+    history = getattr(state, "salience_recent_candidates", {}) or {}
+    t_now = int(getattr(state, "t", 0))
+    valid_ids: Set[int] = set()
+    stale: List[int] = []
+    for nid, last_seen in history.items():
+        if t_now - int(last_seen) <= linger_steps:
+            if nid in nodes:
+                valid_ids.add(int(nid))
+        else:
+            stale.append(int(nid))
+    for nid in stale:
+        history.pop(nid, None)
+    state.salience_recent_candidates = history
+    return valid_ids
+
+
+def _refresh_salience_history(
+    state: AgentState,
+    cfg: AgentConfig,
+    nodes: Dict[int, Node],
+    candidate_ids: Set[int],
+    active_set: Set[int],
+) -> None:
+    """Refresh linger history after defining the current candidate universe."""
+    linger_steps = int(getattr(cfg, "working_set_linger_steps", 0))
+    if linger_steps <= 0:
+        return
+    history = getattr(state, "salience_recent_candidates", {}) or {}
+    t_now = int(getattr(state, "t", 0))
+    for nid in candidate_ids.union(active_set):
+        if nid in nodes:
+            history[int(nid)] = t_now
+    state.salience_recent_candidates = history
+
+
+def _collect_salience_candidate_ids(
+    state: AgentState,
+    cfg: AgentConfig,
+    nodes: Dict[int, Node],
+    active_set: Set[int],
+) -> Set[int]:
+    """Gather the working candidate nodes C_t reachable from the attended frontier."""
+    candidate_ids: Set[int] = set()
+    block_ids = _gather_salience_block_candidates(state, cfg, nodes, active_set)
+    for block_id in block_ids:
+        bucket = get_incumbent_bucket(state, int(block_id))
+        for nid in bucket or set():
+            if nid in nodes:
+                candidate_ids.add(int(nid))
+
+    anchors = getattr(getattr(state, "library", None), "anchors", set()) or set()
+    for anchor_id in anchors:
+        if anchor_id in nodes:
+            candidate_ids.add(int(anchor_id))
+
+    candidate_ids.update(nid for nid in active_set if nid in nodes)
+
+    reach_depth = int(getattr(cfg, "salience_reach_depth", 1))
+    if reach_depth > 0 and active_set:
+        neighbors = _gather_dag_neighbors(nodes, active_set, reach_depth)
+        candidate_ids.update(nid for nid in neighbors if nid in nodes)
+
+    linger_ids = _prune_salience_history(state, cfg, nodes)
+    candidate_ids.update(linger_ids)
+
+    explore_budget = int(getattr(cfg, "salience_explore_budget", 0))
+    if explore_budget > 0:
+        _include_explore_nodes(candidate_ids, nodes, budget=explore_budget)
+
+    _refresh_salience_history(state, cfg, nodes, candidate_ids, active_set)
+    return candidate_ids
+
+
+def _include_explore_nodes(
+    candidate_ids: Set[int],
+    nodes: Dict[int, Node],
+    budget: int,
+) -> None:
+    """Add a small exploration budget of node IDs to keep retrieval responsive."""
+    if budget <= 0:
+        return
+    added = 0
+    for nid in sorted(nodes.keys()):
+        if added >= budget:
+            break
+        if nid in candidate_ids:
+            continue
+        candidate_ids.add(int(nid))
+        added += 1
+
+
 def compute_scores(
     state: AgentState,
     cfg: AgentConfig,
     observed_dims: Optional[Set[int]] = None,
+    *,
+    candidate_node_ids: Optional[Iterable[int]] = None,
 ) -> Dict[int, float]:
     """Compute salience scores u_j(t) for all experts (A5.1) with coverage-context nudges."""
+    state.salience_num_nodes_scored = 0
+    state.salience_candidate_ids = set()
     library = getattr(state, "library", None)
     if library is None:
         return {}
@@ -256,6 +444,8 @@ def compute_scores(
     nodes = getattr(library, "nodes", {})
     if not nodes:
         return {}
+
+    active_set = {int(nid) for nid in getattr(state, "active_set", set()) or set()}
 
     # Weights for score terms
     alpha_pi = float(cfg.alpha_pi)
@@ -270,8 +460,52 @@ def compute_scores(
         observed_dims = set(getattr(state, "observed_dims", set()))
 
     # Compute max out-degree for normalization
+    node_levels = getattr(state, "node_band_levels", {})
+    debug_exhaustive = bool(getattr(cfg, "salience_debug_exhaustive", False))
+    if candidate_node_ids is None:
+        if debug_exhaustive:
+            candidate_ids = {int(nid) for nid in nodes.keys()}
+        else:
+            candidate_ids = _collect_salience_candidate_ids(state, cfg, nodes, active_set)
+    else:
+        candidate_ids = {int(nid) for nid in candidate_node_ids}
+
+    candidate_ids = {nid for nid in candidate_ids if nid in nodes}
+    raw_candidate_count = len(candidate_ids)
+
+    max_candidates = int(getattr(cfg, "salience_max_candidates", getattr(cfg, "max_candidates", 256)))
+    max_candidates = max(1, max_candidates)
+    state.salience_candidate_limit = max_candidates
+    state.salience_candidate_count_raw = raw_candidate_count
+
+    limit_candidates = candidate_node_ids is None and not debug_exhaustive and raw_candidate_count > max_candidates
+    if limit_candidates:
+        truncated_list = sorted(candidate_ids)
+        candidate_ids = set(truncated_list[:max_candidates])
+
+    state.salience_candidates_truncated = raw_candidate_count > len(candidate_ids)
+    state.salience_candidate_ids = set(candidate_ids)
+
+    if candidate_node_ids is not None or debug_exhaustive:
+        _refresh_salience_history(state, cfg, nodes, candidate_ids, active_set)
+    if not candidate_ids:
+        state.node_band_levels = node_levels
+        state.salience_num_nodes_scored = 0
+        return {}
+
+    candidate_items: list[Tuple[int, Node]] = []
+    for nid in candidate_ids:
+        node = nodes.get(nid)
+        if node is None:
+            continue
+        candidate_items.append((nid, node))
+    if not candidate_items:
+        state.node_band_levels = node_levels
+        state.salience_num_nodes_scored = 0
+        return {}
+    state.salience_num_nodes_scored = len(candidate_items)
     max_out_degree = 1
-    for node in nodes.values():
+    for _, node in candidate_items:
         deg = _get_node_out_degree(node)
         if deg > max_out_degree:
             max_out_degree = deg
@@ -284,12 +518,10 @@ def compute_scores(
     context_tags = getattr(state, "node_context_tags", {})
     expert_debt = getattr(state, "coverage_expert_debt", {})
     band_debt = getattr(state, "coverage_band_debt", {})
-    node_levels = getattr(state, "node_band_levels", {})
 
     scores: Dict[int, float] = {}
 
-    for node_id, node in nodes.items():
-        nid = int(node_id)
+    for nid, node in candidate_items:
         pi_j = _get_node_reliability(node)
         deg_j = _get_node_out_degree(node)
         deg_normalized = float(deg_j) / float(max_out_degree)

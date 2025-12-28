@@ -354,6 +354,7 @@ class NUPCA3GridAgent:
         self.agent.reset(seed=int(seed))
         self.underlay_mask = np.zeros((self.H, self.W), dtype=bool)
         self.pred_prev = np.zeros(self.D, dtype=int)
+        self.seen_dims: set[int] = set()
         self.rng = np.random.default_rng(seed)
         self.logger = logging.getLogger("nupca3_grid_harness")
         self.logger.setLevel(logging.INFO)
@@ -384,7 +385,18 @@ class NUPCA3GridAgent:
 
         return set(np.concatenate([main_idx, probe_idx]).tolist())
 
-    def _log_step(self, *, action, trace, obs_vec, pred_display, mismatch, idx):
+    def _log_step(
+        self,
+        *,
+        action,
+        trace,
+        obs_vec,
+        pred_display,
+        mismatch,
+        idx,
+        seen_vec,
+        seen_dims,
+    ):
         state = self.agent.state
         learn_cache = getattr(state, "learn_cache", None)
         working_set = getattr(learn_cache, "A_t", None) if learn_cache is not None else None
@@ -413,6 +425,37 @@ class NUPCA3GridAgent:
         learning_active = bool(learning_candidates)
         learning_reason = "learning_candidates_present" if learning_active else "no_learning_candidates"
 
+        def _row_bounds(rows: list[int]) -> dict[str, int | None]:
+            if not rows:
+                return {"min": None, "max": None}
+            return {"min": int(rows[0]), "max": int(rows[-1])}
+
+        obs_rows = sorted(
+            int(dim) // self.W
+            for dim in idx
+            if 0 <= int(dim) < self.D
+        )
+        seen_dims_list = sorted(int(dim) for dim in seen_dims if 0 <= int(dim) < self.D)
+        seen_rows = sorted(dim // self.W for dim in seen_dims_list)
+        preview_limit = 8
+        seen_preview = []
+        for dim in seen_dims_list[:preview_limit]:
+            if 0 <= dim < seen_vec.size:
+                val = int(seen_vec[int(dim)])
+            else:
+                val = None
+            seen_preview.append({"dim": int(dim), "value": val})
+
+        observation_payload = {
+            "obs_count": int(len(idx)),
+            "seen_count": int(len(idx)),
+            "seen_total": int(len(seen_dims_list)),
+            "seen_fraction": float(len(seen_dims_list)) / float(max(1, self.D)),
+            "obs_rows": _row_bounds(obs_rows),
+            "seen_rows": _row_bounds(seen_rows),
+            "seen_preview": seen_preview,
+        }
+
         log_payload = {
             "t": int(trace.get("t", getattr(state, "t", 0))) if isinstance(trace, dict) else int(getattr(state, "t", 0)),
             "action": int(action),
@@ -438,10 +481,7 @@ class NUPCA3GridAgent:
                 "reason": learning_reason,
                 "candidates": learning_candidates,
             },
-            "observation": {
-                "obs_count": int(len(idx)),
-                "seen_count": int(len(idx)),
-            },
+            "observation": observation_payload,
             "prediction": {
                 "pred_nonzero": int(np.count_nonzero(pred_display)),
             },
@@ -465,14 +505,20 @@ class NUPCA3GridAgent:
             pred_vec = np.resize(pred_vec, (self.D,))
         pred_display = np.rint(pred_vec).astype(int)
 
-        seen = np.zeros(self.D, dtype=int)
-        if idx.size:
-            seen[idx] = obs_vec[idx].astype(int)
+        valid_idx = [int(dim) for dim in idx if 0 <= int(dim) < self.D]
+        self.seen_dims.update(valid_idx)
 
+        seen_raw = np.asarray(getattr(self.agent.state.buffer, "x_last", np.zeros(self.D)), dtype=float)
+        if seen_raw.size != self.D:
+            seen_raw = np.resize(seen_raw, (self.D,))
+        seen = np.rint(seen_raw).astype(int)
+
+        seen_indices = sorted(self.seen_dims)
         unknown = np.ones((self.H, self.W), dtype=bool)
-        if idx.size:
-            ys = idx // self.W
-            xs = idx % self.W
+        if seen_indices:
+            arr = np.asarray(seen_indices, dtype=int)
+            ys = arr // self.W
+            xs = arr % self.W
             unknown[ys, xs] = False
 
         mismatch = (obs_vec.astype(int) != pred_display).astype(float)
@@ -484,6 +530,8 @@ class NUPCA3GridAgent:
             pred_display=pred_display,
             mismatch=mismatch,
             idx=idx,
+            seen_vec=seen,
+            seen_dims=seen_indices,
         )
         return pred_display, mismatch, seen, unknown, idx
 

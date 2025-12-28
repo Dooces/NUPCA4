@@ -34,6 +34,7 @@ from ..types import (
 )
 from ..config import AgentConfig
 from ..memory.expert import predict
+from ..incumbents import get_incumbent_bucket
 
 # =============================================================================
 # Permission Checks (A12.3)
@@ -111,7 +112,12 @@ def compute_delta_c(proposal: EditProposal, state: AgentState, cfg: AgentConfig)
 # MERGE Acceptance (A12.3)
 # =============================================================================
 
-def compute_merge_mse(node: Node, transitions: List[TransitionRecord], timesteps: Set[int]) -> float:
+def compute_merge_mse(
+    node: Node,
+    transitions: List[TransitionRecord],
+    timesteps: Set[int],
+    state_dim: int,
+) -> float:
     """Compute MSE for an expert on specified timesteps."""
     if not timesteps:
         return float("inf")
@@ -121,7 +127,6 @@ def compute_merge_mse(node: Node, transitions: List[TransitionRecord], timesteps
     count = 0
 
     active_dims = set(np.where(mask > 0.5)[0].tolist())
-    state_dim = state.state_dim
 
     for trans in transitions:
         if trans.tau not in timesteps:
@@ -184,15 +189,37 @@ def evaluate_merge_replacement_consistent(
 
     transitions = state.observed_transitions.get(evidence.footprint, [])
 
-    mse_a_on_T_A = compute_merge_mse(node_a, transitions, T_A)
-    mse_b_on_T_B = compute_merge_mse(node_b, transitions, T_B)
-    mse_c_on_T_A = compute_merge_mse(merged_node, transitions, T_A)
-    mse_c_on_T_B = compute_merge_mse(merged_node, transitions, T_B)
+    state_dim = state.state_dim
+    mse_a_on_T_A = compute_merge_mse(node_a, transitions, T_A, state_dim)
+    mse_b_on_T_B = compute_merge_mse(node_b, transitions, T_B, state_dim)
+    mse_c_on_T_A = compute_merge_mse(merged_node, transitions, T_A, state_dim)
+    mse_c_on_T_B = compute_merge_mse(merged_node, transitions, T_B, state_dim)
 
     domain_a_ok = mse_c_on_T_A <= mse_a_on_T_A + epsilon_merge
     domain_b_ok = mse_c_on_T_B <= mse_b_on_T_B + epsilon_merge
 
     return (domain_a_ok and domain_b_ok), domain_a_ok, domain_b_ok
+
+
+def _target_shape(*shapes: tuple[int, ...]) -> tuple[int, ...]:
+    """Return per-axis maximum of the provided shapes, padding shorter dims with zeros."""
+    if not shapes:
+        return ()
+    max_len = max(len(shape) for shape in shapes)
+    result: list[int] = []
+    for axis in range(max_len):
+        values = [shape[axis] if axis < len(shape) else 0 for shape in shapes]
+        result.append(max(values))
+    return tuple(result)
+
+
+def _pad_to_shape(arr: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
+    if not shape:
+        return np.asarray(arr, dtype=float)
+    out = np.zeros(shape, dtype=arr.dtype)
+    slices = tuple(slice(0, min(dim, out_dim)) for dim, out_dim in zip(arr.shape, shape))
+    out[slices] = arr[slices]
+    return out
 
 
 def create_merged_node(state: AgentState, evidence: MergeEvidence, cfg: AgentConfig) -> Optional[Node]:
@@ -221,9 +248,20 @@ def create_merged_node(state: AgentState, evidence: MergeEvidence, cfg: AgentCon
         w_a = float(node_a.reliability) / total_pi
         w_b = float(node_b.reliability) / total_pi
 
-    merged_W = w_a * node_a.W + w_b * node_b.W
-    merged_b = w_a * node_a.b + w_b * node_b.b
-    merged_Sigma = np.maximum(node_a.Sigma, node_b.Sigma)
+    W_shape = _target_shape(node_a.W.shape, node_b.W.shape)
+    b_shape = _target_shape(node_a.b.shape, node_b.b.shape)
+    Sigma_shape = _target_shape(node_a.Sigma.shape, node_b.Sigma.shape)
+
+    Wa = _pad_to_shape(node_a.W, W_shape)
+    Wb = _pad_to_shape(node_b.W, W_shape)
+    ba = _pad_to_shape(node_a.b, b_shape)
+    bb = _pad_to_shape(node_b.b, b_shape)
+    Sigma_a = _pad_to_shape(node_a.Sigma, Sigma_shape)
+    Sigma_b = _pad_to_shape(node_b.Sigma, Sigma_shape)
+
+    merged_W = w_a * Wa + w_b * Wb
+    merged_b = w_a * ba + w_b * bb
+    merged_Sigma = np.maximum(Sigma_a, Sigma_b)
     merged_reliability = max(float(node_a.reliability), float(node_b.reliability))
     merged_cost = max(float(node_a.cost), float(node_b.cost))
 
@@ -236,6 +274,7 @@ def create_merged_node(state: AgentState, evidence: MergeEvidence, cfg: AgentCon
         reliability=merged_reliability,
         cost=merged_cost,
         is_anchor=False,
+        footprint=evidence.footprint,
         last_active_step=state.timestep,
         created_step=state.timestep
     )
@@ -292,7 +331,7 @@ def check_anti_aliasing(
     """Anti-aliasing constraint (A4.4) keyed by footprint I_φ."""
     theta_alias = getattr(cfg, "theta_alias", 0.04)
 
-    incumbent_ids = state.incumbents.get(footprint, set())
+    incumbent_ids = get_incumbent_bucket(state, footprint) or set()
     library = state.library
 
     for inc_id in incumbent_ids:

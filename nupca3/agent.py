@@ -39,7 +39,7 @@ from .types import (
     PersistentResidualState,
 )
 
-from .step_pipeline import step_pipeline
+from .step_pipeline import _plan_fovea_selection, step_pipeline
 
 from .geometry.buffer import init_observation_buffer
 from .geometry.block_spec import BlockSpec, BlockView, build_block_specs
@@ -47,6 +47,7 @@ from .geometry.fovea import init_fovea_state, build_blocks_from_cfg
 from .geometry.streams import coarse_bin_count
 
 from .memory.library import init_library
+from .incumbents import ensure_incumbents_index, rebuild_incumbents_by_block
 
 from .state.baselines import init_baselines
 from .state.macrostate import init_macro, rest_permitted
@@ -100,46 +101,6 @@ def _build_blocks(state_dim: int, n_blocks: int) -> List[List[int]]:
         start = end
 
     return blocks
-
-
-def _build_incumbents_from_library(library: ExpertLibrary, blocks: List[List[int]]) -> Dict[int, Set[int]]:
-    """Build incumbents I_phi per footprint from library nodes (A4.4).
-
-    For each node, infer its footprint by checking whether its mask support lies
-    entirely within a block.
-
-    This is a best-effort initializer; footprints for existing nodes should
-    ideally be set where nodes are constructed.
-    """
-    incumbents: Dict[int, Set[int]] = {i: set() for i in range(len(blocks))}
-
-    nodes = getattr(library, "nodes", {}) or {}
-    for node_id, node in nodes.items():
-        mask = getattr(node, "mask", None)
-        if mask is None:
-            continue
-
-        mask_arr = np.asarray(mask)
-        if mask_arr.ndim != 1:
-            mask_arr = mask_arr.reshape(-1)
-
-        support = set(int(i) for i in np.where(mask_arr > 0.5)[0].tolist())
-        if not support:
-            continue
-
-        for block_id, block_dims in enumerate(blocks):
-            block_set = set(int(d) for d in block_dims)
-            if support <= block_set:
-                incumbents[block_id].add(int(node_id))
-                # If node objects are mutable, annotate footprint for later modules.
-                try:
-                    if getattr(node, "footprint", -1) < 0:
-                        node.footprint = int(block_id)
-                except Exception:
-                    pass
-                break
-
-    return incumbents
 
 
 def _init_persistent_residuals(n_blocks: int) -> Dict[int, PersistentResidualState]:
@@ -212,7 +173,7 @@ class NUPCA3Agent:
             library0 = preserve_library
 
         # A4.4 incumbents and A12.4 persistent residuals
-        incumbents0 = _build_incumbents_from_library(library0, blocks)
+        incumbents0 = rebuild_incumbents_by_block(library0, blocks)
         residuals0 = _init_persistent_residuals(len(blocks))
 
         # Build AgentState using schema-tolerant construction (keeps branch compatibility).
@@ -240,8 +201,10 @@ class NUPCA3Agent:
             kw["block_specs"] = block_specs
         if "block_view" in state_fields:
             kw["block_view"] = block_view
-        if "incumbents" in state_fields:
-            kw["incumbents"] = incumbents0
+        if "incumbents_by_block" in state_fields:
+            kw["incumbents_by_block"] = incumbents0
+        if "incumbents_revision" in state_fields:
+            kw["incumbents_revision"] = int(getattr(library0, "revision", 0))
         if "persistent_residuals" in state_fields:
             kw["persistent_residuals"] = residuals0
         if "active_set" in state_fields:
@@ -313,9 +276,25 @@ class NUPCA3Agent:
 
     def step(self, env_obs: EnvObs) -> Tuple[Action, Dict[str, Any]]:
         """Advance one environment step by delegating to the step pipeline."""
+        ensure_incumbents_index(self.state)
         action, next_state, trace = step_pipeline(self.state, env_obs, self.cfg)
         self.state = next_state
         return action, trace
+
+    def prepare_fovea_selection(self, periph_full: np.ndarray | None = None) -> list[int]:
+        """
+        Precompute the upcoming fovea blocks so the harness can sample the same dims.
+        """
+        pending = getattr(self.state, "pending_fovea_selection", None)
+        if pending is None:
+            prev_obs = set(getattr(self.state.buffer, "observed_dims", set()) or set())
+            pending = _plan_fovea_selection(
+                self.state,
+                self.cfg,
+                periph_full=periph_full,
+                prev_observed_dims=prev_obs,
+            )
+        return [int(b) for b in pending.get("blocks", [])]
 
 
 __all__ = ["NUPCA3Agent"]
