@@ -17,14 +17,14 @@ from nupca3.types import EnvObs
 # ============================================================
 # OPTIONS (edit these)
 # ============================================================
-HEIGHT = 32
-WIDTH = 64            # 2x as wide as tall
+HEIGHT = 20
+WIDTH = 20      
 FPS = 120
 
 MAX_SHAPES = 8
-MIN_SHAPES = 0
+MIN_SHAPES = 1
 
-STREAK_STEPS = 90
+STREAK_STEPS = 20
 ADD_DELTA_THRESHOLD = 0.02
 
 # High-streak threshold (requested): if mean_delta stays ABOVE this for STREAK_STEPS -> remove a shape
@@ -35,7 +35,7 @@ HIGH_STREAK_THRESHOLD = 0.10
 ELASTIC_KINDS = {"square", "circle"}
 
 # Fovea budget (scaled for 32x64)
-BUDGET = 512
+BUDGET = 32
 PROBE_K = 64
 MAX_LOST = 240
 
