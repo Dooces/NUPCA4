@@ -6,7 +6,7 @@ It intentionally keeps the control loop explicit and avoids external RL framewor
 ## What is implemented
 
 - Package and module structure mapping **A0–A17** to concrete files.
-- A single authoritative step loop in `nupca3/step_pipeline.py`.
+- A single authoritative step loop in `nupca3/step_pipeline/`.
 - REST-only structural edits are only executed inside `edits/rest_processor.py` and only when `rest(t)=True`.
 - Typed data records in `nupca3/types.py`.
 
