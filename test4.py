@@ -1,11 +1,7 @@
 import json
 import logging
-import pickle
-import time
 import numpy as np
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List
 
 from rich.live import Live
 from rich.panel import Panel
@@ -15,21 +11,21 @@ from rich.console import Group
 
 from nupca3.agent import NUPCA3Agent
 from nupca3.config import AgentConfig
-from nupca3.memory.library import init_library
-from nupca3.types import AgentState, EnvObs
+from nupca3.geometry.fovea import make_observation_set, select_fovea, update_fovea_routing_scores
+from nupca3.types import EnvObs
 
 # ============================================================
 # OPTIONS (edit these)
 # ============================================================
-HEIGHT = 30
-WIDTH = 30            # 2x as wide as tall
+HEIGHT = 32
+WIDTH = 64            # 2x as wide as tall
 FPS = 120
 
 MAX_SHAPES = 8
-MIN_SHAPES = 1
+MIN_SHAPES = 0
 
-STREAK_STEPS = 10
-ADD_DELTA_THRESHOLD = 0.04
+STREAK_STEPS = 90
+ADD_DELTA_THRESHOLD = 0.02
 
 # High-streak threshold (requested): if mean_delta stays ABOVE this for STREAK_STEPS -> remove a shape
 HIGH_STREAK_THRESHOLD = 0.10
@@ -39,10 +35,9 @@ HIGH_STREAK_THRESHOLD = 0.10
 ELASTIC_KINDS = {"square", "circle"}
 
 # Fovea budget (scaled for 32x64)
-BUDGET = 64
-PROBE_K = 16
-MAX_LOST = 120
-STATE_PATH = Path("test4_agent_state.pkl")
+BUDGET = 512
+PROBE_K = 64
+MAX_LOST = 240
 
 # ============================================================
 # Codes / styling
@@ -103,25 +98,6 @@ def grid_text(
     return txt
 
 
-def _load_agent_state(path: Path) -> AgentState | None:
-    if not path.exists():
-        return None
-    with path.open("rb") as fid:
-        return pickle.load(fid)
-
-def _persist_agent_state(state: AgentState, path: Path, cfg: AgentConfig) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    orig_lib = getattr(state, "library", None)
-    if orig_lib is not None:
-        state.library = init_library(cfg)
-    try:
-        with path.open("wb") as fid:
-            pickle.dump(state, fid)
-    finally:
-        if orig_lib is not None:
-            state.library = orig_lib
-
-
 # ============================================================
 # Environment: deterministic motion + semantic occlusion + curriculum add/remove
 # ============================================================
@@ -169,9 +145,6 @@ class SemanticOcclusionEnv:
         self.objs: list[Obj] = []
         self.low_streak = 0
         self.high_streak = 0
-        initial_shapes = min(MIN_SHAPES, MAX_SHAPES)
-        for _ in range(initial_shapes):
-            self._spawn_obj()
 
     def _new_velocity(self):
         vx = float(self.rng.choice([-0.75, -0.5, 0.5, 0.75]))
@@ -365,142 +338,159 @@ class SemanticOcclusionEnv:
 # ============================================================
 
 
-LOGGER = logging.getLogger("nupca3_grid_harness")
-LOGGER.setLevel(logging.INFO)
-if not LOGGER.handlers:
-    handler = logging.FileHandler("output.txt", mode="w", encoding="utf-8")
-    formatter = logging.Formatter("%(message)s")
-    handler.setFormatter(formatter)
-    LOGGER.addHandler(handler)
-    LOGGER.propagate = False
+class NUPCA3GridAgent:
+    def __init__(self, *, H=HEIGHT, W=WIDTH, seed=2):
+        self.H = int(H)
+        self.W = int(W)
+        self.D = self.H * self.W
 
-
-def _row_bounds(rows: List[int]) -> Dict[str, int | None]:
-    if not rows:
-        return {"min": None, "max": None}
-    return {"min": int(rows[0]), "max": int(rows[-1])}
-
-
-def _log_step(
-    agent: NUPCA3Agent,
-    *,
-    action: int,
-    trace: Dict[str, Any],
-    obs_vec: np.ndarray,
-    pred_display: np.ndarray,
-    mismatch: np.ndarray,
-    idx: List[int],
-    seen_vec: np.ndarray,
-    seen_dims: List[int],
-    perf_info: Dict[str, float] | None = None,
-    width: int,
-) -> None:
-    state = agent.state
-    learn_cache = getattr(state, "learn_cache", None)
-    working_set = getattr(learn_cache, "A_t", None) if learn_cache is not None else None
-    active_nodes = list(getattr(working_set, "active", [])) if working_set is not None else []
-    active_weights = dict(getattr(working_set, "weights", {})) if working_set is not None else {}
-    residual_stats = getattr(state, "residual_stats", {}) or {}
-
-    node_info = []
-    nodes = getattr(getattr(state, "library", None), "nodes", {}) or {}
-    for node_id in active_nodes:
-        node = nodes.get(node_id)
-        if node is None:
-            node_info.append({"node_id": int(node_id), "status": "missing"})
-            continue
-        footprint = int(getattr(node, "footprint", -1))
-        footprint_stats = residual_stats.get(footprint)
-        footprint_mean_abs = None
-        if footprint_stats is not None:
-            mean_ema = np.asarray(getattr(footprint_stats, "mean_ema", np.zeros(0)), dtype=float)
-            if mean_ema.size:
-                footprint_mean_abs = float(np.mean(np.abs(mean_ema)))
-        node_info.append(
-            {
-                "node_id": int(node_id),
-                "weight": float(active_weights.get(node_id, 0.0)),
-                "footprint": footprint,
-                "footprint_mean_abs_residual": footprint_mean_abs,
-                "parents": sorted(int(p) for p in getattr(node, "parents", set())),
-                "children": sorted(int(c) for c in getattr(node, "children", set())),
-                "is_anchor": bool(getattr(node, "is_anchor", False)),
-            }
+        self.cfg = AgentConfig(
+            D=self.D,
+            B=self.D,
+            fovea_blocks_per_step=BUDGET,
+            fovea_log_every=0,
         )
+        self.agent = NUPCA3Agent(self.cfg)
+        self.agent.reset(seed=int(seed))
+        self.underlay_mask = np.zeros((self.H, self.W), dtype=bool)
+        self.logger = logging.getLogger("nupca3_grid_harness")
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.handlers:
+            handler = logging.FileHandler("output.txt", mode="w", encoding="utf-8")
+            formatter = logging.Formatter("%(message)s")
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.propagate = False
 
-    learning_candidates = trace.get("learning_candidates", {}) if isinstance(trace, dict) else {}
-    learning_active = bool(learning_candidates)
-    learning_reason = "learning_candidates_present" if learning_active else "no_learning_candidates"
+    def _select_fovea_indices(self) -> np.ndarray:
+        state = self.agent.state
+        update_fovea_routing_scores(state.fovea, state.buffer.x_last, self.cfg, t=int(state.t))
+        blocks_t = select_fovea(state.fovea, self.cfg)
+        obs_set = make_observation_set(blocks_t, self.cfg)
+        if not obs_set:
+            return np.array([], dtype=int)
+        return np.array(sorted(obs_set), dtype=int)
 
-    obs_rows = sorted(int(dim) // width for dim in idx if 0 <= int(dim) < agent.cfg.D)
-    seen_dims_list = sorted(int(dim) for dim in seen_dims if 0 <= int(dim) < agent.cfg.D)
-    seen_rows = sorted(dim // width for dim in seen_dims_list)
-    preview_limit = 8
-    seen_preview = []
-    for dim in seen_dims_list[:preview_limit]:
-        if 0 <= dim < seen_vec.size:
-            val = int(seen_vec[int(dim)])
-        else:
-            val = None
-        seen_preview.append({"dim": int(dim), "value": val})
+    def _log_step(self, *, action, trace, obs_vec, pred_display, mismatch, idx):
+        state = self.agent.state
+        learn_cache = getattr(state, "learn_cache", None)
+        working_set = getattr(learn_cache, "A_t", None) if learn_cache is not None else None
+        active_nodes = list(getattr(working_set, "active", [])) if working_set is not None else []
+        active_weights = dict(getattr(working_set, "weights", {})) if working_set is not None else {}
+        residual_stats = getattr(state, "residual_stats", {}) or {}
 
-    observation_payload = {
-        "obs_count": int(len(idx)),
-        "seen_count": int(len(idx)),
-        "seen_total": int(len(seen_dims_list)),
-        "seen_fraction": float(len(seen_dims_list)) / float(max(1, agent.cfg.D)),
-        "obs_rows": _row_bounds(obs_rows),
-        "seen_rows": _row_bounds(seen_rows),
-        "seen_preview": seen_preview,
-    }
-
-    log_payload = {
-        "t": int(trace.get("t", getattr(state, "t", 0))) if isinstance(trace, dict) else int(getattr(state, "t", 0)),
-        "action": int(action),
-        "rest": bool(trace.get("rest", False)) if isinstance(trace, dict) else False,
-        "permit_param": bool(trace.get("permit_param", False)) if isinstance(trace, dict) else False,
-        "errors": {
-            "mismatch_mean": float(np.mean(mismatch)),
-            "mismatch_max": float(np.max(mismatch)),
-            "prior_obs_mae": float(trace.get("prior_obs_mae", float("nan"))) if isinstance(trace, dict) else float("nan"),
-            "posterior_obs_mae": float(trace.get("posterior_obs_mae", float("nan"))) if isinstance(trace, dict) else float("nan"),
-        },
-        "dag_constellation": {
-            "active_count": int(len(active_nodes)),
-            "active_nodes": node_info,
-        },
-        "abstraction": {
-            "edits_processed": int(trace.get("edits_processed", 0)) if isinstance(trace, dict) else 0,
-            "rest_queue_len": int(trace.get("rest_queue_len", 0)) if isinstance(trace, dict) else 0,
-            "rest_cycles_needed": int(trace.get("rest_cycles_needed", 0)) if isinstance(trace, dict) else 0,
-        },
-        "learning": {
-            "active": learning_active,
-            "reason": learning_reason,
-            "candidates": learning_candidates,
-        },
-        "constellation_error": {
-            "block_residual_mean": float(
-                np.mean(getattr(state.fovea, "block_residual", np.zeros(0)))
+        node_info = []
+        nodes = getattr(getattr(state, "library", None), "nodes", {}) or {}
+        for node_id in active_nodes:
+            node = nodes.get(node_id)
+            if node is None:
+                node_info.append({"node_id": int(node_id), "status": "missing"})
+                continue
+            footprint = int(getattr(node, "footprint", -1))
+            footprint_stats = residual_stats.get(footprint)
+            footprint_mean_abs = None
+            if footprint_stats is not None:
+                mean_ema = np.asarray(getattr(footprint_stats, "mean_ema", np.zeros(0)), dtype=float)
+                if mean_ema.size:
+                    footprint_mean_abs = float(np.mean(np.abs(mean_ema)))
+            node_info.append(
+                {
+                    "node_id": int(node_id),
+                    "weight": float(active_weights.get(node_id, 0.0)),
+                    "footprint": footprint,
+                    "footprint_mean_abs_residual": footprint_mean_abs,
+                    "parents": sorted(int(p) for p in getattr(node, "parents", set())),
+                    "children": sorted(int(c) for c in getattr(node, "children", set())),
+                    "is_anchor": bool(getattr(node, "is_anchor", False)),
+                }
             )
-            if getattr(state.fovea, "block_residual", np.zeros(0)).size
-            else 0.0,
-            "block_residual_max": float(
-                np.max(getattr(state.fovea, "block_residual", np.zeros(0)))
-            )
-            if getattr(state.fovea, "block_residual", np.zeros(0)).size
-            else 0.0,
-        },
-        "observation": observation_payload,
-        "prediction": {
-            "pred_nonzero": int(np.count_nonzero(pred_display)),
-        },
-        "performance": {
-            "select_fovea_ms": float(perf_info.get("select_fovea_ms", 0.0)) if perf_info else 0.0,
-            "agent_step_ms": float(perf_info.get("agent_step_ms", 0.0)) if perf_info else 0.0,
-        },
-    }
-    LOGGER.info(json.dumps(log_payload, sort_keys=True))
+
+        learning_candidates = trace.get("learning_candidates", {}) if isinstance(trace, dict) else {}
+        learning_active = bool(learning_candidates)
+        learning_reason = "learning_candidates_present" if learning_active else "no_learning_candidates"
+
+        log_payload = {
+            "t": int(trace.get("t", getattr(state, "t", 0))) if isinstance(trace, dict) else int(getattr(state, "t", 0)),
+            "action": int(action),
+            "rest": bool(trace.get("rest", False)) if isinstance(trace, dict) else False,
+            "permit_param": bool(trace.get("permit_param", False)) if isinstance(trace, dict) else False,
+            "errors": {
+                "mismatch_mean": float(np.mean(mismatch)),
+                "mismatch_max": float(np.max(mismatch)),
+                "prior_obs_mae": float(trace.get("prior_obs_mae", float("nan"))) if isinstance(trace, dict) else float("nan"),
+                "posterior_obs_mae": float(trace.get("posterior_obs_mae", float("nan"))) if isinstance(trace, dict) else float("nan"),
+            },
+            "dag_constellation": {
+                "active_count": int(len(active_nodes)),
+                "active_nodes": node_info,
+            },
+            "abstraction": {
+                "edits_processed": int(trace.get("edits_processed", 0)) if isinstance(trace, dict) else 0,
+                "rest_queue_len": int(trace.get("rest_queue_len", 0)) if isinstance(trace, dict) else 0,
+                "rest_cycles_needed": int(trace.get("rest_cycles_needed", 0)) if isinstance(trace, dict) else 0,
+            },
+            "learning": {
+                "active": learning_active,
+                "reason": learning_reason,
+                "candidates": learning_candidates,
+            },
+            "constellation_error": {
+                "block_residual_mean": float(
+                    np.mean(getattr(state.fovea, "block_residual", np.zeros(0)))
+                )
+                if getattr(state.fovea, "block_residual", np.zeros(0)).size
+                else 0.0,
+                "block_residual_max": float(
+                    np.max(getattr(state.fovea, "block_residual", np.zeros(0)))
+                )
+                if getattr(state.fovea, "block_residual", np.zeros(0)).size
+                else 0.0,
+            },
+            "observation": {
+                "obs_count": int(len(idx)),
+                "seen_count": int(len(idx)),
+            },
+            "prediction": {
+                "pred_nonzero": int(np.count_nonzero(pred_display)),
+            },
+        }
+        self.logger.info(json.dumps(log_payload, sort_keys=True))
+
+    def step(self, obs_full: np.ndarray):
+        obs_vec = np.asarray(obs_full, dtype=float).reshape(-1)
+        if obs_vec.size != self.D:
+            obs_vec = np.resize(obs_vec, (self.D,))
+
+        idx = self._select_fovea_indices()
+        x_partial = {int(i): float(obs_vec[int(i)]) for i in idx}
+        env_obs = EnvObs(x_partial=x_partial, opp=0.0, danger=0.0)
+        action, trace = self.agent.step(env_obs)
+
+        pred_vec = np.asarray(getattr(self.agent.state.buffer, "x_prior", np.zeros(self.D)), dtype=float)
+        if pred_vec.size != self.D:
+            pred_vec = np.resize(pred_vec, (self.D,))
+        pred_display = np.rint(pred_vec).astype(int)
+
+        seen = np.zeros(self.D, dtype=int)
+        if idx.size:
+            seen[idx] = obs_vec[idx].astype(int)
+
+        unknown = np.ones((self.H, self.W), dtype=bool)
+        if idx.size:
+            ys = idx // self.W
+            xs = idx % self.W
+            unknown[ys, xs] = False
+
+        mismatch = (obs_vec.astype(int) != pred_display).astype(float)
+        self._log_step(
+            action=action,
+            trace=trace,
+            obs_vec=obs_vec,
+            pred_display=pred_display,
+            mismatch=mismatch,
+            idx=idx,
+        )
+        return pred_display, mismatch, seen, unknown, idx
 
 
 # ============================================================
@@ -538,125 +528,40 @@ def render_dashboard(t, H, W, env_vec, pred_vec, seen_vec, unknown_mask, fovea_i
 
 if __name__ == "__main__":
     env = SemanticOcclusionEnv(H=HEIGHT, W=WIDTH, seed=1)
-    block_count = max(1, HEIGHT * WIDTH)
-    fovea_budget = max(1, min(BUDGET, block_count))
-    cfg = AgentConfig(
-        D=HEIGHT * WIDTH,
-        B=block_count,
-        fovea_blocks_per_step=fovea_budget,
-        fovea_log_every=0,
-        allow_selected_blocks_override=True,
-    )
-    saved_state = _load_agent_state(STATE_PATH)
-    agent = NUPCA3Agent(cfg, init_state=saved_state)
-    if saved_state is None:
-        agent.reset(seed=2)
-    else:
-        np.random.seed(2)
-        LOGGER.info(json.dumps({"event": "loaded_agent_state", "path": str(STATE_PATH)}))
-
-    underlay_mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
-    seen_dims: set[int] = set()
+    agent = NUPCA3GridAgent(H=HEIGHT, W=WIDTH, seed=2)
 
     t = 0
-    try:
-        with Live(screen=True, refresh_per_second=FPS) as live:
-            while True:
-                t += 1
+    obs = env.render_visible()
+    pred, mismatch, seen, unk, fidx = agent.step(obs)
+    mean_delta = float(np.mean(mismatch))
 
-                env.step_physics()
-                obs = env.render_visible()
+    with Live(screen=True, refresh_per_second=FPS) as live:
+        while True:
+            t += 1
 
-                obs_vec = np.asarray(obs, dtype=float).reshape(-1)
-                if obs_vec.size != cfg.D:
-                    obs_vec = np.resize(obs_vec, (cfg.D,))
-                step_start = time.perf_counter()
-                x_partial = {int(i): float(obs_vec[int(i)]) for i in range(cfg.D)}
-                env_obs = EnvObs(x_partial=x_partial, opp=0.0, danger=0.0)
+            env.step_physics()
+            obs = env.render_visible()
 
-                action, trace = agent.step(env_obs)
-                step_ms = (time.perf_counter() - step_start) * 1000.0
+            pred, mismatch, seen, unk, fidx = agent.step(obs)
+            mean_delta = float(np.mean(mismatch))
 
-                state = agent.state
-                prior_vec = np.asarray(getattr(state.buffer, "x_prior", np.zeros(cfg.D)), dtype=float)
-                if prior_vec.size != cfg.D:
-                    prior_vec = np.resize(prior_vec, (cfg.D,))
-                prior_int = np.rint(prior_vec).astype(int)
+            env.update_curriculum(mean_delta)
 
-                learn_cache = getattr(state, "learn_cache", None)
-                yhat_tp1 = getattr(learn_cache, "yhat_tp1", None)
-                if yhat_tp1 is None:
-                    yhat_tp1 = prior_vec
-                pred_vec = np.asarray(yhat_tp1, dtype=float)
-                if pred_vec.size != cfg.D:
-                    pred_vec = np.resize(pred_vec, (cfg.D,))
-                pred_display = np.rint(pred_vec).astype(int)
-
-                observed_dims = sorted(int(dim) for dim in getattr(state.buffer, "observed_dims", set()) or set())
-                seen_dims.update(observed_dims)
-
-                seen_raw = np.asarray(getattr(state.buffer, "x_last", np.zeros(cfg.D)), dtype=float)
-                if seen_raw.size != cfg.D:
-                    seen_raw = np.resize(seen_raw, (cfg.D,))
-                seen = np.rint(seen_raw).astype(int)
-
-                unknown = np.ones((HEIGHT, WIDTH), dtype=bool)
-                if seen_dims:
-                    arr = np.asarray(sorted(seen_dims), dtype=int)
-                    ys = arr // WIDTH
-                    xs = arr % WIDTH
-                    unknown[ys, xs] = False
-
-                mismatch = (obs_vec.astype(int) != prior_int).astype(float)
-                perf_info = {"select_fovea_ms": 0.0, "agent_step_ms": float(step_ms)}
-                _log_step(
-                    agent,
-                    action=action,
-                    trace=trace,
-                    obs_vec=obs_vec,
-                    pred_display=pred_display,
-                    mismatch=mismatch,
-                    idx=observed_dims,
+            live.update(
+                render_dashboard(
+                    t=t,
+                    H=HEIGHT,
+                    W=WIDTH,
+                    env_vec=obs,
+                    pred_vec=pred,
                     seen_vec=seen,
-                    seen_dims=list(seen_dims),
-                    perf_info=perf_info,
-                    width=WIDTH,
-                )
-
-                mean_delta = float(np.mean(mismatch))
-                env.update_curriculum(mean_delta)
-
-                live.update(
-                    render_dashboard(
-                        t=t,
-                        H=HEIGHT,
-                        W=WIDTH,
-                        env_vec=obs,
-                        pred_vec=pred_display,
-                        seen_vec=seen,
-                        unknown_mask=unknown,
-                        fovea_idx=observed_dims,
-                        mismatch=mismatch,
-                        tracks_alive=len(getattr(agent.state.fovea, "current_blocks", set())),
-                        underlay_mask=underlay_mask,
-                        n_shapes=len(env.objs),
-                        low_streak=env.low_streak,
-                        high_streak=env.high_streak,
-                    )
-                )
-    except KeyboardInterrupt:
-        pass
-    finally:
-        try:
-            _persist_agent_state(agent.state, STATE_PATH, cfg)
-            LOGGER.info(json.dumps({"event": "persisted_agent_state", "path": str(STATE_PATH)}))
-        except Exception as exc:
-            LOGGER.info(
-                json.dumps(
-                    {
-                        "event": "persist_state_error",
-                        "path": str(STATE_PATH),
-                        "error": str(exc),
-                    }
+                    unknown_mask=unk,
+                    fovea_idx=fidx,
+                    mismatch=mismatch,
+                    tracks_alive=len(getattr(agent.agent.state.fovea, "current_blocks", set())),
+                    underlay_mask=agent.underlay_mask,
+                    n_shapes=len(env.objs),
+                    low_streak=env.low_streak,
+                    high_streak=env.high_streak,
                 )
             )
