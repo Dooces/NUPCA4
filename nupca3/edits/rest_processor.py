@@ -141,57 +141,96 @@ def fit_expert_from_transitions(
     mask: np.ndarray,
     state_dim: int
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Fit linear dynamics W, b, Σ from observed transitions.
+    """Fit linear dynamics (W, b, Σ) for the masked subspace.
 
-    Uses least-squares on masked dimensions.
+    Critical invariant:
+    - Returned W MUST be footprint-local / mask-local (compact), not a dense
+      (state_dim x state_dim) matrix.
+
+    Earlier builds returned `np.eye(state_dim)` when data were insufficient.
+    When SPAWN/SPLIT were frequent, this created many large dense matrices and
+    bloated `agent_state.pkl` into the hundreds of MB within seconds.
+
+    This fitter learns a compact model over the active dims:
+      y_active ≈ W_active @ x_active + b_active
+
+    It still returns full-length b and Sigma vectors for compatibility.
     """
-    active_dims = list(np.where(mask > 0.5)[0])
+    active_dims = np.where(np.asarray(mask, dtype=float).reshape(-1) > 0.5)[0].astype(int)
+    k = int(active_dims.size)
 
-    if not transitions or not active_dims:
-        return np.eye(state_dim), np.zeros(state_dim), np.ones(state_dim)
+    b = np.zeros(int(state_dim), dtype=float)
+    Sigma = np.ones(int(state_dim), dtype=float)
 
-    X_list = []
-    Y_list = []
+    if k == 0:
+        return np.zeros((0, 0), dtype=float), b, Sigma
 
-    for trans in transitions:
-        # Only use transitions where all active dims were observed at τ+1 (targets exist).
-        if not (set(active_dims) <= trans.observed_dims_tau_plus_1):
+    # Data guard: if we have too little evidence, default to identity dynamics
+    # *within the active subspace* (k x k), not full-state.
+    if not transitions:
+        return np.eye(k, dtype=float), b, Sigma
+
+    X_list: list[np.ndarray] = []
+    Y_list: list[np.ndarray] = []
+
+    active_set = set(int(d) for d in active_dims.tolist())
+
+    for trans in transitions[-50:]:
+        # Only use transitions where all active dims were observed at τ+1.
+        if not (active_set <= set(getattr(trans, 'observed_dims_tau_plus_1', set()))):
             continue
-        x_tau_full, x_tau_plus_1_full = trans.full_vectors(state_dim)
-        X_list.append(x_tau_full)
-        Y_list.append(x_tau_plus_1_full)
+        dims = tuple(int(d) for d in getattr(trans, 'dims', ()))
+        dims_set = set(dims)
+        if not (active_set <= dims_set):
+            continue
 
-    if len(X_list) < 2:
-        return np.eye(state_dim), np.zeros(state_dim), np.ones(state_dim)
+        # Build (x_active, y_active) without allocating full state_dim vectors.
+        dim_to_pos = {int(d): i for i, d in enumerate(dims)}
+        pos = [dim_to_pos[int(d)] for d in active_dims.tolist()]
 
-    X = np.array(X_list)  # (n_samples, state_dim)
-    Y = np.array(Y_list)  # (n_samples, state_dim)
+        x = np.asarray(getattr(trans, 'x_tau_block', np.zeros(len(dims), dtype=float)), dtype=float).reshape(-1)
+        y = np.asarray(getattr(trans, 'x_tau_plus_1_block', np.zeros(len(dims), dtype=float)), dtype=float).reshape(-1)
+        if x.size < max(pos) + 1 or y.size < max(pos) + 1:
+            continue
 
-    W = np.eye(state_dim)
-    b = np.zeros(state_dim)
-    Sigma = np.ones(state_dim)
+        X_list.append(x[pos])
+        Y_list.append(y[pos])
 
-    X_aug = np.hstack([X, np.ones((X.shape[0], 1))])
+    n = len(X_list)
+    if n < 2:
+        return np.eye(k, dtype=float), b, Sigma
 
-    for k in active_dims:
-        y_k = Y[:, k]
+    X = np.vstack(X_list)  # (n, k)
+    Y = np.vstack(Y_list)  # (n, k)
+
+    # Augment with bias term.
+    X_aug = np.hstack([X, np.ones((n, 1), dtype=float)])  # (n, k+1)
+
+    W = np.eye(k, dtype=float)
+
+    for row in range(k):
+        y_row = Y[:, row]
         try:
-            coeffs, residuals, _, _ = np.linalg.lstsq(X_aug, y_k, rcond=None)
-            W[k, :] = coeffs[:-1]
-            b[k] = coeffs[-1]
+            coeffs, residuals, _, _ = np.linalg.lstsq(X_aug, y_row, rcond=None)
+            W[row, :] = coeffs[:-1]
+            b[int(active_dims[row])] = float(coeffs[-1])
 
-            if len(residuals) > 0:
-                Sigma[k] = max(0.01, float(residuals[0]) / max(1, len(y_k)))
+            if residuals is not None and len(residuals) > 0:
+                mse = float(residuals[0]) / float(max(1, n))
             else:
                 pred = X_aug @ coeffs
-                Sigma[k] = max(0.01, float(np.mean((y_k - pred) ** 2)))
+                mse = float(np.mean((y_row - pred) ** 2))
+            Sigma[int(active_dims[row])] = max(0.01, mse)
         except np.linalg.LinAlgError:
-            pass
+            # Keep identity row; default Sigma stays at 1.0
+            continue
 
     return W, b, Sigma
 
 
+
 def apply_merge(
+
     state: AgentState,
     proposal: EditProposal,
     cfg: AgentConfig
@@ -292,9 +331,14 @@ def apply_spawn(
 
     W, b, Sigma = fit_expert_from_transitions(recent_transitions, mask, state.state_dim)
 
+    active_dims = np.where(mask > 0.5)[0].astype(int)
+
     new_node = Node(
         node_id=-1,
         mask=mask,
+        input_mask=mask.copy(),
+        out_idx=active_dims,
+        in_idx=active_dims,
         W=W,
         b=b,
         Sigma=Sigma,
@@ -388,9 +432,15 @@ def apply_split(
     W_1, b_1, Sigma_1 = fit_expert_from_transitions(recent_transitions, mask_1, state.state_dim)
     W_2, b_2, Sigma_2 = fit_expert_from_transitions(recent_transitions, mask_2, state.state_dim)
 
+    active_dims_1 = np.where(mask_1 > 0.5)[0].astype(int)
+    active_dims_2 = np.where(mask_2 > 0.5)[0].astype(int)
+
     node_1 = Node(
         node_id=-1,
         mask=mask_1,
+        input_mask=mask_1.copy(),
+        out_idx=active_dims_1,
+        in_idx=active_dims_1,
         W=W_1,
         b=b_1,
         Sigma=Sigma_1,
@@ -404,6 +454,9 @@ def apply_split(
     node_2 = Node(
         node_id=-1,
         mask=mask_2,
+        input_mask=mask_2.copy(),
+        out_idx=active_dims_2,
+        in_idx=active_dims_2,
         W=W_2,
         b=b_2,
         Sigma=Sigma_2,

@@ -211,6 +211,71 @@ def _enforce_motion_probe_blocks(
     return final_blocks, used_count
 
 
+
+
+def _update_grid_routing_from_full(
+    state: AgentState,
+    cfg: AgentConfig,
+    *,
+    periph_full: Iterable[float] | np.ndarray,
+    budget_units: float,
+) -> int | None:
+    """Update routing_scores from a full grid frame (agent-side periphery).
+
+    This is used only when we are in grid mode (grid_width/grid_height provided) and the
+    fovea shape is a disk. It produces a *single connected* disk bias around the
+    center-of-mass of non-zero cells (semantic occupancy), then applies EMA smoothing.
+
+    Returns the chosen center block id (spatial), or None if no non-zero mass.
+    """
+    grid_w = int(getattr(cfg, "grid_width", 0) or 0)
+    grid_h = int(getattr(cfg, "grid_height", 0) or 0)
+    B = int(getattr(cfg, "B", 0) or 0)
+    if grid_w <= 0 or grid_h <= 0 or B <= 0:
+        return None
+    spatial_blocks = B - int(getattr(cfg, "periph_blocks", 0) or 0)
+    if spatial_blocks != grid_w * grid_h:
+        return None
+
+    full_arr = np.asarray(periph_full, dtype=float).reshape(-1)
+    need = grid_w * grid_h
+    if full_arr.size < need:
+        return None
+
+    grid = full_arr[:need].reshape((grid_h, grid_w))
+    nz = grid != 0.0
+    if not np.any(nz):
+        return None
+
+    ys, xs = np.where(nz)
+    cx = int(np.clip(np.round(xs.mean()), 0, grid_w - 1))
+    cy = int(np.clip(np.round(ys.mean()), 0, grid_h - 1))
+    center = int(cy * grid_w + cx)
+
+    # Build a disk bias (radius derived from budget_units; clamp to at least 1).
+    radius = max(1, int(np.round(np.sqrt(max(1.0, float(budget_units)) / np.pi))))
+    bias = np.zeros(B, dtype=float)
+    for dy in range(-radius, radius + 1):
+        yy = cy + dy
+        if yy < 0 or yy >= grid_h:
+            continue
+        for dx in range(-radius, radius + 1):
+            if dx * dx + dy * dy > radius * radius:
+                continue
+            xx = cx + dx
+            if xx < 0 or xx >= grid_w:
+                continue
+            bid = int(yy * grid_w + xx)
+            bias[bid] = 1.0
+
+    ema = float(getattr(cfg, "fovea_routing_ema", 0.5))
+    ema = float(np.clip(ema, 0.0, 1.0))
+    prev = np.asarray(getattr(state.fovea, "routing_scores", np.zeros(B)), dtype=float)
+    if prev.size != B:
+        prev = np.zeros(B, dtype=float)
+    state.fovea.routing_scores = (1.0 - ema) * prev + ema * bias
+    state.fovea.routing_last_t = int(getattr(state, "t", 0))
+    return center
 def _plan_fovea_selection(
     state: AgentState,
     cfg: AgentConfig,
@@ -223,6 +288,10 @@ def _plan_fovea_selection(
     x_prev = np.asarray(getattr(state.buffer, "x_last", np.zeros(D)), dtype=float).reshape(-1)
     periph_dims = _peripheral_dim_set(D, cfg)
     budget_units = float(getattr(cfg, "fovea_blocks_per_step", 0))
+    fovea_shape = str(getattr(cfg, "fovea_shape", "") or "").lower()
+    grid_w = int(getattr(cfg, "grid_width", 0) or 0)
+    grid_h = int(getattr(cfg, "grid_height", 0) or 0)
+    circle_mode = (fovea_shape == "circle" and grid_w > 0 and grid_h > 0)
     routing_vec = x_prev
     if periph_dims and periph_full is not None:
         routing_vec = x_prev.copy()
@@ -233,6 +302,9 @@ def _plan_fovea_selection(
             if 0 <= dim < full_arr.size:
                 routing_vec[int(dim)] = float(full_arr[int(dim)])
     update_fovea_routing_scores(state.fovea, routing_vec, cfg, t=int(getattr(state, "t", 0)))
+    grid_center = None
+    if circle_mode and periph_full is not None and float(getattr(cfg, "fovea_routing_weight", 0.0)) > 0.0:
+        grid_center = _update_grid_routing_from_full(state, cfg, periph_full=periph_full, budget_units=budget_units)
     B = max(0, int(getattr(cfg, "B", 0)))
     routing_scores = np.asarray(
         getattr(state.fovea, "routing_scores", np.zeros(B)), dtype=float
@@ -245,7 +317,7 @@ def _plan_fovea_selection(
         getattr(state.fovea, "block_age", np.zeros(int(getattr(cfg, "B", 0)))), dtype=float
     )
     budget = max(1, int(getattr(cfg, "fovea_blocks_per_step", 0)))
-    if G > 0 and ages_now.size:
+    if (not circle_mode) and G > 0 and ages_now.size:
         mandatory = [int(b) for b in range(int(getattr(cfg, "B", 0))) if float(ages_now[b]) >= float(G)]
         if mandatory and not set(mandatory).intersection(set(blocks_t or [])):
             mandatory = sorted(mandatory, key=lambda b: float(ages_now[b]), reverse=True)
@@ -253,6 +325,8 @@ def _plan_fovea_selection(
     periph_candidates = _peripheral_block_ids(cfg)
     blocks_t, forced_periph_blocks = _enforce_peripheral_blocks(blocks_t or [], cfg, periph_candidates)
     motion_probe_budget = max(0, int(getattr(cfg, "motion_probe_blocks", 0)))
+    if circle_mode:
+        motion_probe_budget = 0
     if budget <= 1:
         motion_probe_budget = 0
     prev_dims = prev_observed_dims if prev_observed_dims is not None else set(
@@ -283,6 +357,7 @@ def _plan_fovea_selection(
         "ages_max": float(np.max(ages_now)) if ages_now.size else None,
         "residuals_max": float(np.max(residuals)) if residuals.size else None,
         "periph_full_provided": periph_full is not None,
+        "grid_routing_center": int(grid_center) if grid_center is not None else None,
     }
     _log_fovea_event("plan_fovea_selection", log_details)
     return pending

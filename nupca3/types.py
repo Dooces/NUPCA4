@@ -329,19 +329,35 @@ class ExpertLibrary:
     footprint_index: Dict[int, List[int]] = field(default_factory=dict)
     next_node_id: int = 0
     revision: int = 0
-
     def add_node(self, node: ExpertNode) -> int:
-        """Insert node; allocate an id if the provided one collides."""
-        node_id = int(getattr(node, "node_id", -1))
-        if node_id < 0 or node_id in self.nodes:
-            node_id = self.next_node_id
-            self.next_node_id += 1
-            node.node_id = node_id
+        """Insert a node into the library and return its id.
+
+        This must NEVER overwrite an existing node id. In earlier builds,
+        `next_node_id` could be stale after `init_library()` populated
+        `nodes` directly, causing `add_node()` to reuse id=0 and overwrite
+        the anchor (and other incumbents). That is a fatal integrity bug
+        and also a major contributor to bloated pickles (large dense W matrices
+        being re-created and persisted).
+        """
+        # Fast path: honor a caller-supplied id if it is unused.
+        node_id = int(getattr(node, 'node_id', -1))
+        if node_id >= 0 and node_id not in self.nodes:
+            self.next_node_id = max(int(self.next_node_id), node_id + 1)
         else:
-            self.next_node_id = max(self.next_node_id, node_id + 1)
-        self.nodes[node_id] = node
+            # Allocate the next free id, robust to stale `next_node_id`.
+            candidate = int(getattr(self, 'next_node_id', 0))
+            # Ensure we start above the current max id if next_node_id is stale.
+            if self.nodes:
+                candidate = max(candidate, max(int(k) for k in self.nodes.keys()) + 1)
+            while candidate in self.nodes:
+                candidate += 1
+            node_id = candidate
+            node.node_id = int(node_id)
+            self.next_node_id = int(node_id) + 1
+
+        self.nodes[int(node_id)] = node
         self.revision += 1
-        return node_id
+        return int(node_id)
 
     def remove_node(self, node_id: int) -> Optional[ExpertNode]:
         """Remove node and clean indices. Returns removed node or None."""

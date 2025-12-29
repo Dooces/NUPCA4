@@ -1136,7 +1136,16 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         "transport_high_confidence_margin_threshold": float(hc_margin),
         "transport_high_confidence_overlap_threshold": int(hc_overlap),
     }
-    if permit_param_t and transport_high_confidence:
+
+    # Conservative clamp when transport evidence is weak: we still *evaluate*
+    # candidates for visibility, but we tighten the update threshold so only
+    # very low-error samples update parameters.
+    theta_learn_low_conf_scale = 0.25
+    theta_learn_eff = float(theta_learn) if bool(transport_high_confidence) else float(theta_learn) * float(theta_learn_low_conf_scale)
+    permit_param_info["theta_learn_eff"] = float(theta_learn_eff)
+    permit_param_info["theta_learn_low_conf_scale"] = float(theta_learn_low_conf_scale)
+
+    if permit_param_t:
         lr = float(getattr(cfg, "lr_expert", 0.0))
         sigma_ema = float(getattr(cfg, "sigma_ema", 0.01))
         observed_dims = set(state.buffer.observed_dims)
@@ -1170,7 +1179,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             obs_idx = np.where(obs_mask)[0]
             err_j = float(np.mean(np.abs(error_vec[obs_idx]))) if obs_idx.size else float("inf")
             err_j_vals.append(err_j)
-            clamped = err_j > theta_learn
+            clamped = err_j > float(theta_learn_eff)
             if clamped:
                 clamped_candidates += 1
             if len(candidate_samples) < sample_cap:
@@ -1222,18 +1231,16 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         _dbg(
             f'A10.3 learn_gate: candidates={candidate_nodes} clamped={clamped_candidates} '
             f'err_j[min/mean/max]={err_min:.6f}/{err_mean:.6f}/{err_max:.6f} '
-            f'theta_learn={theta_learn:.6f}',
+            f'theta_learn_eff={float(theta_learn_eff):.6f} transport_high_conf={bool(transport_high_confidence)}',
             state=state,
         )
+        if not bool(transport_high_confidence):
+            _dbg(
+                'A10.3 learn_gate: low transport confidence -> tightened clamp '
+                f'margin={transport_score_margin:.6f} overlap={int(transport_best_overlap)} prev_obs={len(prev_observed_dims)}',
+                state=state,
+            )
         _dbg(f'A10.3 sgd_updates={len(updated_nodes)} nodes={updated_nodes}', state=state)
-    elif permit_param_t and not transport_high_confidence:
-        _dbg(
-            'A10 learning skipped: transport gate closed '
-            f'margin={transport_score_margin:.6f} (req={hc_margin:.6f}) '
-            f'overlap={int(transport_best_overlap)} (req={hc_overlap}) '
-            f'prev_obs={len(prev_observed_dims)}',
-            state=state,
-        )
 
     _dbg(
         f'A10 permit_param_stats candidate_count={permit_param_info["candidate_count"]} '

@@ -440,6 +440,100 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
 
     periph_blocks = max(0, min(int(getattr(cfg, "periph_blocks", 0)), B))
     periph_ids = [int(b) for b in range(max(0, B - periph_blocks), B)]
+
+    # -------------------------------------------------------------------------
+    # Fovea shape constraint (A16 geometry)
+    #
+    # By default we enforce a *contiguous circular* (disk-like) receptive field
+    # over the spatial block grid (when the block partition is grid-aligned).
+    # This prevents the "budget of disjoint pixels" failure mode where the
+    # selector returns scattered high-residual pixels.
+    #
+    # Notes:
+    # - Periphery blocks (if configured) remain separate and are appended
+    #   explicitly above; the circle constraint applies to spatial blocks only.
+    # - Coverage emergencies (A16.4) still override geometry: mandatory blocks
+    #   are included first.
+    # - If the block partition is not grid-aligned, we fall back to the legacy
+    #   ratio-based selection for the remaining budget.
+    #
+    fovea_shape = str(getattr(cfg, "fovea_shape", "circle")).strip().lower()
+
+    def _grid_block_shape() -> tuple[int, int]:
+        """Return (w, h) of the spatial block grid for geometry-aware selection.
+
+        Prefer the square-grid metadata path (cfg.grid_side/cfg.grid_channels) when
+        present. Fall back to an explicit rectangle metadata path (cfg.grid_width /
+        cfg.grid_height) when provided AND when spatial blocks are one-per-cell.
+        """
+        spatial_blocks = int(B - periph_blocks)
+        if spatial_blocks <= 0:
+            return (0, 0)
+
+        # Path 1: square grid metadata
+        side = int(getattr(cfg, "grid_side", 0))
+        grid_channels = int(getattr(cfg, "grid_channels", 0))
+        base_dim = int(getattr(cfg, "grid_base_dim", 0))
+        if base_dim <= 0:
+            base_dim = int(getattr(cfg, "D", 0))
+        if side > 0 and grid_channels > 0 and base_dim == side * side * grid_channels:
+            s = int(round(math.sqrt(spatial_blocks)))
+            if s * s == spatial_blocks and side % s == 0:
+                return (s, s)
+
+        # Path 2: explicit rectangle metadata (one block per cell, 1-channel grids)
+        grid_w = int(getattr(cfg, "grid_width", 0))
+        grid_h = int(getattr(cfg, "grid_height", 0))
+        grid_channels = max(0, int(getattr(cfg, "grid_channels", 0)))
+        if grid_channels == 0:
+            grid_channels = 1
+        if grid_w > 0 and grid_h > 0:
+            if base_dim == grid_w * grid_h * grid_channels and spatial_blocks == grid_w * grid_h:
+                # We only guarantee correct block-to-cell mapping when each block
+                # corresponds to exactly one cell (common harness case: B == D).
+                if grid_channels == 1:
+                    return (grid_w, grid_h)
+
+        return (0, 0)
+
+    block_grid_w, block_grid_h = _grid_block_shape()
+
+    def _block_xy(b: int) -> tuple[int, int]:
+        # Only valid when block_grid_w > 0
+        return int(b % block_grid_w), int(b // block_grid_w)
+
+    def _circle_fill(
+        *,
+        center: int,
+        candidates: list[int],
+        budget_remain: float,
+    ) -> tuple[list[int], float]:
+        """Select nearest spatial blocks around a center (disk-like fill).
+
+        Candidates must be spatial (exclude periph blocks) and not already used.
+        Selection respects normalized costs and never exceeds budget_remain.
+        """
+        if block_grid_w <= 0 or block_grid_h <= 0:
+            return [], budget_remain
+        cx, cy = _block_xy(int(center))
+        # Stable order: nearest first; break ties by higher score.
+        ordered = sorted(
+            candidates,
+            key=lambda b: (
+                (int(_block_xy(int(b))[0]) - cx) ** 2 + (int(_block_xy(int(b))[1]) - cy) ** 2,
+                -float(scores[int(b)]),
+                int(b),
+            ),
+        )
+        picked: list[int] = []
+        for b in ordered:
+            if budget_remain <= 0.0:
+                break
+            cost_unit = float(norm_costs[int(b)])
+            if cost_unit <= budget_remain:
+                picked.append(int(b))
+                budget_remain = max(0.0, budget_remain - cost_unit)
+        return picked, budget_remain
     coverage_score_tol = float(getattr(cfg, "coverage_score_tol", 0.0))
     coverage_score_threshold = float(getattr(cfg, "coverage_score_threshold", float("-inf")))
     coverage_step = max(1, int(getattr(cfg, "coverage_cursor_step", 1)))
@@ -451,28 +545,39 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
         mandatory = [b for b in range(B) if float(ages[b]) >= float(G)]
         mandatory = sorted(mandatory, key=lambda b: float(ages[b]), reverse=True)
 
+    # Circle fovea geometry: do not inject scattered mandatory blocks (keeps a single disk).
+    # Coverage is still driven by age-weighted scores and coverage-debt/coverage-sweep mechanisms.
+    honor_mandatory_blocks = not (fovea_shape == "circle" and block_grid_w > 0 and block_grid_h > 0)
+
     chosen: list[int] = []
     used: Set[int] = set()
     budget_remaining = budget_units
     for b in periph_ids:
         if b in used:
             continue
+        cost_unit = float(norm_costs[b])
+        if cost_unit > budget_remaining:
+            break
         chosen.append(int(b))
         used.add(int(b))
-        budget_remaining -= float(norm_costs[b])
+        budget_remaining = max(0.0, budget_remaining - cost_unit)
         if budget_remaining <= 0.0:
             budget_remaining = 0.0
             break
     budget_remaining = max(0.0, budget_remaining)
-    for b in mandatory:
-        if b in used:
-            continue
-        chosen.append(int(b))
-        used.add(int(b))
-        budget_remaining -= float(norm_costs[b])
-        if budget_remaining <= 0.0:
-            budget_remaining = 0.0
-            break
+    if honor_mandatory_blocks:
+        for b in mandatory:
+            if b in used:
+                continue
+            cost_unit = float(norm_costs[b])
+            if cost_unit > budget_remaining:
+                break
+            chosen.append(int(b))
+            used.add(int(b))
+            budget_remaining = max(0.0, budget_remaining - cost_unit)
+            if budget_remaining <= 0.0:
+                budget_remaining = 0.0
+                break
     budget_remaining = max(0.0, budget_remaining)
 
     remaining = [b for b in range(B) if b not in used]
@@ -521,30 +626,48 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
             coverage_trigger_flag=False,
             final_budget_remaining=budget_remaining,
         )
-
     def _coverage_select_blocks(
         remaining_set: Set[int],
         budget_remain: float,
         cursor: int,
     ) -> tuple[list[int], float]:
+        """Budget-respecting coverage sweep.
+
+        Important invariant: never select a block if it would exceed the remaining
+        budget. This keeps A16 fixed-budget semantics strict and prevents
+        off-by-one overflow when costs are uniform.
+        """
         selection: list[int] = []
+
+        # Circle-shaped coverage (grid-aligned only). We rotate the center via
+        # the cursor so coverage still sweeps over time.
+        if fovea_shape in {"circle", "disk", "circular"} and block_grid_w > 0:
+            spatial_blocks = int(B - periph_blocks)
+            spatial_blocks = max(1, spatial_blocks)
+            center = int(cursor % spatial_blocks)
+            spatial_candidates = [int(b) for b in remaining_set if int(b) < spatial_blocks]
+            picked, budget_remain = _circle_fill(
+                center=center,
+                candidates=spatial_candidates,
+                budget_remain=budget_remain,
+            )
+            for b in picked:
+                if b in remaining_set:
+                    remaining_set.remove(b)
+                    selection.append(int(b))
+            fovea.coverage_cursor = int((center + coverage_step) % spatial_blocks)
+            return selection, budget_remain
+
+        # Legacy sweep (fallback): linear cursor walk.
         idx = cursor % B if B > 0 else 0
-        forced_pick_done = False
         attempts = 0
-        while remaining_set and (budget_remain > 0.0 or not forced_pick_done) and attempts < 2 * B:
+        while remaining_set and budget_remain > 0.0 and attempts < 2 * B:
             if idx in remaining_set:
                 cost_unit = float(norm_costs[idx])
-                pick = False
                 if cost_unit <= budget_remain:
-                    pick = True
-                    budget_remain = max(0.0, budget_remain - cost_unit)
-                elif not forced_pick_done:
-                    pick = True
-                    forced_pick_done = True
-                    budget_remain = 0.0
-                if pick:
                     selection.append(int(idx))
                     remaining_set.remove(idx)
+                    budget_remain = max(0.0, budget_remain - cost_unit)
             idx = (idx + coverage_step) % B
             attempts += 1
         fovea.coverage_cursor = idx
@@ -575,31 +698,47 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
             coverage_trigger_flag=True,
             final_budget_remaining=budget_remaining,
         )
-
     ratio_order = sorted(
         remaining,
         key=lambda b: float(scores[b]) / float(costs[b]),
         reverse=True,
     )
-    min_norm_cost = float(np.min([norm_costs[b] for b in remaining])) if remaining else 0.0
-    force_pick_allowed = bool(remaining and budget_remaining > 0.0 and min_norm_cost > budget_remaining)
-    forced_pick_done = False
 
-    for b in ratio_order:
-        if b in used:
-            continue
-        cost_unit = float(norm_costs[b])
-        if cost_unit <= budget_remaining:
-            chosen.append(int(b))
-            used.add(int(b))
-            budget_remaining = max(0.0, budget_remaining - cost_unit)
-        elif force_pick_allowed and not forced_pick_done:
-            chosen.append(int(b))
-            used.add(int(b))
-            forced_pick_done = True
-            budget_remaining = 0.0
-        if budget_remaining <= 0.0:
-            break
+    # Circle-shaped fill (grid-aligned only) for the remaining spatial budget.
+    if (
+        fovea_shape in {"circle", "disk", "circular"}
+        and block_grid_w > 0
+        and budget_remaining > 0.0
+        and ratio_order
+    ):
+        spatial_blocks = int(B - periph_blocks)
+        # Choose the best remaining spatial block as the center.
+        center = next((int(b) for b in ratio_order if int(b) < spatial_blocks), None)
+        if center is not None:
+            spatial_candidates = [int(b) for b in ratio_order if int(b) < spatial_blocks and int(b) not in used]
+            circle_selected, budget_remaining = _circle_fill(
+                center=int(center),
+                candidates=spatial_candidates,
+                budget_remain=budget_remaining,
+            )
+            for b in circle_selected:
+                if b in used:
+                    continue
+                chosen.append(int(b))
+                used.add(int(b))
+
+    # Fallback: if any budget remains (or not grid-aligned), fill by ratio.
+    if budget_remaining > 0.0:
+        for b in ratio_order:
+            if b in used:
+                continue
+            cost_unit = float(norm_costs[b])
+            if cost_unit <= budget_remaining:
+                chosen.append(int(b))
+                used.add(int(b))
+                budget_remaining = max(0.0, budget_remaining - cost_unit)
+            if budget_remaining <= 0.0:
+                break
 
     return _log_selection_result(
         chosen,

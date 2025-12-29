@@ -1,6 +1,23 @@
 import json
 import logging
 import numpy as np
+from pathlib import Path
+import sys
+import select
+
+
+try:
+    import termios
+    import tty
+except Exception:  # pragma: no cover
+    termios = None
+    tty = None
+
+try:
+    import msvcrt  # type: ignore
+except Exception:  # pragma: no cover
+    msvcrt = None
+
 from dataclasses import dataclass
 
 from rich.live import Live
@@ -10,15 +27,16 @@ from rich.text import Text
 from rich.console import Group
 
 from nupca3.agent import NUPCA3Agent
+from nupca3.persist import persist_state
 from nupca3.config import AgentConfig
-from nupca3.geometry.fovea import make_observation_set, select_fovea, update_fovea_routing_scores
 from nupca3.types import EnvObs, Action, CurriculumCommand
+from nupca3.geometry.fovea import make_observation_set
 
 # ============================================================
 # OPTIONS (edit these)
 # ============================================================
-HEIGHT = 20
-WIDTH = 20      
+HEIGHT = 24
+WIDTH = 24      
 FPS = 120
 
 MAX_SHAPES = 8
@@ -28,14 +46,14 @@ STREAK_STEPS = 20
 ADD_DELTA_THRESHOLD = 0.02
 
 # High-streak threshold (requested): if mean_delta stays ABOVE this for STREAK_STEPS -> remove a shape
-HIGH_STREAK_THRESHOLD = 0.10
+HIGH_STREAK_THRESHOLD = 0.20
 
 # Which shape-types are "elastic" (participate in object-object collisions).
 # Green squares + magenta circles are elastic; cyan rectangles are non-elastic occluders (foreground).
 ELASTIC_KINDS = {"square", "circle"}
 
 # Fovea budget (scaled for 32x64)
-BUDGET = 32
+BUDGET = 128
 PROBE_K = 64
 MAX_LOST = 240
 
@@ -341,6 +359,19 @@ class NUPCA3GridAgent:
             B=self.D,
             fovea_blocks_per_step=BUDGET,
             fovea_log_every=0,
+            fovea_shape="circle",
+            # Strong routing so the disk centers on salient nonzero regions.
+            fovea_routing_weight=6.0,
+            fovea_routing_ema=0.6,
+            # Keep the footprint contiguous (no extra probe blocks outside the disk).
+            motion_probe_blocks=0,
+            # Geometry metadata so the agent can enforce a circular fovea over a
+            # potentially non-square grid (e.g., 32×64, motion_probe_blocks=0, fovea_shape="circle", fovea_routing_weight=6.0, fovea_routing_ema=0.6). The harness still passes
+            # the full frame; the agent's fovea policy decides what is observed.
+            grid_width=self.W,
+            grid_height=self.H,
+            grid_channels=1,
+            grid_base_dim=self.D,
         )
         self.agent = NUPCA3Agent(self.cfg)
         self.agent.reset(seed=int(seed))
@@ -353,15 +384,6 @@ class NUPCA3GridAgent:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.propagate = False
-
-    def _select_fovea_indices(self) -> np.ndarray:
-        state = self.agent.state
-        update_fovea_routing_scores(state.fovea, state.buffer.x_last, self.cfg, t=int(state.t))
-        blocks_t = select_fovea(state.fovea, self.cfg)
-        obs_set = make_observation_set(blocks_t, self.cfg)
-        if not obs_set:
-            return np.array([], dtype=int)
-        return np.array(sorted(obs_set), dtype=int)
 
     def _log_step(self, *, action, trace, obs_vec, pred_display, mismatch, idx):
         state = self.agent.state
@@ -396,10 +418,21 @@ class NUPCA3GridAgent:
                     "is_anchor": bool(getattr(node, "is_anchor", False)),
                 }
             )
-
         learning_candidates = trace.get("learning_candidates", {}) if isinstance(trace, dict) else {}
-        learning_active = bool(learning_candidates)
-        learning_reason = "learning_candidates_present" if learning_active else "no_learning_candidates"
+        permit_param_info = trace.get("permit_param_info", {}) if isinstance(trace, dict) else {}
+        cand_count = int(learning_candidates.get("candidates", 0)) if isinstance(learning_candidates, dict) else 0
+        clamped_count = int(learning_candidates.get("clamped", 0)) if isinstance(learning_candidates, dict) else 0
+        updated_count = int(permit_param_info.get("updated", 0)) if isinstance(permit_param_info, dict) else 0
+
+        learning_active = updated_count > 0
+        if not bool(trace.get("permit_param", False)) if isinstance(trace, dict) else False:
+            learning_reason = "permit_closed"
+        elif cand_count <= 0:
+            learning_reason = "no_candidate_nodes"
+        elif updated_count <= 0:
+            learning_reason = "all_clamped_or_lr_zero"
+        else:
+            learning_reason = "updated_nodes"
 
         log_payload = {
             "t": int(trace.get("t", getattr(state, "t", 0))) if isinstance(trace, dict) else int(getattr(state, "t", 0)),
@@ -425,6 +458,10 @@ class NUPCA3GridAgent:
                 "active": learning_active,
                 "reason": learning_reason,
                 "candidates": learning_candidates,
+                "candidate_count": cand_count,
+                "clamped_count": clamped_count,
+                "updated_count": updated_count,
+                "theta_learn_eff": float(permit_param_info.get("theta_learn_eff", float("nan"))) if isinstance(permit_param_info, dict) else float("nan"),
             },
             "constellation_error": {
                 "block_residual_mean": float(
@@ -453,10 +490,33 @@ class NUPCA3GridAgent:
         if obs_vec.size != self.D:
             obs_vec = np.resize(obs_vec, (self.D,))
 
-        idx = self._select_fovea_indices()
-        x_partial = {int(i): float(obs_vec[int(i)]) for i in idx}
-        env_obs = EnvObs(x_partial=x_partial, opp=0.0, danger=0.0)
+        # Axiom -1: the harness does not choose what to observe.
+        # The harness asks the agent to precompute its *own* fovea selection, then
+        # samples exactly those dims. This preserves strict fixed-budget semantics
+        # while keeping all decisions inside the agent.
+        blocks = self.agent.prepare_fovea_selection(periph_full=obs_vec)
+        O_req = make_observation_set(blocks, self.cfg)
+        dims = sorted(int(k) for k in O_req if 0 <= int(k) < self.D)
+        x_partial = {int(k): float(obs_vec[int(k)]) for k in dims}
+        env_obs = EnvObs(
+            x_partial=x_partial,
+            opp=0.0,
+            danger=0.0,
+            # Full frame is provided as a transient routing signal only; it is not
+            # treated as observed unless selected by O_req.
+            x_full=obs_vec,
+            periph_full=obs_vec,
+            allow_full_state=False,
+        )
         action, trace = self.agent.step(env_obs)
+
+        # What the agent actually treated as observed this step.
+        obs_dims = sorted(
+            int(d)
+            for d in (getattr(self.agent.state.buffer, "observed_dims", set()) or set())
+            if 0 <= int(d) < self.D
+        )
+        idx = np.asarray(obs_dims, dtype=int)
 
         pred_vec = np.asarray(getattr(self.agent.state.buffer, "x_prior", np.zeros(self.D)), dtype=float)
         if pred_vec.size != self.D:
@@ -497,19 +557,17 @@ class NUPCA3GridAgent:
 # ============================================================
 
 def render_dashboard(t, H, W, env_vec, pred_vec, seen_vec, unknown_mask, fovea_idx, mismatch,
-                     tracks_alive, underlay_mask, n_shapes, low_streak, high_streak):
+                     fovea_blocks, underlay_mask, n_shapes, action_cmd):
     mean_d = float(np.mean(mismatch))
     max_d = float(np.max(mismatch))
 
     header = Text()
     header.append(f"t={t:6d}  ", style="bold")
     header.append(f"env_shapes={n_shapes:2d}/{MAX_SHAPES}  ", style="magenta")
-    header.append(f"agent_tracks={tracks_alive:2d}  ", style="magenta")
+    header.append(f"fovea_blocks={fovea_blocks:2d}  ", style="magenta")
     header.append(f"meanΔ={mean_d:.4f}  maxΔ={max_d:.1f}  ", style="yellow")
-    header.append(f"low={low_streak:3d}/{STREAK_STEPS}  ", style="green")
-    header.append(f"high={high_streak:3d}/{STREAK_STEPS}  ", style="red")
-    header.append(f"high_thr={HIGH_STREAK_THRESHOLD:.2f}", style="red")
-
+    header.append(f"cmd={action_cmd}", style="cyan")
+            
     env_panel = Panel(grid_text(env_vec, H, W, underlay_mask=underlay_mask), title="ENV", border_style="white")
     pred_panel = Panel(grid_text(pred_vec, H, W), title="PRED", border_style="white")
     seen_panel = Panel(
@@ -525,6 +583,53 @@ def render_dashboard(t, H, W, env_vec, pred_vec, seen_vec, unknown_mask, fovea_i
 # Run
 # ============================================================
 
+
+class KeyPoller:
+    """Cross-platform single-key polling (no Enter).
+
+    - On Unix, uses cbreak + select.
+    - On Windows, uses msvcrt.
+    """
+
+    def __init__(self) -> None:
+        self._fd = None
+        self._old = None
+
+    def __enter__(self):
+        if msvcrt is None and termios is not None and tty is not None and sys.stdin.isatty():
+            self._fd = sys.stdin.fileno()
+            self._old = termios.tcgetattr(self._fd)
+            tty.setcbreak(self._fd)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._fd is not None and self._old is not None and termios is not None:
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+        self._fd = None
+        self._old = None
+        return False
+
+    def poll(self) -> str | None:
+        if msvcrt is not None:
+            try:
+                if msvcrt.kbhit():
+                    ch = msvcrt.getwch()
+                    return ch
+            except Exception:
+                return None
+            return None
+
+        if termios is None or tty is None or not sys.stdin.isatty():
+            return None
+        try:
+            r, _, _ = select.select([sys.stdin], [], [], 0)
+            if r:
+                return sys.stdin.read(1)
+        except Exception:
+            return None
+        return None
+
+
 if __name__ == "__main__":
     env = SemanticOcclusionEnv(H=HEIGHT, W=WIDTH, seed=1)
     agent = NUPCA3GridAgent(H=HEIGHT, W=WIDTH, seed=2)
@@ -534,34 +639,40 @@ if __name__ == "__main__":
     step_out = agent.step(obs)
     env.apply_action(step_out.action)
 
-    with Live(screen=True, refresh_per_second=FPS) as live:
-        while True:
-            t += 1
+    PERSIST_PATH = Path("agent_state.pkl")
 
-            env.step_physics()
-            obs = env.render_visible()
+    with KeyPoller() as keys, Live(screen=True, refresh_per_second=FPS) as live:
+        try:
+            while True:
+                t += 1
 
-            step_out = agent.step(obs)
-            env.apply_action(step_out.action)
+                key = keys.poll()
+                if key in ("q", "Q"):
+                    persist_state(agent.agent, PERSIST_PATH)
+                    break
 
-            low_streak = int(getattr(agent.agent.state, "low_streak", 0))
-            high_streak = int(getattr(agent.agent.state, "high_streak", 0))
+                env.step_physics()
+                obs = env.render_visible()
 
-            live.update(
-                render_dashboard(
-                    t=t,
-                    H=HEIGHT,
-                    W=WIDTH,
-                    env_vec=obs,
-                    pred_vec=step_out.pred,
-                    seen_vec=step_out.seen,
-                    unknown_mask=step_out.unknown,
-                    fovea_idx=step_out.fidx,
-                    mismatch=step_out.mismatch,
-                    tracks_alive=len(getattr(agent.agent.state.fovea, "current_blocks", set())),
-                    underlay_mask=agent.underlay_mask,
-                    n_shapes=len(env.objs),
-                    low_streak=low_streak,
-                    high_streak=high_streak,
+                step_out = agent.step(obs)
+                env.apply_action(step_out.action)
+
+                live.update(
+                    render_dashboard(
+                        t=t,
+                        H=HEIGHT,
+                        W=WIDTH,
+                        env_vec=obs,
+                        pred_vec=step_out.pred,
+                        seen_vec=step_out.seen,
+                        unknown_mask=step_out.unknown,
+                        fovea_idx=step_out.fidx,
+                        mismatch=step_out.mismatch,
+                        fovea_blocks=len(getattr(agent.agent.state.fovea, "current_blocks", set())),
+                        underlay_mask=agent.underlay_mask,
+                        n_shapes=len(env.objs),
+                        action_cmd=str(getattr(step_out.action, "command", "")),
+                    )
                 )
-            )
+        except KeyboardInterrupt:
+            persist_state(agent.agent, PERSIST_PATH)

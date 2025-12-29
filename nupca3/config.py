@@ -206,6 +206,12 @@ class AgentConfig:
     binding_shift_radius: int = 1
     binding_rotations: bool = True
     grid_side: int = 0
+    # Optional explicit grid dimensions for non-square harnesses (metadata only).
+    # When provided (and when B matches grid_width*grid_height for 1-channel
+    # grids), geometry-aware fovea selection can enforce a circular receptive
+    # field over a rectangular plane.
+    grid_width: int = 0
+    grid_height: int = 0
     grid_channels: int = 0
     grid_color_channels: int = 0
     grid_shape_channels: int = 0
@@ -313,6 +319,9 @@ class AgentConfig:
     periph_bins: int = 0
     periph_blocks: int = 0
     periph_channels: int = 1
+    # Spatial fovea geometry constraint. "circle" enforces a single disk-like
+    # observation footprint in grid-aware environments.
+    fovea_shape: str = "circle"
     fovea_routing_weight: float = 0.0
     fovea_routing_ema: float = 0.0
     motion_probe_blocks: int = 2

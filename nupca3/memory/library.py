@@ -139,6 +139,14 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
             lib.nodes[node_id] = transport_node
             lib.footprint_index.setdefault(b, []).append(node_id)
             node_id += 1
+    # IMPORTANT: init_library populates lib.nodes directly (not via lib.add_node),
+    # so we must advance next_node_id to avoid id collisions that overwrite incumbents
+    # (especially the anchor at node_id=0).
+    if getattr(lib, 'nodes', None):
+        lib.next_node_id = max(int(k) for k in lib.nodes.keys()) + 1
+    else:
+        lib.next_node_id = 0
+
     _initialize_dag_neighbors(lib)
     return lib
 
