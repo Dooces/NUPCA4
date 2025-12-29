@@ -53,7 +53,7 @@ HIGH_STREAK_THRESHOLD = 0.20
 ELASTIC_KINDS = {"square", "circle"}
 
 # Fovea budget (scaled for 32x64)
-BUDGET = 128
+BUDGET = 256
 PROBE_K = 64
 MAX_LOST = 240
 
