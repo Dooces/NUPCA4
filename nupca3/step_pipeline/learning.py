@@ -99,8 +99,8 @@ class LearningProcessor:
         self.high_streak: int = 0
 
     def update_streaks(self, mean_delta: float) -> None:
-        ADD_DELTA_THRESHOLD = 0.02
-        HIGH_DELTA_THRESHOLD = 0.10
+        ADD_DELTA_THRESHOLD = 0.08
+        HIGH_DELTA_THRESHOLD = 0.15
         STREAK_STEPS = 20  # Align with original test harness constant
 
         if mean_delta < ADD_DELTA_THRESHOLD:

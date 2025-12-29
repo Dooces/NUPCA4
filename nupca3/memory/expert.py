@@ -25,6 +25,23 @@ from ..types import ExpertNode
 
 def predict(node: ExpertNode, x: np.ndarray) -> np.ndarray:
     """Local 1-step prediction mu_j(t+1|t) = W_j x + b_j, masked to node.mask."""
+    def _bias_for_out(out_idx: np.ndarray, D: int) -> np.ndarray:
+        """Return a bias vector aligned with out_idx.
+
+        Supports both legacy full-length biases (shape (D,)) and compact biases
+        stored in out_idx-ordering (shape (|out_idx|,)).
+        """
+        b = np.asarray(getattr(node, "b", np.zeros(0, dtype=float)), dtype=float).reshape(-1)
+        if b.size == D:
+            return b[out_idx]
+        if b.size == out_idx.size:
+            return b
+        # Defensive: tolerate malformed sizes by padding/truncating.
+        out = np.zeros(int(out_idx.size), dtype=float)
+        n = min(int(out.size), int(b.size))
+        if n > 0:
+            out[:n] = b[:n]
+        return out
     def _compact_indices():
         out_idx = getattr(node, "out_idx", None)
         in_idx = getattr(node, "in_idx", None)
@@ -56,7 +73,7 @@ def predict(node: ExpertNode, x: np.ndarray) -> np.ndarray:
             out_idx, in_idx = _compact_indices()
             y_canon = np.zeros(D, dtype=float)
             if out_idx.size and in_idx.size:
-                y_canon[out_idx] = node.W @ x_masked[in_idx] + node.b[out_idx]
+                y_canon[out_idx] = node.W @ x_masked[in_idx] + _bias_for_out(out_idx, D)
         y_world = np.zeros_like(y_canon)
         for i in range(D):
             j = int(fwd[i])
@@ -73,7 +90,7 @@ def predict(node: ExpertNode, x: np.ndarray) -> np.ndarray:
     out_idx, in_idx = _compact_indices()
     y = np.zeros(D, dtype=float)
     if out_idx.size and in_idx.size:
-        y[out_idx] = node.W @ x_masked[in_idx] + node.b[out_idx]
+        y[out_idx] = node.W @ x_masked[in_idx] + _bias_for_out(out_idx, D)
     return y
 
 
@@ -83,7 +100,25 @@ def precision_vector(node: ExpertNode) -> np.ndarray:
     Skeleton: uses diagonal of Sigma^{-1} where defined; zeros elsewhere.
     """
     # Avoid full inversion; treat Sigma as diagonal placeholder.
-    diag = np.diag(node.Sigma) if node.Sigma.ndim == 2 else node.Sigma
+    diag_raw = np.diag(node.Sigma) if node.Sigma.ndim == 2 else node.Sigma
+    diag_raw = np.asarray(diag_raw, dtype=float).reshape(-1)
+    # Expand compact Sigma (stored on out_idx ordering) to a global D-length diag.
+    D = int(getattr(node, "mask", np.zeros(0)).shape[0])
+    diag: np.ndarray
+    if D > 0 and diag_raw.size == D:
+        diag = diag_raw
+    else:
+        out_idx = getattr(node, "out_idx", None)
+        if D <= 0:
+            D = int(diag_raw.size)
+        diag = np.full(D, np.inf, dtype=float)
+        if out_idx is not None:
+            out_idx = np.asarray(out_idx, dtype=int).reshape(-1)
+            if out_idx.size == diag_raw.size:
+                diag[out_idx] = diag_raw
+        else:
+            # Fallback: if we cannot map compact->global, treat as no coverage.
+            pass
     binding = getattr(node, "binding_map", None)
     if binding is not None:
         fwd = np.asarray(getattr(binding, "forward", []), dtype=int)
@@ -95,7 +130,8 @@ def precision_vector(node: ExpertNode) -> np.ndarray:
                 prec[j] = 1.0 / np.maximum(diag[i], 1e-8)
         return prec
     prec = np.zeros_like(diag, dtype=float)
-    prec[node.mask.astype(bool)] = 1.0 / np.maximum(diag[node.mask.astype(bool)], 1e-8)
+    mask_b = np.asarray(node.mask, dtype=bool)
+    prec[mask_b] = 1.0 / np.maximum(diag[mask_b], 1e-8)
     return prec
 
 
@@ -178,7 +214,21 @@ def sgd_update(
         if out_idx.size == 0 or in_idx.size == 0:
             return
         x_in_compact = x_in[in_idx]
-        y_hat_out = node.W @ x_in_compact + node.b[out_idx]
+        b = np.asarray(getattr(node, "b", np.zeros(0, dtype=float)), dtype=float).reshape(-1)
+        if b.size == D:
+            b_out = b[out_idx]
+            b_is_compact = False
+        elif b.size == out_idx.size:
+            b_out = b
+            b_is_compact = True
+        else:
+            b_out = np.zeros(int(out_idx.size), dtype=float)
+            b_is_compact = True
+            n = min(int(b_out.size), int(b.size))
+            if n > 0:
+                b_out[:n] = b[:n]
+
+        y_hat_out = node.W @ x_in_compact + b_out
         err_out = (y_target[out_idx] - y_hat_out)
         out_mask_local = out_mask[out_idx]
         out_mask_b_local = out_mask_local > 0.0
@@ -188,18 +238,43 @@ def sgd_update(
         rows = np.where(out_mask_b_local)[0]
         for r in rows:
             node.W[r, :] += lr * err_out[r] * x_in_compact
-            node.b[out_idx[r]] += lr * err_out[r]
+            if b_is_compact:
+                node.b[r] += lr * err_out[r]
+            else:
+                node.b[out_idx[r]] += lr * err_out[r]
 
     # Update diagonal covariance estimate for updated outputs.
     if node.Sigma.ndim == 2:
         diag = np.diag(node.Sigma).copy()
     else:
-        diag = node.Sigma.copy()
+        diag = np.asarray(node.Sigma, dtype=float).reshape(-1).copy()
     alpha = float(np.clip(sigma_ema, 0.0, 1.0))
     if node.W.ndim == 2 and node.W.shape == (D, D):
-        diag[rows] = (1.0 - alpha) * diag[rows] + alpha * (err[rows] ** 2)
+        prev = diag[rows]
+        upd = (1.0 - alpha) * prev + alpha * (err[rows] ** 2)
+        # If initialized with +inf (meaning "no coverage"), the EMA would stay +inf forever.
+        # On the first update, collapse +inf to the observed squared residual.
+        if np.any(~np.isfinite(prev)):
+            upd = np.asarray(upd, dtype=float)
+            upd[~np.isfinite(prev)] = (err[rows][~np.isfinite(prev)] ** 2)
+        diag[rows] = upd
     else:
-        diag[out_idx[rows]] = (1.0 - alpha) * diag[out_idx[rows]] + alpha * (err_out[rows] ** 2)
+        # Compact Sigma is stored in out_idx-ordering (len(out_idx),).
+        if diag.size == D:
+            idx = out_idx[rows]
+            prev = diag[idx]
+            upd = (1.0 - alpha) * prev + alpha * (err_out[rows] ** 2)
+            if np.any(~np.isfinite(prev)):
+                upd = np.asarray(upd, dtype=float)
+                upd[~np.isfinite(prev)] = (err_out[rows][~np.isfinite(prev)] ** 2)
+            diag[idx] = upd
+        else:
+            prev = diag[rows]
+            upd = (1.0 - alpha) * prev + alpha * (err_out[rows] ** 2)
+            if np.any(~np.isfinite(prev)):
+                upd = np.asarray(upd, dtype=float)
+                upd[~np.isfinite(prev)] = (err_out[rows][~np.isfinite(prev)] ** 2)
+            diag[rows] = upd
     diag = np.maximum(diag, 1e-8)
     if node.Sigma.ndim == 2:
         node.Sigma = np.diag(diag)

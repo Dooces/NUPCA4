@@ -43,7 +43,7 @@ MAX_SHAPES = 8
 MIN_SHAPES = 1
 
 STREAK_STEPS = 20
-ADD_DELTA_THRESHOLD = 0.02
+ADD_DELTA_THRESHOLD = 0.09
 
 # High-streak threshold (requested): if mean_delta stays ABOVE this for STREAK_STEPS -> remove a shape
 HIGH_STREAK_THRESHOLD = 0.20

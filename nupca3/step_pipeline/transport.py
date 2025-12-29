@@ -555,7 +555,7 @@ def _update_transport_learning_state(
 
 
 def synthesize_action(state: AgentState) -> Action:
-    STREAK_STEPS = 20
+    STREAK_STEPS = 25
     low_streak = getattr(state, 'low_streak', 0)
     high_streak = getattr(state, 'high_streak', 0)
 

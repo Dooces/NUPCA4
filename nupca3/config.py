@@ -227,18 +227,6 @@ class AgentConfig:
     working_set_linger_steps: int = 0
 
     # =========================================================================
-    # A4 — Library initialization (implementation detail)
-    # =========================================================================
-    # If True, seed one per-block expert for each footprint block at init.
-    # If False, only the lightweight global anchor is created and the library
-    # grows solely via REST-time structural edits (A14/A12).
-    library_seed_block_experts: bool = True
-
-    # Anchor input width (kept tiny to avoid allocating a dense D×D anchor W).
-    # The anchor uses a compact W with shape (D, library_anchor_inputs).
-    library_anchor_inputs: int = 1
-
-    # =========================================================================
     # A3 — Stability / introversion thresholds used by permit_struct
     # =========================================================================
     nu_max: float = 0.02
@@ -250,6 +238,9 @@ class AgentConfig:
     # =========================================================================
     sigma_floor: float = 1e-3
     sigma_ema: float = 0.01
+    # Initial per-dimension uncertainty for newly created nodes (untrained).
+    # Use +inf to indicate "no coverage" in fusion until the node has updated at least once.
+    sigma_init_untrained: float = float("inf")
 
     # A7.4 rollout uncertainty propagation / confidence mapping
     rollout_eta_proc: float = 0.01
