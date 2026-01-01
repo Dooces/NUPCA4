@@ -37,7 +37,9 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+
 from .geometry.block_spec import BlockSpec, BlockView
+
 
 # =============================================================================
 # Core aliases
@@ -275,6 +277,17 @@ class ExpertNode:
     # Activity tracking (A12.3 PRUNE)
     last_active_step: int = 0
     created_step: int = 0
+    # ----- NUPCA5 signature retrieval (A4.3′) -----
+    # Immutable 64-bit retrieval address captured at unit creation time from:
+    #   committed metadata + ephemeral periphery gist (NOT persisted).
+    # This MUST NOT be a per-node salt and MUST NOT depend on node_id.
+    unit_sig64: int = 0
+
+    # Structural flags used by retrieval/budgeting; stored explicitly (no setattr shims).
+    is_transport: bool = False
+
+    # Bookkeeping for deterministic sig_index removal (set by library on registration).
+    sig_index_blocks: Tuple[int, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         # Normalize arrays
@@ -299,6 +312,19 @@ class ExpertNode:
             self.cost = float(self.L)
         else:
             self.L = float(self.cost)
+
+        # NUPCA5: unit_sig64 is a 64-bit stored address (A4.3′). Enforce width.
+        try:
+            self.unit_sig64 = int(self.unit_sig64) & 0xFFFFFFFFFFFFFFFF
+        except Exception:
+            self.unit_sig64 = 0
+
+        self.is_transport = bool(self.is_transport)
+
+        if self.sig_index_blocks is None:
+            self.sig_index_blocks = tuple()
+        else:
+            self.sig_index_blocks = tuple(int(b) for b in self.sig_index_blocks)
 
     @property
     def block_id(self) -> int:
@@ -329,6 +355,8 @@ class ExpertLibrary:
     footprint_index: Dict[int, List[int]] = field(default_factory=dict)
     next_node_id: int = 0
     revision: int = 0
+    # NUPCA5 packed signature index (optional)
+    sig_index: Any = None
     def add_node(self, node: ExpertNode) -> int:
         """Insert a node into the library and return its id.
 
@@ -374,9 +402,451 @@ class ExpertLibrary:
         self.revision += 1
         return node
 
+    # ---------------------------------------------------------------------
+    # v5 durability boundary (A0.BUDGET.6)
+    # ---------------------------------------------------------------------
+    def __getstate__(self) -> dict:
+        # Structural compliance: the in-memory dict/set object graph is NOT a durable DB.
+        # Persist via PackedExpertLibrary (NPZ / arrays), not pickle.
+        raise TypeError(
+            "ExpertLibrary is not picklable. Persist via PackedExpertLibrary (arrays/NPZ) "
+            "to satisfy v5 A0.BUDGET.6."
+        )
+
+    def pack(self) -> "PackedExpertLibrary":
+        return pack_expert_library(self)
+
+    @staticmethod
+    def unpack(packed: "PackedExpertLibrary") -> "ExpertLibrary":
+        return unpack_expert_library(packed)
+
 
 # Back-compat: some files historically called this "Library".
 Library = ExpertLibrary
+
+
+
+
+# =============================================================================
+# Packed durability format (v5 A0.BUDGET.6)
+# =============================================================================
+
+_PACKED_LIB_VERSION = "v5.packed.1"
+
+
+@dataclass(frozen=True)
+class PackedExpertLibrary:
+    """Packed, array-only durable form of the expert library.
+
+    This is the ONLY supported durable representation of the library in v5 mode.
+    It contains no Python dict/set/list object graph as stored state; only arrays
+    and scalar ints suitable for NPZ persistence.
+    """
+    version: str
+
+    # Node scalars (aligned by index i)
+    node_ids: np.ndarray              # int32 (N,)
+    footprint: np.ndarray             # int32 (N,)
+    is_anchor: np.ndarray             # uint8 (N,)
+    is_transport: np.ndarray          # uint8 (N,)
+    reliability: np.ndarray           # float32 (N,)
+    cost: np.ndarray                  # float32 (N,)
+    created_step: np.ndarray          # int32 (N,)
+    last_active_step: np.ndarray      # int32 (N,)
+    unit_sig64: np.ndarray            # uint64 (N,)
+
+    next_node_id: int
+    revision: int
+
+    # Ragged parameter blobs
+    mask_data: np.ndarray             # float32 (sum_i |mask_i|)
+    mask_indptr: np.ndarray           # int32 (N+1,)
+
+    input_mask_data: np.ndarray       # float32 (sum_i |input_mask_i|)
+    input_mask_indptr: np.ndarray     # int32 (N+1,)
+    has_input_mask: np.ndarray        # uint8 (N,)
+
+    W_data: np.ndarray                # float32 (sum_i |W_i|)
+    W_indptr: np.ndarray              # int32 (N+1,)
+    W_shape0: np.ndarray              # int32 (N,)
+    W_shape1: np.ndarray              # int32 (N,)
+
+    b_data: np.ndarray                # float32 (sum_i |b_i|)
+    b_indptr: np.ndarray              # int32 (N+1,)
+
+    Sigma_data: np.ndarray            # float32 (sum_i |Sigma_i|)
+    Sigma_indptr: np.ndarray          # int32 (N+1,)
+    Sigma_shape0: np.ndarray          # int32 (N,)
+    Sigma_shape1: np.ndarray          # int32 (N,)
+
+    out_idx_data: np.ndarray          # int32 (sum_i |out_idx_i|)
+    out_idx_indptr: np.ndarray        # int32 (N+1,)
+    has_out_idx: np.ndarray           # uint8 (N,)
+
+    in_idx_data: np.ndarray           # int32 (sum_i |in_idx_i|)
+    in_idx_indptr: np.ndarray         # int32 (N+1,)
+    has_in_idx: np.ndarray            # uint8 (N,)
+
+    # Edges (parent -> child) for DAG bookkeeping
+    edge_parent: np.ndarray           # int32 (E,)
+    edge_child: np.ndarray            # int32 (E,)
+
+    def as_npz_dict(self) -> Dict[str, np.ndarray]:
+        """Return an array-only dict suitable for np.savez."""
+        return {
+            "version": np.asarray([self.version], dtype="U"),
+            "node_ids": self.node_ids,
+            "footprint": self.footprint,
+            "is_anchor": self.is_anchor,
+            "is_transport": self.is_transport,
+            "reliability": self.reliability,
+            "cost": self.cost,
+            "created_step": self.created_step,
+            "last_active_step": self.last_active_step,
+            "unit_sig64": self.unit_sig64,
+            "next_node_id": np.asarray([int(self.next_node_id)], dtype=np.int64),
+            "revision": np.asarray([int(self.revision)], dtype=np.int64),
+            "mask_data": self.mask_data,
+            "mask_indptr": self.mask_indptr,
+            "input_mask_data": self.input_mask_data,
+            "input_mask_indptr": self.input_mask_indptr,
+            "has_input_mask": self.has_input_mask,
+            "W_data": self.W_data,
+            "W_indptr": self.W_indptr,
+            "W_shape0": self.W_shape0,
+            "W_shape1": self.W_shape1,
+            "b_data": self.b_data,
+            "b_indptr": self.b_indptr,
+            "Sigma_data": self.Sigma_data,
+            "Sigma_indptr": self.Sigma_indptr,
+            "Sigma_shape0": self.Sigma_shape0,
+            "Sigma_shape1": self.Sigma_shape1,
+            "out_idx_data": self.out_idx_data,
+            "out_idx_indptr": self.out_idx_indptr,
+            "has_out_idx": self.has_out_idx,
+            "in_idx_data": self.in_idx_data,
+            "in_idx_indptr": self.in_idx_indptr,
+            "has_in_idx": self.has_in_idx,
+            "edge_parent": self.edge_parent,
+            "edge_child": self.edge_child,
+        }
+
+    @staticmethod
+    def from_npz_dict(d: Dict[str, np.ndarray]) -> "PackedExpertLibrary":
+        v = str(np.asarray(d["version"]).reshape(-1)[0])
+        next_node_id = int(np.asarray(d["next_node_id"]).reshape(-1)[0])
+        revision = int(np.asarray(d["revision"]).reshape(-1)[0])
+        return PackedExpertLibrary(
+            version=v,
+            node_ids=np.asarray(d["node_ids"], dtype=np.int32),
+            footprint=np.asarray(d["footprint"], dtype=np.int32),
+            is_anchor=np.asarray(d["is_anchor"], dtype=np.uint8),
+            is_transport=np.asarray(d["is_transport"], dtype=np.uint8),
+            reliability=np.asarray(d["reliability"], dtype=np.float32),
+            cost=np.asarray(d["cost"], dtype=np.float32),
+            created_step=np.asarray(d["created_step"], dtype=np.int32),
+            last_active_step=np.asarray(d["last_active_step"], dtype=np.int32),
+            unit_sig64=np.asarray(d["unit_sig64"], dtype=np.uint64),
+            next_node_id=next_node_id,
+            revision=revision,
+            mask_data=np.asarray(d["mask_data"], dtype=np.float32),
+            mask_indptr=np.asarray(d["mask_indptr"], dtype=np.int32),
+            input_mask_data=np.asarray(d["input_mask_data"], dtype=np.float32),
+            input_mask_indptr=np.asarray(d["input_mask_indptr"], dtype=np.int32),
+            has_input_mask=np.asarray(d["has_input_mask"], dtype=np.uint8),
+            W_data=np.asarray(d["W_data"], dtype=np.float32),
+            W_indptr=np.asarray(d["W_indptr"], dtype=np.int32),
+            W_shape0=np.asarray(d["W_shape0"], dtype=np.int32),
+            W_shape1=np.asarray(d["W_shape1"], dtype=np.int32),
+            b_data=np.asarray(d["b_data"], dtype=np.float32),
+            b_indptr=np.asarray(d["b_indptr"], dtype=np.int32),
+            Sigma_data=np.asarray(d["Sigma_data"], dtype=np.float32),
+            Sigma_indptr=np.asarray(d["Sigma_indptr"], dtype=np.int32),
+            Sigma_shape0=np.asarray(d["Sigma_shape0"], dtype=np.int32),
+            Sigma_shape1=np.asarray(d["Sigma_shape1"], dtype=np.int32),
+            out_idx_data=np.asarray(d["out_idx_data"], dtype=np.int32),
+            out_idx_indptr=np.asarray(d["out_idx_indptr"], dtype=np.int32),
+            has_out_idx=np.asarray(d["has_out_idx"], dtype=np.uint8),
+            in_idx_data=np.asarray(d["in_idx_data"], dtype=np.int32),
+            in_idx_indptr=np.asarray(d["in_idx_indptr"], dtype=np.int32),
+            has_in_idx=np.asarray(d["has_in_idx"], dtype=np.uint8),
+            edge_parent=np.asarray(d["edge_parent"], dtype=np.int32),
+            edge_child=np.asarray(d["edge_child"], dtype=np.int32),
+        )
+
+
+def _pack_ragged_f32(arrs: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    lens = np.asarray([int(np.asarray(a).size) for a in arrs], dtype=np.int32)
+    indptr = np.empty((lens.size + 1,), dtype=np.int32)
+    indptr[0] = 0
+    if lens.size:
+        indptr[1:] = np.cumsum(lens, dtype=np.int64).astype(np.int32)
+    else:
+        indptr[1:] = 0
+    total = int(indptr[-1])
+    if total == 0:
+        return np.zeros((0,), dtype=np.float32), indptr
+    data = np.empty((total,), dtype=np.float32)
+    k = 0
+    for a in arrs:
+        a1 = np.asarray(a, dtype=np.float32).reshape(-1)
+        n = int(a1.size)
+        if n:
+            data[k:k+n] = a1
+            k += n
+    return data, indptr
+
+
+def _pack_ragged_i32(arrs: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    lens = np.asarray([int(np.asarray(a).size) for a in arrs], dtype=np.int32)
+    indptr = np.empty((lens.size + 1,), dtype=np.int32)
+    indptr[0] = 0
+    if lens.size:
+        indptr[1:] = np.cumsum(lens, dtype=np.int64).astype(np.int32)
+    else:
+        indptr[1:] = 0
+    total = int(indptr[-1])
+    if total == 0:
+        return np.zeros((0,), dtype=np.int32), indptr
+    data = np.empty((total,), dtype=np.int32)
+    k = 0
+    for a in arrs:
+        a1 = np.asarray(a, dtype=np.int32).reshape(-1)
+        n = int(a1.size)
+        if n:
+            data[k:k+n] = a1
+            k += n
+    return data, indptr
+
+
+def _unpack_ragged(data: np.ndarray, indptr: np.ndarray, i: int) -> np.ndarray:
+    s = int(indptr[i])
+    e = int(indptr[i + 1])
+    if e <= s:
+        return np.zeros((0,), dtype=data.dtype)
+    return np.asarray(data[s:e])
+
+
+def pack_expert_library(lib: ExpertLibrary) -> PackedExpertLibrary:
+    node_ids = np.asarray(sorted(int(k) for k in lib.nodes.keys()), dtype=np.int32)
+    N = int(node_ids.size)
+
+    footprint = np.empty((N,), dtype=np.int32)
+    is_anchor = np.zeros((N,), dtype=np.uint8)
+    is_transport = np.zeros((N,), dtype=np.uint8)
+    reliability = np.empty((N,), dtype=np.float32)
+    cost = np.empty((N,), dtype=np.float32)
+    created_step = np.empty((N,), dtype=np.int32)
+    last_active_step = np.empty((N,), dtype=np.int32)
+    unit_sig64 = np.empty((N,), dtype=np.uint64)
+
+    masks: List[np.ndarray] = []
+    input_masks: List[np.ndarray] = []
+    has_input_mask = np.zeros((N,), dtype=np.uint8)
+
+    Ws: List[np.ndarray] = []
+    W_shape0 = np.zeros((N,), dtype=np.int32)
+    W_shape1 = np.zeros((N,), dtype=np.int32)
+
+    bs: List[np.ndarray] = []
+    Sigmas: List[np.ndarray] = []
+    Sigma_shape0 = np.zeros((N,), dtype=np.int32)
+    Sigma_shape1 = np.zeros((N,), dtype=np.int32)
+
+    out_idxs: List[np.ndarray] = []
+    in_idxs: List[np.ndarray] = []
+    has_out_idx = np.zeros((N,), dtype=np.uint8)
+    has_in_idx = np.zeros((N,), dtype=np.uint8)
+
+    # Edge list (parent -> child)
+    e_parent: List[int] = []
+    e_child: List[int] = []
+
+    for i, nid in enumerate(node_ids.tolist()):
+        n = lib.nodes[int(nid)]
+        footprint[i] = int(getattr(n, "footprint", -1))
+        is_anchor[i] = 1 if bool(getattr(n, "is_anchor", False)) else 0
+        is_transport[i] = 1 if bool(getattr(n, "is_transport", False)) else 0
+        reliability[i] = float(getattr(n, "reliability", 1.0))
+        cost[i] = float(getattr(n, "cost", getattr(n, "L", 0.0)))
+        created_step[i] = int(getattr(n, "created_step", 0))
+        last_active_step[i] = int(getattr(n, "last_active_step", 0))
+        unit_sig64[i] = np.uint64(int(getattr(n, "unit_sig64", 0)) & 0xFFFFFFFFFFFFFFFF)
+
+        masks.append(np.asarray(getattr(n, "mask", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1))
+
+        im = getattr(n, "input_mask", None)
+        if im is None:
+            input_masks.append(np.zeros((0,), dtype=np.float32))
+            has_input_mask[i] = 0
+        else:
+            input_masks.append(np.asarray(im, dtype=np.float32).reshape(-1))
+            has_input_mask[i] = 1
+
+        W = np.asarray(getattr(n, "W", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
+        if W.ndim != 2:
+            W = W.reshape((W.shape[0], -1))
+        W_shape0[i] = int(W.shape[0])
+        W_shape1[i] = int(W.shape[1])
+        Ws.append(W.reshape(-1))
+
+        b = np.asarray(getattr(n, "b", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        bs.append(b)
+
+        S = np.asarray(getattr(n, "Sigma", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
+        if S.ndim != 2:
+            S = S.reshape((S.shape[0], -1))
+        Sigma_shape0[i] = int(S.shape[0])
+        Sigma_shape1[i] = int(S.shape[1])
+        Sigmas.append(S.reshape(-1))
+
+        oi = getattr(n, "out_idx", None)
+        if oi is None:
+            out_idxs.append(np.zeros((0,), dtype=np.int32))
+            has_out_idx[i] = 0
+        else:
+            out_idxs.append(np.asarray(oi, dtype=np.int32).reshape(-1))
+            has_out_idx[i] = 1
+
+        ii = getattr(n, "in_idx", None)
+        if ii is None:
+            in_idxs.append(np.zeros((0,), dtype=np.int32))
+            has_in_idx[i] = 0
+        else:
+            in_idxs.append(np.asarray(ii, dtype=np.int32).reshape(-1))
+            has_in_idx[i] = 1
+
+        # DAG edges
+        for c in getattr(n, "children", set()):
+            e_parent.append(int(nid))
+            e_child.append(int(c))
+
+    mask_data, mask_indptr = _pack_ragged_f32(masks)
+    input_mask_data, input_mask_indptr = _pack_ragged_f32(input_masks)
+    W_data, W_indptr = _pack_ragged_f32(Ws)
+    b_data, b_indptr = _pack_ragged_f32(bs)
+    Sigma_data, Sigma_indptr = _pack_ragged_f32(Sigmas)
+    out_idx_data, out_idx_indptr = _pack_ragged_i32(out_idxs)
+    in_idx_data, in_idx_indptr = _pack_ragged_i32(in_idxs)
+
+    edge_parent = np.asarray(e_parent, dtype=np.int32)
+    edge_child = np.asarray(e_child, dtype=np.int32)
+
+    return PackedExpertLibrary(
+        version=_PACKED_LIB_VERSION,
+        node_ids=node_ids,
+        footprint=footprint,
+        is_anchor=is_anchor,
+        is_transport=is_transport,
+        reliability=reliability,
+        cost=cost,
+        created_step=created_step,
+        last_active_step=last_active_step,
+        unit_sig64=unit_sig64,
+        next_node_id=int(getattr(lib, "next_node_id", int(node_ids.max() + 1 if N else 0))),
+        revision=int(getattr(lib, "revision", 0)),
+        mask_data=mask_data,
+        mask_indptr=mask_indptr,
+        input_mask_data=input_mask_data,
+        input_mask_indptr=input_mask_indptr,
+        has_input_mask=has_input_mask,
+        W_data=W_data,
+        W_indptr=W_indptr,
+        W_shape0=W_shape0,
+        W_shape1=W_shape1,
+        b_data=b_data,
+        b_indptr=b_indptr,
+        Sigma_data=Sigma_data,
+        Sigma_indptr=Sigma_indptr,
+        Sigma_shape0=Sigma_shape0,
+        Sigma_shape1=Sigma_shape1,
+        out_idx_data=out_idx_data,
+        out_idx_indptr=out_idx_indptr,
+        has_out_idx=has_out_idx,
+        in_idx_data=in_idx_data,
+        in_idx_indptr=in_idx_indptr,
+        has_in_idx=has_in_idx,
+        edge_parent=edge_parent,
+        edge_child=edge_child,
+    )
+
+
+def unpack_expert_library(packed: PackedExpertLibrary) -> ExpertLibrary:
+    if packed.version != _PACKED_LIB_VERSION:
+        raise ValueError(f"Unsupported PackedExpertLibrary version: {packed.version}")
+
+    lib = ExpertLibrary()
+    lib.nodes = {}
+    lib.anchors = set()
+    lib.footprint_index = {}
+    lib.next_node_id = int(packed.next_node_id)
+    lib.revision = int(packed.revision)
+
+    N = int(packed.node_ids.size)
+    # First pass: create nodes
+    for i in range(N):
+        nid = int(packed.node_ids[i])
+        mask = _unpack_ragged(packed.mask_data, packed.mask_indptr, i).astype(np.float32, copy=False)
+
+        im = None
+        if int(packed.has_input_mask[i]) == 1:
+            im = _unpack_ragged(packed.input_mask_data, packed.input_mask_indptr, i).astype(np.float32, copy=False)
+
+        w_flat = _unpack_ragged(packed.W_data, packed.W_indptr, i).astype(np.float32, copy=False)
+        w0 = int(packed.W_shape0[i]); w1 = int(packed.W_shape1[i])
+        W = w_flat.reshape((w0, w1)) if w0 * w1 == int(w_flat.size) else w_flat.reshape((w0, -1))
+
+        b = _unpack_ragged(packed.b_data, packed.b_indptr, i).astype(np.float32, copy=False)
+
+        s_flat = _unpack_ragged(packed.Sigma_data, packed.Sigma_indptr, i).astype(np.float32, copy=False)
+        s0 = int(packed.Sigma_shape0[i]); s1 = int(packed.Sigma_shape1[i])
+        Sigma = s_flat.reshape((s0, s1)) if s0 * s1 == int(s_flat.size) else s_flat.reshape((s0, -1))
+
+        oi = None
+        if int(packed.has_out_idx[i]) == 1:
+            oi = _unpack_ragged(packed.out_idx_data, packed.out_idx_indptr, i).astype(np.int32, copy=False)
+        ii = None
+        if int(packed.has_in_idx[i]) == 1:
+            ii = _unpack_ragged(packed.in_idx_data, packed.in_idx_indptr, i).astype(np.int32, copy=False)
+
+        node = ExpertNode(
+            node_id=nid,
+            mask=mask,
+            W=W,
+            b=b,
+            Sigma=Sigma,
+            input_mask=im,
+            out_idx=oi,
+            in_idx=ii,
+            reliability=float(packed.reliability[i]),
+            cost=float(packed.cost[i]),
+            is_anchor=bool(int(packed.is_anchor[i])),
+            footprint=int(packed.footprint[i]),
+            created_step=int(packed.created_step[i]),
+            last_active_step=int(packed.last_active_step[i]),
+            unit_sig64=int(packed.unit_sig64[i]),
+            is_transport=bool(int(packed.is_transport[i])),
+            sig_index_blocks=tuple(),
+        )
+        lib.nodes[nid] = node
+
+        if node.is_anchor:
+            lib.anchors.add(nid)
+        phi = int(node.footprint)
+        if phi not in lib.footprint_index:
+            lib.footprint_index[phi] = []
+        lib.footprint_index[phi].append(nid)
+
+    # Second pass: edges
+    E = int(packed.edge_parent.size)
+    for k in range(E):
+        p_id = int(packed.edge_parent[k])
+        c_id = int(packed.edge_child[k])
+        if p_id in lib.nodes and c_id in lib.nodes:
+            lib.nodes[p_id].children.add(c_id)
+            lib.nodes[c_id].parents.add(p_id)
+
+    return lib
 
 
 # =============================================================================
@@ -524,17 +994,34 @@ class SplitEvidence:
 
 @dataclass
 class EditProposal:
-    """Proposed structural edit for Q_struct (A12, A14.2)."""
+    """Proposed structural edit for Q_struct (A12, A14.2).
+
+    v5 note: proposals that create new units (SPAWN/SPLIT/MERGE) must carry the
+    propose-time signature snapshot used to deterministically set the created
+    unit's stored address (A4.3′).
+    """
     kind: EditKind
     footprint: int
     priority: float
     source_node_ids: List[int]
     proposal_step: int
 
+    # Stored 64-bit address snapshot captured at propose time (from committed metadata + ephemeral gist).
+    proposal_sig64: int
+
     merge_evidence: Optional[MergeEvidence] = None
     prune_evidence: Optional[PruneEvidence] = None
     spawn_evidence: Optional[SpawnEvidence] = None
     split_evidence: Optional[SplitEvidence] = None
+
+    def __post_init__(self) -> None:
+        try:
+            self.proposal_sig64 = int(self.proposal_sig64) & 0xFFFFFFFFFFFFFFFF
+        except Exception as e:
+            raise ValueError("proposal_sig64 must be a 64-bit int") from e
+
+        if self.kind in (EditKind.SPAWN, EditKind.SPLIT, EditKind.MERGE) and self.proposal_sig64 == 0:
+            raise ValueError("proposal_sig64 must be nonzero for SPAWN/SPLIT/MERGE (v5 A4.3′)")
 
 
 @dataclass
@@ -670,6 +1157,28 @@ def infer_footprint(mask: np.ndarray, blocks: List[List[int]]) -> int:
     raise ValueError("mask is not contained within any single block footprint")
 
 
+
+
+# =============================================================================
+# NUPCA5 deferred validation queue item
+# =============================================================================
+
+
+@dataclass
+class PendingValidationRecord:
+    """Deferred validation record for a candidate recall.
+
+    This stays SMALL and strictly bounded:
+      - stores only node_id, horizon bin, and lightweight scalars
+      - does NOT store dense vectors or raw observations
+    """
+
+    node_id: int
+    h_bin: int
+    t_emit: int
+    dist: int = 0
+    err: float = 0.0
+
 # =============================================================================
 # Agent state container
 # =============================================================================
@@ -721,6 +1230,17 @@ class AgentState:
     demand_prev: bool = False
     interrupt_prev: bool = False
     learn_cache: Optional[LearningCache] = None
+
+
+    # ----- NUPCA5 signature retrieval state -----
+    # scan-proof signature computed at decision time from committed metadata +
+    # ephemeral periphery gist (do not persist dense vectors).
+    last_sig64: Optional[int] = None
+    # previous committed metadata (t-1) for motion-sensitive delta term
+    sig_prev_counts: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
+    sig_prev_hist: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.uint16))
+    # bounded deferred validation queue
+    pending_validation: Deque[PendingValidationRecord] = field(default_factory=lambda: deque())
 
     # ----- Observation geometry (A16) -----
     blocks: List[List[int]] = field(default_factory=list)
@@ -876,6 +1396,8 @@ __all__ = [
     "FootprintResidualStats",
     # Helpers
     "infer_footprint",
+    # NUPCA5
+    "PendingValidationRecord",
     # Main container
     "AgentState",
 ]

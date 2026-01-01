@@ -55,6 +55,35 @@ from ..incumbents import get_incumbent_bucket
 
 
 # =============================================================================
+# NUPCA5: Unit address capture for structural edits
+# =============================================================================
+
+def _unit_sig64_for_new_unit(state: AgentState, cfg: AgentConfig) -> int:
+    """Return the stored 64-bit address for a newly created unit (A4.3′).
+
+    V5 requirement:
+      - A new unit MUST capture a non-zero unit_sig64 at creation time.
+      - The address is the scan-proof signature computed at decision time from
+        committed metadata + ephemeral gist (state.last_sig64).
+
+    In NUPCA5 mode, missing/zero last_sig64 is a hard error (do not silently
+    substitute salts or fallbacks).
+    """
+    sig = getattr(state, 'last_sig64', None)
+    if bool(getattr(cfg, 'nupca5_enabled', False)):
+        if sig is None:
+            raise ValueError('NUPCA5: cannot create unit during REST without state.last_sig64 set')
+        sig = int(sig) & ((1 << 64) - 1)
+        if sig == 0:
+            raise ValueError('NUPCA5: state.last_sig64 is 0; invalid stored unit address')
+        return sig
+    # Non-v5 mode: best-effort populate if present, otherwise 0.
+    if sig is None:
+        return 0
+    return int(sig) & ((1 << 64) - 1)
+
+
+# =============================================================================
 # Edit Application Results
 # =============================================================================
 
@@ -260,6 +289,8 @@ def apply_merge(
         result.error_message = "merged_mask_wrong_footprint"
         return result
 
+    merged_node.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
+
     new_id = library.add_node(merged_node)
     footprint = evidence.footprint
     bucket = get_incumbent_bucket(state, footprint, create=True)
@@ -349,6 +380,8 @@ def apply_spawn(
         last_active_step=state.timestep,
         created_step=state.timestep
     )
+
+    new_node.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
 
     # Handle anti-aliasing replacement if requested
     if acceptance.replace_incumbent and acceptance.aliased_with is not None:
@@ -467,6 +500,9 @@ def apply_split(
         last_active_step=state.timestep,
         created_step=state.timestep
     )
+
+    node_1.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
+    node_2.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
 
     new_id_1 = library.add_node(node_1)
     new_id_2 = library.add_node(node_2)

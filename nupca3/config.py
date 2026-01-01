@@ -1,56 +1,17 @@
-"""
-nupca3/config.py
+"""nupca3/config.py
 
-NUPCA3 Agent configuration (v1.5b).
+NUPCA configuration (v5).
 
-What this file does
--------------------
-This module defines :class:`AgentConfig`, an immutable (frozen) dataclass that
-collects *all* numeric hyperparameters referenced by the NUPCA3 implementation.
+This module defines :class:`AgentConfig`, a frozen dataclass that centralizes
+all numeric and boolean hyperparameters referenced across the codebase.
 
-The NUPCA3 codebase is axiom-driven (A0–A16 in the v1.5b spec). In that style,
-implementation modules read constants from config rather than hard-coding them.
-This file exists to:
-  - centralize those constants,
-  - provide axiom-aligned defaults (matching the “reference configuration”
-    table in the axiom document where available),
-  - make missing/invalid parameters fail fast via validate().
-
-Axioms this file supports (by providing parameters)
----------------------------------------------------
-- A6  (Compute budget + horizon scalars): B_rt, b_enc_base, b_roll_base, b_cons_base
-- A7  (Precision/uncertainty floors + EMA): sigma_floor, sigma_ema
-- A9/A11 (Spawn pressure + responsibility selection): beta_R, K, theta_spawn, theta_learn
-- A10 (Learning gating + panic/arousal gating): theta_ar_rest, theta_ar_panic
-- A12 (Acceptance + MDL tradeoff): mdl_beta, epsilon_merge, delta_L_MDL_*, theta_alias
-- A14 (Macrostate dynamics / rest pressure): P_rest_* parameters
-- A15 (Margins + arousal dynamics): tau_*, kappa_*, k_rest_*, w_*_ar, theta_ar, kappa_ar,
-      tau_rise, tau_decay, beta_open
-- A16 (Observation geometry / fovea): D, B, fovea_blocks_per_step, sticky_k, alpha_cov
-- Implementation bookkeeping constraints (capacity / queue / candidates):
-  N_max, max_candidates, max_experts_per_k, max_queue, max_proposals_per_step, etc.
-
-Notes on defaults
------------------
-Where v1.5b provides explicit “reference configuration” numbers, those are used.
-Where v1.5b defines a symbol but does not specify a numeric reference value,
-a reasonable default is chosen so the code can run. Those defaults are explicitly
-marked with ``#ITOOKASHORTCUT`` and include a brief justification.
-
-This file is deliberately *not* a “framework” configuration system; it’s a plain
-dataclass with clear, auditable defaults aligned to the axioms.
-
-
-[AXIOM_CLARIFICATION_ADDENDUM — Representation & Naming]
-
-- Terminology: identifiers like "Expert" in this codebase refer to NUPCA3 **abstraction/resonance nodes** (a "constellation"), not conventional Mixture-of-Experts "experts" or router-based MoE.
-
-- Representation boundary (clarified intent of v1.5b): the completion/fusion operator (A7) is defined over an **encoded, multi-resolution abstraction vector** \(x(t)\). Raw pixels may exist only in a transient observation buffer for the current step; **raw pixel values must never be inserted into long-term storage** (library/cold storage) and must not persist across REST boundaries.
-
-- Decomposition intuition: each node is an operator that *factors out* a predictable/resonant component on its footprint, leaving residual structure for other nodes (or for REST-time proposal) to capture. This is the intended "FFT-like" interpretation of masks/constellations.
-- Naming collision warning (v1.5b): symbols like \(\tau_E,\tau_D,\tau_S\) in A0.3 are **need thresholds** (sigmoid offsets), not time constants. Time constants use explicit names (e.g., `tau_rise`, `tau_decay`, `tau_C_edit`).
-- Compatibility aliases: some modules historically referenced `use_current_gates`; the canonical field is `gates_use_current` (A10 lag discipline debugging knob). `AgentConfig.use_current_gates` is provided as a read-only alias.
-
+v5 requirements enforced here
+-----------------------------
+- Core paths must not depend on implicit config fallbacks (no getattr-based
+  defaulting for required fields).
+- NUPCA5 scan-proof signature retrieval parameters (sig_*)
+  are first-class fields with strict validation.
+- Context/gist used for sig64 is ephemeral; gist-derived state must not be persisted.
 """
 
 from __future__ import annotations
@@ -62,7 +23,7 @@ from typing import Any, Dict, Tuple
 @dataclass(frozen=True)
 class AgentConfig:
     """
-    Immutable configuration for a NUPCA3 agent.
+    Immutable configuration for a NUPCA agent (v5).
 
     Inputs
     ------
@@ -90,7 +51,6 @@ class AgentConfig:
     fovea_blocks_per_step: int = 64
 
     # Hard coverage cap G (A16.4): if age(b,t-1) >= G, block b must be observed.
-    #ITOOKASHORTCUT: v1.5b defines G but does not pin a numeric reference.
     coverage_cap_G: int = 50
 
     # Starting age for each block; use < G so the coverage emergency path waits for real data.
@@ -226,6 +186,47 @@ class AgentConfig:
     # Working-set linger window (steps) for recently active non-anchors.
     working_set_linger_steps: int = 0
 
+
+
+    # =========================================================================
+    # NUPCA5 — Scan-proof signature retrieval (A4.3′)
+    # =========================================================================
+
+    # Deterministic seed for sig64 and sig_index salts.
+    sig_seed: int = 0
+
+    # Ephemeral periphery gist bins for sig64 (used at decision time only).
+    sig_gist_bins: int = 8
+
+    # NUPCA5: prohibit persisting gist/context state across steps.
+    sig_disable_context_register: bool = True
+
+    # Deferred validation of sig_index priorities.
+    sig_enable_validation: bool = True
+    sig_err_ema_beta: float = 0.10
+
+
+    # Committed metadata quantization (sig64).
+    sig_value_bins: int = 8
+    sig_vmax: float = 4.0
+
+    # Packed signature index parameters (sig_index).
+    sig_tables: int = 4
+    sig_bucket_bits: int = 10
+    sig_bucket_cap: int = 8
+
+    # Candidate cap for sig_index query (bounded).
+    sig_query_cand_cap: int = 64
+
+    # Stage-2 rerank weighting of deferred-validation error (working_set stage-2).
+    sig_stage2_alpha_err: float = 0.25
+
+    # Outcome-vetted priority cache driving bucket overflow replacement.
+    sig_enable_err_cache: bool = True
+    sig_err_bins: int = 3
+    sig_err_init: float = 1e6
+    sig_eviction_bin: int = 2
+
     # =========================================================================
     # A3 — Stability / introversion thresholds used by permit_struct
     # =========================================================================
@@ -263,23 +264,15 @@ class AgentConfig:
     b_roll_base: float = 0.85
 
     # Anchor overhead coefficient b_anc,0 (A6.2).
-    #ITOOKASHORTCUT: the v1.5b document defines b_anc,0 but does not provide a
-    # reference numeric in the table. Default 0.0 keeps anchor overhead from
-    # dominating until you calibrate it in simulation.
     b_anc_base: float = 0.0
 
     # Consolidation bookkeeping base cost.
-    #ITOOKASHORTCUT: v1.5b discusses b_cons tracking, but the reference table
-    # does not pin a numeric. Defaulting to 0.0 preserves behavior when
-    # consolidation cost is tracked dynamically by REST processors.
     b_cons_base: float = 0.0
 
     # Small epsilon to avoid divide-by-zero in budget terms (A6.2).
     eps_budget: float = 1e-6
 
     # Hard cap on horizon to keep rollout computation bounded.
-    #ITOOKASHORTCUT: v1.5b defines emergent h(t) but does not prescribe a strict cap.
-    # A moderate default prevents pathological slowdowns in toy environments.
     h_max: int = 32
 
 
@@ -384,9 +377,8 @@ class AgentConfig:
     delta_L_MDL_spawn: float = 0.80
 
     # A4.4 / A12.3 anti-aliasing threshold (structural edits).
-    # In the axiom table this appears as θ_alias; some code also uses anti_alias_cos.
+    # In the axiom table this appears as θ_alias.
     theta_alias: float = 0.95
-    anti_alias_cos: float = 0.95  # kept for backward compatibility with earlier modules
 
     # =========================================================================
     # A14 — Macrostate (REST / WAKE) dynamics: rest pressure parameters
@@ -396,13 +388,9 @@ class AgentConfig:
     P_rest_gamma: float = 0.10
 
     # Baseline drift (δ_base).
-    #ITOOKASHORTCUT: A14 defines δ_base but v1.5b does not include a reference
-    # numeric in the table. Small positive default yields slow rest-pressure creep.
     P_rest_delta_base: float = 0.01
 
     # Need-driven drift gain (δ_need).
-    #ITOOKASHORTCUT: A14 defines δ_need but v1.5b does not include a reference
-    # numeric in the table. Default chosen to make needs matter vs baseline drift.
     P_rest_delta_need: float = 0.03
 
     # Need weights α_E, α_D, α_S.
@@ -411,36 +399,33 @@ class AgentConfig:
     P_rest_alpha_S: float = 1.0
 
     # Demand hysteresis thresholds θ_enter, θ_exit.
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_theta_demand_enter: float = 0.60
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_theta_demand_exit: float = 0.40
 
     # Structural queue gates Θ_Q^{on,off}.
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_Theta_Q_on: float = 0.50
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_Theta_Q_off: float = 0.30
 
     # Maximum contiguous durations T_max^{wake}, T_max^{rest}.
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_Tmax_wake: int = 4000
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_Tmax_rest: int = 800
 
+    # Minimum contiguous REST duration (prevents thrashing).
+    P_rest_Tmin_rest: int = 10
+
+    # REST hysteresis leak.
+    P_rest_lambda_hyst: float = 0.5
+
+    # Freeze threshold on rest pressure.
+    P_rest_theta_freeze: float = 0.95
+
     # Margin-based hard triggers θ_E^rest, θ_D^rest, θ_S^rest.
-    #ITOOKASHORTCUT: Spec does not give a reference numeric; 0.0 means
-    # “rest if margin goes negative” (a natural minimal choice).
     P_rest_theta_E_rest: float = 0.0
-    #ITOOKASHORTCUT: See θ_E^rest note.
     P_rest_theta_D_rest: float = 0.0
-    #ITOOKASHORTCUT: See θ_E^rest note.
     P_rest_theta_S_rest: float = 0.0
 
     # Safety/interrupt thresholds θ_safe^{th}, θ_interrupt^{th}.
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_theta_safe_th: float = 0.20
-    #ITOOKASHORTCUT: Not specified numerically in v1.5b reference table.
     P_rest_theta_interrupt_th: float = 0.90
     # Minimum rest cycles before demand can re-enter REST.
     rest_min_cycles: int = 1
@@ -501,6 +486,7 @@ class AgentConfig:
     N_max: int = 256
     L_work_max: float = 48.0
     max_candidates: int = 32
+    max_retrieval_candidates: int = 64
     salience_max_candidates: int = 64
     salience_explore_budget: int = 2
     max_experts_per_k: int = 2
@@ -521,213 +507,154 @@ class AgentConfig:
     # MDL-like costing helpers used by acceptance and pruning heuristics.
     expert_base_cost: float = 1.0
     expert_dim_cost: float = 0.05
-
-    # =========================================================================
-    # Alias properties (to support both “symbolic” and “prefixed” naming styles)
-    # =========================================================================
-    @property
-    def gamma_rest(self) -> float:
-        """
-        Alias for A14 γ_rest.
-
-        Inputs: none.
-        Outputs: float (same value as P_rest_gamma).
-        """
-        return self.P_rest_gamma
-
-    @property
-    def delta_base(self) -> float:
-        """
-        Alias for A14 δ_base.
-
-        Inputs: none.
-        Outputs: float (same value as P_rest_delta_base).
-        """
-        return self.P_rest_delta_base
-
-    @property
-    def delta_need(self) -> float:
-        """
-        Alias for A14 δ_need.
-
-        Inputs: none.
-        Outputs: float (same value as P_rest_delta_need).
-        """
-        return self.P_rest_delta_need
-
-    @property
-    def theta_safe_th(self) -> float:
-        """Alias for θ_safe^{th} used by macrostate (A14)."""
-        return self.P_rest_theta_safe_th
-
-    @property
-    def theta_th(self) -> float:
-        """Alias for θ_interrupt^{th} (external threat) used by macrostate (A14)."""
-        return self.P_rest_theta_interrupt_th
-
-    @property
-    def theta_int(self) -> float:
-        """Alias for θ_interrupt^{int} (arousal) used by macrostate (A14).
-
-        #ITOOKASHORTCUT: The repo snapshot does not expose a separate config
-        parameter for θ_interrupt^{int}. We map it to theta_ar_panic, which
-        already represents an extreme-arousal safety limit.
-        """
-        return self.theta_ar_panic
-
-    @property
-    def theta_E_rest(self) -> float:
-        """Alias for θ_E^{rest} used by macrostate (A14)."""
-        return self.P_rest_theta_E_rest
-
-    @property
-    def theta_D_rest(self) -> float:
-        """Alias for θ_D^{rest} used by macrostate (A14)."""
-        return self.P_rest_theta_D_rest
-
-    @property
-    def theta_S_rest(self) -> float:
-        """Alias for θ_S^{rest} used by macrostate (A14)."""
-        return self.P_rest_theta_S_rest
-
-    @property
-    def theta_Trest_min(self) -> int:
-        """Minimum REST duration (T_rest^{min}) used by macrostate (A14).
-
-        #ITOOKASHORTCUT: v1.5b config in this repo contains only T_rest^{max}.
-        We set a small default minimum to avoid immediate thrashing.
-        """
-        return int(getattr(self, 'P_rest_Tmin_rest', 10))
-
-    @property
-    def theta_rest(self) -> float:
-        """Alias for θ_demand^{enter} used by macrostate demand hysteresis (A14.4)."""
-        return self.P_rest_theta_demand_enter
-
-    @property
-    def theta_rest_low(self) -> float:
-        """Alias for θ_demand^{exit} used by macrostate demand hysteresis (A14.4)."""
-        return self.P_rest_theta_demand_exit
-
-    @property
-    def lambda_hyst(self) -> float:
-        """Hysteresis leak λ_hyst used in rest pressure update (A14.4).
-
-        #ITOOKASHORTCUT: config name not present in this repo snapshot.
-        """
-        return float(getattr(self, 'P_rest_lambda_hyst', 0.5))
-
-    @property
-    def theta_freeze(self) -> float:
-        """Freeze threshold on rest pressure used by macrostate (A14.5).
-
-        #ITOOKASHORTCUT: config name not present in this repo snapshot.
-        """
-        return float(getattr(self, 'P_rest_theta_freeze', 0.95))
-
-    @property
-    def use_current_gates(self) -> bool:
-        """Compatibility alias for `gates_use_current`.
-
-        v1.5b is defined with lagged gates; this flag exists only to allow
-        debugging against same-step values in toy harnesses. The canonical
-        field name is `gates_use_current`.
-        """
-        return bool(self.gates_use_current)
+    expert_cost_include_inputs: bool = False
 
     # =========================================================================
     # Methods
     # =========================================================================
+
     def validate(self) -> None:
+        """Validate invariants implied by the axioms and implementation.
+
+        Raises ValueError if any invariant is violated.
         """
-        Validate basic invariants implied by the axioms and implementation.
 
-        Inputs
-        ------
-        None (reads self).
-
-        Outputs
-        -------
-        None. Raises ValueError/TypeError if an invariant is violated.
-
-        What it checks (non-exhaustive)
-        -------------------------------
-        - Geometry: D and B must be positive and compatible.
-        - EMA / floor: sigma_floor > 0 and sigma_ema in (0, 1].
-        - Budgets: base costs and B_rt must be non-negative.
-        - Time constants: taus must be positive.
-        """
+        # Geometry
         if not isinstance(self.D, int) or self.D <= 0:
-            raise ValueError("D must be a positive int.")
+            raise ValueError("D must be a positive int")
         if not isinstance(self.B, int) or self.B <= 0:
-            raise ValueError("B must be a positive int.")
-        # D need not be divisible by B; remainder is distributed across blocks.
+            raise ValueError("B must be a positive int")
         if self.B > self.D:
-            raise ValueError("B must be <= D.")
-
-        if not (self.sigma_floor > 0.0):
-            raise ValueError("sigma_floor must be > 0.")
-        if not (0.0 < self.sigma_ema <= 1.0):
-            raise ValueError("sigma_ema must be in (0, 1].")
-
-        for name in ("B_rt", "b_enc_base", "b_roll_base", "b_cons_base"):
-            v = getattr(self, name)
-            if v < 0.0:
-                raise ValueError(f"{name} must be >= 0.")
-
-        for name in ("tau_E", "tau_D", "tau_S", "tau_rise", "tau_decay"):
-            v = getattr(self, name)
-            if v <= 0.0:
-                raise ValueError(f"{name} must be > 0.")
-
+            raise ValueError("B must be <= D")
         if self.fovea_blocks_per_step <= 0:
-            raise ValueError("fovea_blocks_per_step must be > 0.")
-        if self.sticky_k < 0:
-            raise ValueError("sticky_k must be >= 0.")
-        if self.fovea_uncertainty_weight < 0.0:
-            raise ValueError("fovea_uncertainty_weight must be >= 0.")
-        if self.fovea_uncertainty_default < 0.0:
-            raise ValueError("fovea_uncertainty_default must be >= 0.")
+            raise ValueError("fovea_blocks_per_step must be > 0")
+        if self.coverage_cap_G <= 0:
+            raise ValueError("coverage_cap_G must be > 0")
         if self.initial_block_age < 0:
-            raise ValueError("initial_block_age must be >= 0.")
-        for name in ("alpha_pi", "alpha_deg", "alpha_ctx", "alpha_ctx_relevance", "alpha_ctx_gist"):
-            v = getattr(self, name)
-            if v < 0.0:
-                raise ValueError(f"{name} must be >= 0.")
-        for name in ("alpha_cov", "alpha_cov_exp", "alpha_cov_band"):
-            v = getattr(self, name)
-            if v < 0.0:
-                raise ValueError(f"{name} must be >= 0.")
-        if self.grid_color_channels < 0 or self.grid_shape_channels < 0:
-            raise ValueError("grid_color_channels and grid_shape_channels must be >= 0.")
-        if (
-            self.grid_color_channels + self.grid_shape_channels > 0
-            and self.grid_color_channels + self.grid_shape_channels != self.grid_channels
-        ):
-            raise ValueError(
-                "grid_color_channels + grid_shape_channels must equal grid_channels when specified."
-            )
-        if not (0.0 <= self.beta_context <= 1.0):
-            raise ValueError("beta_context must be in [0, 1].")
-        if not (0.0 <= self.beta_context_node <= 1.0):
-            raise ValueError("beta_context_node must be in [0, 1].")
-        if self.beta_sharp < 0.0:
-            raise ValueError("beta_sharp must be >= 0.")
-        if self.transport_search_radius < 0:
-            raise ValueError("transport_search_radius must be >= 0.")
-        if not (0.0 < self.transport_belief_decay < 1.0):
-            raise ValueError("transport_belief_decay must be in (0, 1).")
-        if self.transport_inertia_weight < 0.0:
-            raise ValueError("transport_inertia_weight must be >= 0.")
-        if not (0.0 <= self.transport_confidence_margin <= 1.0):
-            raise ValueError("transport_confidence_margin must be in [0, 1].")
-        if self.transport_disambiguation_weight < 0.0:
-            raise ValueError("transport_disambiguation_weight must be >= 0.")
+            raise ValueError("initial_block_age must be >= 0")
 
+        # Uncertainty / EMA
+        if not (self.sigma_floor > 0.0):
+            raise ValueError("sigma_floor must be > 0")
+        if not (0.0 < self.sigma_ema <= 1.0):
+            raise ValueError("sigma_ema must be in (0, 1]")
+
+        # Budgets
+        if self.B_rt < 0.0:
+            raise ValueError("B_rt must be >= 0")
+        if self.b_enc_base < 0.0:
+            raise ValueError("b_enc_base must be >= 0")
+        if self.b_roll_base < 0.0:
+            raise ValueError("b_roll_base must be >= 0")
+        if self.b_anc_base < 0.0:
+            raise ValueError("b_anc_base must be >= 0")
+        if self.b_cons_base < 0.0:
+            raise ValueError("b_cons_base must be >= 0")
+        if self.eps_budget <= 0.0:
+            raise ValueError("eps_budget must be > 0")
+        if self.h_max <= 0:
+            raise ValueError("h_max must be > 0")
+
+        # Time constants
+        if self.tau_E <= 0.0 or self.tau_D <= 0.0 or self.tau_S <= 0.0:
+            raise ValueError("tau_E/tau_D/tau_S must be > 0")
+        if self.tau_rise <= 0.0 or self.tau_decay <= 0.0:
+            raise ValueError("tau_rise and tau_decay must be > 0")
+
+        # Coverage / fovea tuning
+        if self.sticky_k < 0:
+            raise ValueError("sticky_k must be >= 0")
+        if self.alpha_cov < 0.0 or self.alpha_cov_exp < 0.0 or self.alpha_cov_band < 0.0:
+            raise ValueError("alpha_cov/alpha_cov_exp/alpha_cov_band must be >= 0")
+        if self.fovea_residual_ema < 0.0 or self.fovea_residual_ema > 1.0:
+            raise ValueError("fovea_residual_ema must be in [0, 1]")
+        if self.fovea_visit_window <= 0:
+            raise ValueError("fovea_visit_window must be > 0")
+        if self.fovea_age_min_inc < 0.0:
+            raise ValueError("fovea_age_min_inc must be >= 0")
+        if self.fovea_age_resid_scale < 0.0:
+            raise ValueError("fovea_age_resid_scale must be >= 0")
+        if self.fovea_age_resid_thresh < 0.0:
+            raise ValueError("fovea_age_resid_thresh must be >= 0")
+        if self.fovea_uncertainty_weight < 0.0:
+            raise ValueError("fovea_uncertainty_weight must be >= 0")
+        if self.fovea_uncertainty_default < 0.0:
+            raise ValueError("fovea_uncertainty_default must be >= 0")
+
+        # Transport
+        if self.transport_search_radius < 0:
+            raise ValueError("transport_search_radius must be >= 0")
+        if not (0.0 < self.transport_belief_decay < 1.0):
+            raise ValueError("transport_belief_decay must be in (0, 1)")
+        if self.transport_inertia_weight < 0.0:
+            raise ValueError("transport_inertia_weight must be >= 0")
+        if not (0.0 <= self.transport_confidence_margin <= 1.0):
+            raise ValueError("transport_confidence_margin must be in [0, 1]")
+        if self.transport_disambiguation_weight < 0.0:
+            raise ValueError("transport_disambiguation_weight must be >= 0")
+
+        # Context tracking
+        if not (0.0 <= self.beta_context <= 1.0):
+            raise ValueError("beta_context must be in [0, 1]")
+        if not (0.0 <= self.beta_context_node <= 1.0):
+            raise ValueError("beta_context_node must be in [0, 1]")
+
+        # Grid metadata consistency (only when explicitly specified)
+        if self.grid_color_channels < 0 or self.grid_shape_channels < 0:
+            raise ValueError("grid_color_channels and grid_shape_channels must be >= 0")
+        if (self.grid_color_channels + self.grid_shape_channels) > 0:
+            if (self.grid_color_channels + self.grid_shape_channels) != self.grid_channels:
+                raise ValueError(
+                    "grid_color_channels + grid_shape_channels must equal grid_channels when specified"
+                )
+
+        # Anti-aliasing thresholds
         if not (0.0 <= self.theta_alias <= 1.0):
-            raise ValueError("theta_alias must be in [0, 1].")
-        if not (0.0 <= self.anti_alias_cos <= 1.0):
-            raise ValueError("anti_alias_cos must be in [0, 1].")
+            raise ValueError("theta_alias must be in [0, 1]")
+
+        # NUPCA5 signature retrieval invariants
+        if self.sig_seed < 0:
+            raise ValueError("sig_seed must be >= 0")
+        if self.sig_gist_bins < 1:
+            raise ValueError("sig_gist_bins must be >= 1")
+        if not self.sig_disable_context_register:
+            raise ValueError("sig_disable_context_register must be True under v5")
+        if not self.sig_enable_validation:
+            raise ValueError("sig_enable_validation must be True under v5")
+        if not (0.0 < self.sig_err_ema_beta <= 1.0):
+            raise ValueError("sig_err_ema_beta must be in (0, 1]")
+        if self.sig_value_bins < 1:
+            raise ValueError("sig_value_bins must be >= 1")
+        if self.sig_vmax <= 0.0:
+            raise ValueError("sig_vmax must be > 0")
+        if self.sig_tables < 1:
+            raise ValueError("sig_tables must be >= 1")
+        if self.sig_bucket_bits < 1:
+            raise ValueError("sig_bucket_bits must be >= 1")
+        if self.sig_bucket_cap < 1:
+            raise ValueError("sig_bucket_cap must be >= 1")
+        if self.sig_query_cand_cap < 1:
+            raise ValueError("sig_query_cand_cap must be >= 1")
+        if self.sig_stage2_alpha_err < 0.0:
+            raise ValueError("sig_stage2_alpha_err must be >= 0")
+        if not self.sig_enable_err_cache:
+            raise ValueError("sig_enable_err_cache must be True under v5")
+        if self.sig_err_bins < 1:
+            raise ValueError("sig_err_bins must be >= 1")
+        if self.sig_err_init < 0.0:
+            raise ValueError("sig_err_init must be >= 0")
+        if not (0 <= self.sig_eviction_bin < self.sig_err_bins):
+            raise ValueError("sig_eviction_bin out of range")
+
+        # Operational bounds
+        if self.N_max <= 0:
+            raise ValueError("N_max must be > 0")
+        if self.max_queue <= 0:
+            raise ValueError("max_queue must be > 0")
+        if self.max_candidates <= 0:
+            raise ValueError("max_candidates must be > 0")
+        if self.max_proposals_per_step < 0:
+            raise ValueError("max_proposals_per_step must be >= 0")
 
     def replace(self, **overrides: Any) -> "AgentConfig":
         """
@@ -763,7 +690,7 @@ class AgentConfig:
 
 def default_config() -> AgentConfig:
     """
-    Return the default v1.5b AgentConfig.
+    Return the default v5 AgentConfig.
 
     Inputs
     ------

@@ -30,9 +30,15 @@ from ..memory.completion import complete
 from ..memory.expert import sgd_update
 from ..memory.fusion import fuse_predictions
 from ..memory.rollout import rollout_and_confidence
-from ..memory.salience import (SalienceResult, compute_activations,
-                               compute_salience, compute_temperature,
-                               get_stress_signals)
+from ..memory.sig64 import Sig64Meta, compute_sig64_from_obs
+from ..memory.salience import (
+    SalienceResult,
+    compute_activations,
+    compute_salience,
+    compute_temperature,
+    get_stress_signals,
+    infer_node_band_level,
+)
 from ..memory.working_set import select_working_set
 from ..state.baselines import (commit_tilde_prev, normalize_margins,
                                update_baselines)
@@ -47,13 +53,20 @@ from .fovea import FoveaSignals, apply_signals_and_select
 from .learning import (_build_training_mask, _derive_margins,
                        _feature_probe_vectors, LearningProcessor)
 from .logging import _dbg
-from .observations import (_cfg_D, _coarse_summary, _compute_peripheral_gist,
-                           _compute_peripheral_metrics, _ensure_node_band_levels,
-                           _filter_cue_to_Oreq, _peripheral_dim_set,
-                           _prior_obs_mae, _support_window_union,
-                           compute_block_uncertainty,
-                           _update_coverage_debts, _update_context_register,
-                           _update_context_tags, _update_observed_history)
+from .observations import (
+    _cfg_D,
+    _coarse_summary,
+    _compute_peripheral_gist,
+    _compute_peripheral_metrics,
+    _filter_cue_to_Oreq,
+    _peripheral_dim_set,
+    _prior_obs_mae,
+    _support_window_union,
+    _update_context_register,
+    _update_context_tags,
+    _update_observed_history,
+    compute_block_uncertainty,
+)
 from .transport import (_compute_transport_disagreement_blocks,
                         _select_transport_delta,
                         _update_transport_learning_state,
@@ -62,6 +75,120 @@ from .worlds import _build_world_hypotheses, _compute_block_signals
 
 
 learning_processor = LearningProcessor()
+
+
+def _update_coverage_debts_bounded(state: AgentState, cfg: AgentConfig, tracked_ids: Set[int]) -> None:
+    """Fixed-cost coverage debt maintenance (v5).
+
+    v5 fixed-budget semantics forbid per-step full scans over the durable
+    library. Coverage bookkeeping must therefore be maintained over a bounded
+    *tracked* set (typically the salience candidate set + active set).
+
+    This function updates:
+      - state.coverage_expert_debt[nid] (time-since-active counter)
+      - state.coverage_band_debt[level] (time-since-band-coverage counter)
+      - state.node_band_levels[nid] (cached band level, lazily inferred)
+
+    It also prunes the tracked dictionaries to a bounded size.
+    """
+
+    library = getattr(state, "library", None)
+    nodes = getattr(library, "nodes", None) if library is not None else None
+    if not nodes:
+        state.coverage_expert_debt = {}
+        state.coverage_band_debt = {}
+        state.node_band_levels = {}
+        return
+
+    # Bound the amount of bookkeeping we maintain.
+    cap = int(getattr(cfg, "coverage_debt_cap", getattr(cfg, "salience_max_candidates", getattr(cfg, "max_candidates", 256))))
+    cap = max(32, cap)
+
+    active_set = {int(n) for n in getattr(state, "active_set", set()) or set()}
+    tracked = {int(n) for n in (tracked_ids or set())}
+    if not tracked:
+        # Minimal invariants: keep empty debts.
+        state.coverage_expert_debt = {}
+        state.coverage_band_debt = {}
+        # Keep node_band_levels as-is (salience maintains lazily).
+        return
+
+    # Intersect with existing nodes to avoid growing on stale ids.
+    tracked = {nid for nid in tracked if nid in nodes}
+    if not tracked:
+        state.coverage_expert_debt = {}
+        state.coverage_band_debt = {}
+        return
+
+    expert_debt: Dict[int, int] = dict(getattr(state, "coverage_expert_debt", {}) or {})
+    band_debt: Dict[int, int] = dict(getattr(state, "coverage_band_debt", {}) or {})
+    node_levels: Dict[int, int] = dict(getattr(state, "node_band_levels", {}) or {})
+    last_seen: Dict[int, int] = dict(getattr(state, "coverage_debt_last_seen", {}) or {})
+
+    t_now = int(getattr(state, "t", 0))
+
+    # Lazily infer band levels only for tracked nodes.
+    for nid in tracked:
+        if nid not in node_levels:
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            node_levels[nid] = int(infer_node_band_level(node, cfg))
+
+    # Expert debts: increment for tracked-but-inactive, reset for active.
+    debt_max = int(getattr(cfg, "coverage_debt_max", 10_000))
+    debt_max = max(1, debt_max)
+    for nid in tracked:
+        if nid in active_set:
+            expert_debt[nid] = 0
+        else:
+            expert_debt[nid] = min(debt_max, int(expert_debt.get(nid, 0)) + 1)
+        last_seen[nid] = t_now
+
+    # Optional innovation discount, applied only to tracked nodes (fixed cost).
+    innovation_weight = float(getattr(cfg, "fovea_innovation_weight", 0.0))
+    if innovation_weight > 0.0:
+        innovation = np.asarray(
+            getattr(state.fovea, "block_innovation", np.zeros(int(getattr(cfg, "B", 0)) or 0)),
+            dtype=float,
+        ).reshape(-1)
+        if innovation.size:
+            for nid in tracked:
+                if nid in active_set:
+                    continue
+                node = nodes.get(nid)
+                if node is None:
+                    continue
+                phi = int(getattr(node, "footprint", getattr(node, "block_id", -1)))
+                if 0 <= phi < innovation.size and float(innovation[phi]) > 0.0:
+                    expert_debt[nid] = max(0, int(expert_debt.get(nid, 0)) - 1)
+
+    # Band debts: maintain only for levels present in tracked set.
+    tracked_levels = {int(node_levels[nid]) for nid in tracked if nid in node_levels}
+    active_levels = {int(node_levels[nid]) for nid in active_set if nid in node_levels}
+    for level in tracked_levels:
+        if level in active_levels:
+            band_debt[level] = 0
+        else:
+            band_debt[level] = min(debt_max, int(band_debt.get(level, 0)) + 1)
+    # Drop stale levels.
+    for level in list(band_debt.keys()):
+        if level not in tracked_levels:
+            band_debt.pop(level, None)
+
+    # Prune bookkeeping dictionaries to bounded size (LRU by last_seen).
+    if len(last_seen) > cap:
+        # Remove oldest entries first.
+        overflow = len(last_seen) - cap
+        for nid, _ts in sorted(last_seen.items(), key=lambda kv: kv[1])[:overflow]:
+            last_seen.pop(nid, None)
+            expert_debt.pop(nid, None)
+            node_levels.pop(nid, None)
+
+    state.coverage_expert_debt = expert_debt
+    state.coverage_band_debt = band_debt
+    state.node_band_levels = node_levels
+    state.coverage_debt_last_seen = last_seen
 
 
 def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple[Action, AgentState, Dict[str, Any]]:
@@ -79,6 +206,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
       trace: dict diagnostics (runner expects a dict)
     """
     D = _cfg_D(state, cfg)
+    active_prev = set(getattr(state, "active_set", set()) or set())
     _dbg('enter', state=state)
     _dbg(f'cfg.D={D}', state=state)
     periph_dims = _peripheral_dim_set(D, cfg)
@@ -274,6 +402,57 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
 
     _update_observed_history(state, obs_idx, cfg, extra_dims=periph_dims)
 
+    # -------------------------------------------------------------------------
+    # NUPCA5: scan-proof sig64(t) from committed metadata + ephemeral periphery gist
+    # (Used by PackedSigIndex retrieval; must not depend on library size.)
+    # -------------------------------------------------------------------------
+    gist_bins = int(cfg.sig_gist_bins)
+    gist_bins = max(1, gist_bins)
+    full_vec = getattr(env_obs, "periph_full", None)
+    if full_vec is None:
+        full_vec = true_full_vec
+    gist_u8 = np.zeros(0, dtype=np.uint8)
+    if full_vec is not None and periph_dims:
+        full_arr = np.asarray(full_vec, dtype=float).reshape(-1)
+        if full_arr.size < D:
+            full_arr = np.resize(full_arr, (D,))
+        periph_idx = np.array(sorted(int(d) for d in periph_dims if 0 <= int(d) < D), dtype=int)
+        if periph_idx.size:
+            vals = full_arr[periph_idx]
+            occ = (vals > 0.0).astype(np.uint8)
+            if O_req:
+                # Zero any periphery dims that are currently in the requested observation set.
+                # (Avoids fovea leakage into the periphery gist.)
+                for k, dim in enumerate(periph_idx):
+                    if int(dim) in O_req:
+                        occ[k] = 0
+            P = int(occ.size)
+            bins = min(gist_bins, P)
+            chunk = (P + bins - 1) // bins
+            padded = np.zeros(bins * chunk, dtype=np.uint8)
+            padded[:P] = occ
+            pooled = padded.reshape(bins, chunk).max(axis=1)
+            gist_u8 = (pooled * np.uint8(255)).astype(np.uint8)
+    prev_counts = getattr(state, "sig_prev_counts", None)
+    prev_hist = getattr(state, "sig_prev_hist", None)
+    prev_meta = None
+    if prev_counts is not None and prev_hist is not None:
+        pc = np.asarray(prev_counts, dtype=np.int16).reshape(-1)
+        ph = np.asarray(prev_hist, dtype=np.uint16).reshape(-1)
+        if pc.size and ph.size:
+            prev_meta = Sig64Meta(counts=pc, hist=ph)
+    sig64_t, meta_t = compute_sig64_from_obs(
+        obs_vals,
+        gist_u8,
+        prev_meta=prev_meta,
+        value_bins=int(cfg.sig_value_bins),
+        vmax=float(cfg.sig_vmax),
+        seed=int(cfg.sig_seed),
+    )
+    state.last_sig64 = int(sig64_t)
+    state.sig_prev_counts = np.asarray(meta_t.counts, dtype=np.int16).copy()
+    state.sig_prev_hist = np.asarray(meta_t.hist, dtype=np.uint16).copy()
+
 
     (
         shift,
@@ -426,6 +605,58 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     else:
         mae_pos_post_transport = float("nan")
     _dbg('A13 complete(perception) end', state=state)
+
+    # -------------------------------------------------------------------------
+    # NUPCA5: deferred validation (h=+1) of the prior produced by A_{t-1}.
+    # Updates per-node err_ema/val_count and (optionally) the PackedSigIndex error table.
+    # This uses only observed dims at time t (bounded by O_req); no dense persistence.
+    # -------------------------------------------------------------------------
+    if bool(cfg.sig_enable_validation):
+        beta_err = float(cfg.sig_err_ema_beta)
+        beta_err = 0.0 if beta_err < 0.0 else (1.0 if beta_err > 1.0 else beta_err)
+        lib = getattr(state, "library", None)
+        sig_index = getattr(lib, "sig_index", None) if lib is not None else None
+        # POS bin is index 2 by convention (NEG/ZERO/POS).
+        h_bin = 2
+        if obs_idx.size and active_prev:
+            for nid in list(active_prev):
+                node = lib.nodes.get(int(nid)) if lib is not None else None
+                if node is None:
+                    continue
+                out_idx = getattr(node, "out_idx", None)
+                if out_idx is None or len(getattr(out_idx, "shape", ())) == 0 or np.asarray(out_idx).size == 0:
+                    m = np.asarray(getattr(node, "mask", np.zeros(0)), dtype=float).reshape(-1)
+                    out_idx = np.where(m > 0.5)[0].astype(int)
+                else:
+                    out_idx = np.asarray(out_idx, dtype=int).reshape(-1)
+                if out_idx.size == 0:
+                    continue
+                mask = np.isin(obs_idx, out_idx)
+                if not np.any(mask):
+                    continue
+                idx = obs_idx[mask]
+                vals = obs_vals[mask]
+                pred = prior_t[idx]
+                diff = pred - vals
+                finite = np.isfinite(diff)
+                if not np.any(finite):
+                    continue
+                err = float(np.mean(np.abs(diff[finite])))
+                try:
+                    ema = np.asarray(getattr(node, "err_ema", np.zeros(3, dtype=np.float32)), dtype=np.float32).reshape(-1)
+                    if ema.size != 3:
+                        ema = np.zeros(3, dtype=np.float32)
+                    ema[h_bin] = (1.0 - beta_err) * float(ema[h_bin]) + beta_err * float(err)
+                    node.err_ema = ema
+                    cnt = np.asarray(getattr(node, "val_count", np.zeros(3, dtype=np.int32)), dtype=np.int32).reshape(-1)
+                    if cnt.size != 3:
+                        cnt = np.zeros(3, dtype=np.int32)
+                    cnt[h_bin] = int(cnt[h_bin]) + 1
+                    node.val_count = cnt
+                    if sig_index is not None and hasattr(sig_index, "update_error"):
+                        sig_index.update_error(int(nid), int(h_bin), float(ema[h_bin]))
+                except Exception:
+                    pass
     _compute_peripheral_metrics(state, cfg, prior_t, env_obs, obs_idx, obs_vals, D, periph_dims)
     clamp_delta = x_t - prior_t
     not_obs_mask = np.ones(D, dtype=bool)
@@ -593,10 +824,12 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
                 )
         state.coarse_prev = coarse_curr.copy() if coarse_curr.size else np.zeros(0, dtype=float)
 
-
-    _ensure_node_band_levels(state, cfg)
-    gist_vec = _compute_peripheral_gist(x_prev, cfg)
-    _update_context_register(state, gist_vec, cfg)
+    # v5 fixed-budget: do NOT scan the full durable library each step.
+    # Band levels are inferred lazily for bounded candidate sets (see salience),
+    # and coverage bookkeeping is maintained over bounded tracked sets.
+    if not bool(cfg.sig_disable_context_register):
+        gist_vec = _compute_peripheral_gist(x_prev, cfg)
+        _update_context_register(state, gist_vec, cfg)
 
     def _should_skip_salience(state: AgentState, cfg: AgentConfig) -> bool:
         if not getattr(state, "scores_prev", None):
@@ -646,8 +879,15 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     _dbg('A4/A5 select_working_set', state=state)
     state.active_set = set(int(nid) for nid in getattr(A_t, "active", []) or [])
 
-    _update_context_tags(state, cfg)
-    _update_coverage_debts(state, cfg)
+    # v5 scan-proof retrieval: PackedSigIndex updates belong to unit lifecycle
+    # (creation/eviction) and outcome-vetted validation, not "insert every
+    # activation". The online step loop must not mutate buckets based on usage.
+
+    if not bool(cfg.sig_disable_context_register):
+        _update_context_tags(state, cfg)
+    tracked_ids = set(getattr(state, "salience_candidate_ids", set()) or set())
+    tracked_ids.update(state.active_set or set())
+    _update_coverage_debts_bounded(state, cfg, tracked_ids)
 
     L_eff = float(getattr(A_t, "effective_load", 0.0))
     _dbg(f'L_eff={L_eff:.3f} active_set={len(getattr(state,"active_set",[]) or [])}', state=state)

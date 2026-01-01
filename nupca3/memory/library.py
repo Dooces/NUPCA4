@@ -1,3 +1,5 @@
+# /mnt/data/NUPCA4/NUPCA4/nupca3/memory/library.py
+
 """nupca3/memory/library.py
 
 Expert library DAG + footprint indices + anchors.
@@ -17,12 +19,157 @@ Axiom coverage: A4.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterable, List, Set
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
 from ..config import AgentConfig
 from ..types import ExpertLibrary, ExpertNode
+
+from .sig64 import splitmix64
+from .sig_index import PackedSigIndex
+
+
+_MASK64 = (1 << 64) - 1
+
+
+class V5ExpertLibrary(ExpertLibrary):
+    """ExpertLibrary with v5 unit-lifecycle hooks.
+
+    Key property:
+      - sig_index bucket updates occur ONLY on unit creation/eviction, never in
+        the online step loop.
+
+    Requirements:
+      - New units MUST arrive with `unit_sig64` already set to their stored
+        64-bit retrieval address (computed from committed metadata + ephemeral
+        gist at creation time).
+    """
+
+    def add_node(self, node: ExpertNode) -> int:  # type: ignore[override]
+        # Enforce v5 address semantics (no silent salts).
+        if not hasattr(node, "unit_sig64"):
+            raise ValueError("NUPCA5: node must define unit_sig64 (stored 64-bit address)")
+        addr = int(getattr(node, "unit_sig64")) & _MASK64
+        if addr == 0:
+            raise ValueError("NUPCA5: node.unit_sig64 must be a non-zero stored address")
+
+        node_id = super().add_node(node)
+        # Register in the packed signature index (if enabled).
+        dim2block = getattr(self, "_sig_dim2block", None)
+        register_unit_in_sig_index(self, node, dim2block=dim2block)
+        return int(node_id)
+
+    def remove_node(self, node_id: int) -> Optional[ExpertNode]:  # type: ignore[override]
+        node = self.nodes.get(int(node_id))
+        if node is not None:
+            unregister_unit_from_sig_index(self, node)
+        return super().remove_node(int(node_id))
+
+
+def _template_unit_addr(
+    *,
+    seed: int,
+    block_id: int,
+    is_anchor: bool,
+    is_transport: bool,
+) -> int:
+    """Deterministic address for *synthetic* init-time units.
+
+    v5 intent: learned units must store the 64-bit address derived from
+    (committed metadata + ephemeral gist) *at creation time*. The seed library
+    units created in `init_library()` do not have an observation context, so we
+    give them a deterministic address derived only from their committed
+    template metadata (block_id + flags) and the configured sig_seed.
+
+    This is NOT the old pseudo-random per-node salt (it does not depend on
+    node_id). Real spawned/merged/split units must set their unit address from
+    the observation-time sig64.
+    """
+    s = int(seed) & _MASK64
+    b = int(block_id) & _MASK64
+    flags = (1 if bool(is_anchor) else 0) | ((1 if bool(is_transport) else 0) << 1)
+
+    # Pack a tiny committed-metadata payload and mix.
+    # Layout: [block_id (u32), flags (u32), constant (u64)]
+    payload = (
+        int(b & 0xFFFFFFFF).to_bytes(4, "little", signed=False)
+        + int(flags & 0xFFFFFFFF).to_bytes(4, "little", signed=False)
+        + int(0xA5A5A5A5A5A5A5A5).to_bytes(8, "little", signed=False)
+    )
+    x = splitmix64(s ^ int.from_bytes(payload[:8], "little", signed=False))
+    x = splitmix64(x ^ int.from_bytes(payload[8:16], "little", signed=False))
+    return int(x & _MASK64)
+
+
+def _sig_index_blocks_for_node(
+    *,
+    node: ExpertNode,
+    dim2block: Optional[np.ndarray],
+) -> Tuple[int, ...]:
+    """Return the block ids under which the node should be registered.
+
+    We register under the union of block_ids touched by (in_idx ∪ out_idx),
+    falling back to node.footprint if no indices exist.
+
+    This is computed at unit lifecycle time (creation) and stored on the node
+    as a small tuple for deterministic removal on eviction.
+    """
+    bids: Set[int] = set()
+    if dim2block is not None:
+        for idx_name in ("in_idx", "out_idx"):
+            arr = getattr(node, idx_name, None)
+            if arr is None:
+                continue
+            a = np.asarray(arr, dtype=int).reshape(-1)
+            if a.size:
+                a = a[(a >= 0) & (a < dim2block.size)]
+                if a.size:
+                    bids.update(int(x) for x in np.unique(dim2block[a]).tolist())
+
+    if not bids:
+        bids.add(int(getattr(node, "footprint", -1)))
+    bids = {int(b) for b in bids if int(b) >= 0}
+    if not bids:
+        return tuple()
+    return tuple(sorted(bids))
+
+
+def register_unit_in_sig_index(
+    lib: ExpertLibrary,
+    node: ExpertNode,
+    *,
+    dim2block: Optional[np.ndarray] = None,
+) -> None:
+    """Register a unit in the packed signature index.
+
+    This is a unit-lifecycle operation (creation), not an online step-loop
+    operation.
+    """
+    sig_index = getattr(lib, "sig_index", None)
+    if sig_index is None:
+        return
+    addr = int(getattr(node, "unit_sig64", 0)) & _MASK64
+    bids = _sig_index_blocks_for_node(node=node, dim2block=dim2block)
+    setattr(node, "sig_index_blocks", bids)
+    nid = int(getattr(node, "node_id", -1))
+    for b in bids:
+        sig_index.insert(int(addr), int(b), int(nid))
+
+
+def unregister_unit_from_sig_index(
+    lib: ExpertLibrary,
+    node: ExpertNode,
+) -> None:
+    """Unregister a unit from the packed signature index (eviction)."""
+    sig_index = getattr(lib, "sig_index", None)
+    if sig_index is None:
+        return
+    addr = int(getattr(node, "unit_sig64", 0)) & _MASK64
+    bids = tuple(int(b) for b in (getattr(node, "sig_index_blocks", ()) or ()))
+    nid = int(getattr(node, "node_id", -1))
+    for b in bids:
+        sig_index.remove(int(addr), int(b), int(nid))
 
 
 def _build_blocks(state_dim: int, n_blocks: int) -> List[List[int]]:
@@ -57,17 +204,32 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
         destructive under the current fusion rule (it "covers" everything and
         overwrites stale persistence, even when untrained).
     """
-    lib = ExpertLibrary(nodes={}, anchors=set(), footprint_index={})
+    lib: ExpertLibrary = V5ExpertLibrary(nodes={}, anchors=set(), footprint_index={})
+    # NUPCA5: create packed signature index for scan-proof retrieval.
+    lib.sig_index = PackedSigIndex.from_cfg_obj(cfg)
     node_id = 0
     D = int(cfg.D)
     B = int(cfg.B)
     blocks = _build_blocks(D, B)
-    span = int(getattr(cfg, "transport_span_blocks", 0))
-    base_cost = float(getattr(cfg, "expert_base_cost", 1.0))
-    dim_cost = float(getattr(cfg, "expert_dim_cost", 0.05))
+
+    # Precompute dim->block map for bounded, lifecycle-time sig_index registration.
+    dim2block: Optional[np.ndarray]
+    if D > 0 and blocks and blocks[0] != []:
+        dim2block = np.empty(D, dtype=np.int32)
+        for bi, dims in enumerate(blocks):
+            for d in dims:
+                if 0 <= int(d) < D:
+                    dim2block[int(d)] = int(bi)
+    else:
+        dim2block = None
+    # Stash for bounded sig_index lifecycle registration (creation/eviction).
+    setattr(lib, "_sig_dim2block", dim2block)
+    span = int(cfg.transport_span_blocks)
+    base_cost = float(cfg.expert_base_cost)
+    dim_cost = float(cfg.expert_dim_cost)
     # dtype: keep params lightweight; step_pipeline casts to float as needed.
     f_dtype = np.float32
-    sigma_init_untrained = float(getattr(cfg, "sigma_init_untrained", float("inf")))
+    sigma_init_untrained = float(cfg.sigma_init_untrained)
 
     for b, block_dims in enumerate(blocks):
         out_idx = np.array(block_dims, dtype=int) if block_dims else np.zeros(0, dtype=int)
@@ -81,7 +243,7 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
 
         # Cost proportional to output dims (legacy behavior); optionally include
         # input dims if the config enables it.
-        cost_include_inputs = bool(getattr(cfg, "expert_cost_include_inputs", False))
+        cost_include_inputs = bool(cfg.expert_cost_include_inputs)
         if cost_include_inputs:
             eff_dims = float(out_idx.size + in_idx.size)
         else:
@@ -93,7 +255,7 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
         # expert.py routines. (A future refactor may store these compactly.)
         b_full = np.zeros(D, dtype=f_dtype)
         Sigma_full = np.full(D, sigma_init_untrained, dtype=f_dtype)
-        block_anchor = bool(getattr(cfg, "force_block_anchors", False))
+        block_anchor = bool(cfg.force_block_anchors)
         local_node = ExpertNode(
             node_id=node_id,
             mask=mask,
@@ -108,6 +270,17 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
             out_idx=out_idx,
             in_idx=in_idx,
         )
+        # v5: `unit_sig64` is the unit's stored 64-bit retrieval address.
+        # Seed units created at init have no observation context; assign a
+        # deterministic template-derived address (no node_id dependence).
+        local_node.unit_sig64 = _template_unit_addr(
+            seed=int(cfg.sig_seed),
+            block_id=int(b),
+            is_anchor=bool(block_anchor),
+            is_transport=False,
+        )
+        # Register in scan-proof retrieval index at unit lifecycle time.
+        register_unit_in_sig_index(lib, local_node, dim2block=dim2block)
         lib.nodes[node_id] = local_node
         lib.footprint_index.setdefault(b, []).append(node_id)
         if block_anchor:
@@ -143,12 +316,20 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
                 in_idx=in_idx,
             )
             setattr(transport_node, "transport", True)
+            transport_node.unit_sig64 = _template_unit_addr(
+                seed=int(cfg.sig_seed),
+                block_id=int(b),
+                is_anchor=False,
+                is_transport=True,
+            )
+            register_unit_in_sig_index(lib, transport_node, dim2block=dim2block)
             lib.nodes[node_id] = transport_node
             lib.footprint_index.setdefault(b, []).append(node_id)
             node_id += 1
+
     # IMPORTANT: init_library populates lib.nodes directly (not via lib.add_node),
     # so we must advance next_node_id to avoid id collisions that overwrite incumbents.
-    if getattr(lib, 'nodes', None):
+    if getattr(lib, "nodes", None):
         lib.next_node_id = max(int(k) for k in lib.nodes.keys()) + 1
     else:
         lib.next_node_id = 0

@@ -95,44 +95,74 @@ def predict(node: ExpertNode, x: np.ndarray) -> np.ndarray:
 
 
 def precision_vector(node: ExpertNode) -> np.ndarray:
-    """Return masked diagonal precision vector for the expert.
+    """Return the diagonal precision vector implied by the expert's Sigma.
 
-    Skeleton: uses diagonal of Sigma^{-1} where defined; zeros elsewhere.
+    This is not a placeholder: we derive per-dimension precision from the
+    covariance data provided by the node. Missing or invalid entries yield
+    zero precision so coverage logic stays explicit.
     """
-    # Avoid full inversion; treat Sigma as diagonal placeholder.
-    diag_raw = np.diag(node.Sigma) if node.Sigma.ndim == 2 else node.Sigma
-    diag_raw = np.asarray(diag_raw, dtype=float).reshape(-1)
-    # Expand compact Sigma (stored on out_idx ordering) to a global D-length diag.
-    D = int(getattr(node, "mask", np.zeros(0)).shape[0])
-    diag: np.ndarray
-    if D > 0 and diag_raw.size == D:
-        diag = diag_raw
-    else:
+    D = int(getattr(node, "mask", np.zeros(0, dtype=float)).shape[0])
+    prec_global = np.zeros(D, dtype=float)
+    if D == 0:
+        return prec_global
+
+    mask_bool = np.asarray(node.mask, dtype=bool)
+    sigma = np.asarray(node.Sigma, dtype=float)
+
+    def _precision_from_variances(vars_arr: np.ndarray) -> np.ndarray:
+        """Return 1/variance for positive finite entries."""
+        safe = np.asarray(vars_arr, dtype=float).reshape(-1)
+        valid = np.isfinite(safe) & (safe > 0.0)
+        prec = np.zeros_like(safe)
+        if np.any(valid):
+            prec[valid] = 1.0 / np.maximum(safe[valid], 1e-8)
+        return prec, valid
+
+    def _canonical_precision() -> tuple[np.ndarray, np.ndarray]:
+        if sigma.ndim == 2 and sigma.shape[0] == sigma.shape[1]:
+            try:
+                inv = np.linalg.inv(sigma)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(sigma)
+            diag = np.diag(inv)
+            diag = diag[:D]
+            idx = np.arange(min(D, diag.size), dtype=int)
+            return idx, diag
+        compact = sigma.reshape(-1)
+        if compact.size == D:
+            idx = np.arange(D, dtype=int)
+            return idx, compact
         out_idx = getattr(node, "out_idx", None)
-        if D <= 0:
-            D = int(diag_raw.size)
-        diag = np.full(D, np.inf, dtype=float)
         if out_idx is not None:
-            out_idx = np.asarray(out_idx, dtype=int).reshape(-1)
-            if out_idx.size == diag_raw.size:
-                diag[out_idx] = diag_raw
-        else:
-            # Fallback: if we cannot map compact->global, treat as no coverage.
-            pass
+            idx = np.asarray(out_idx, dtype=int).reshape(-1)
+            length = min(idx.size, compact.size)
+            return idx[:length], compact[:length]
+        length = min(D, compact.size)
+        idx = np.arange(length, dtype=int)
+        return idx, compact[:length]
+
+    idx, diag_entries = _canonical_precision()
+    if idx.size and diag_entries.size:
+        prec_vals, valid = _precision_from_variances(diag_entries)
+        valid_idx = idx[valid]
+        for canon_idx, val in zip(valid_idx, prec_vals[valid]):
+            if 0 <= canon_idx < D and mask_bool[canon_idx]:
+                prec_global[canon_idx] = val
+
     binding = getattr(node, "binding_map", None)
     if binding is not None:
         fwd = np.asarray(getattr(binding, "forward", []), dtype=int)
-        prec = np.zeros_like(diag, dtype=float)
-        mask = node.mask.astype(bool)
-        for i in np.where(mask)[0]:
-            j = int(fwd[i])
-            if j >= 0 and j < prec.shape[0]:
-                prec[j] = 1.0 / np.maximum(diag[i], 1e-8)
-        return prec
-    prec = np.zeros_like(diag, dtype=float)
-    mask_b = np.asarray(node.mask, dtype=bool)
-    prec[mask_b] = 1.0 / np.maximum(diag[mask_b], 1e-8)
-    return prec
+        mapped = np.zeros_like(prec_global)
+        mask = mask_bool
+        for canon_idx in np.where(mask)[0]:
+            if canon_idx >= fwd.shape[0]:
+                continue
+            world_idx = int(fwd[canon_idx])
+            if 0 <= world_idx < mapped.shape[0]:
+                mapped[world_idx] = prec_global[canon_idx]
+        return mapped
+
+    return prec_global
 
 
 def sgd_update(

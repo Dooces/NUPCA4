@@ -348,4 +348,66 @@ A17.2 Audit requirements.
   edit acceptance tests,
   and non-decisionality of the environment/harness.
 
+=========================================
+Memory Contract
+=========================================
+
+Discriminability-gated growth: Create or version nodes/constellations only when a bounded-cost cue available at decision time can discriminate the new regime; otherwise treat residual error as uncertainty and do not allocate new persistent structure.
+
+Persistent summaries are addresses, not data: they may bias retrieval, but they cannot be used to reconstruct, supervise, or replay sensory; only externally validated observation–prediction error updates memory.
+
+Bounded growth
+
+Node creation, edge creation, and any episodic/summary buffers have hard caps (compile-time constants or explicitly configured limits).
+
+If the cap is hit: evict / merge / refuse creation. No silent growth.
+
+No full scans
+
+Retrieval must be sublinear in total node count 
+𝑁
+N: O(1) bucket lookup or O(log N) index lookup.
+
+Absolutely no “compute similarity against every node” or “iterate through all nodes” per step.
+
+Two-stage retrieval (mandatory)
+
+Stage 1: cheap gating to produce a small candidate set (e.g., block keys, hash buckets, coarse signature buckets).
+
+Stage 2: exact scoring on Top-K candidates only (K is hard-capped).
+
+Fixed per-step compute budget
+
+Memory operations must fit within the same per-step compute budget as everything else.
+
+If budget would be exceeded: degrade gracefully (reduce K, skip updates, fallback to block-only), not “just this once.”
+
+Store at execution factorization
+
+The unit you score/store is the unit you execute (constellation/subgraph-level if runtime is compositional).
+
+No fine-grained updates that assume separability if execution is set-level.
+
+Lean representations only
+
+No per-node Python dict/list object graphs as the “database.”
+
+Use packed arrays / structs; store only what is required for retrieval + prediction.
+
+Avoid per-node full covariances or heavyweight stats unless you can prove they remain bounded and necessary.
+
+Outcome-vetted updates only
+
+No “retrieved → reinforce.” No “used → increment relevance.”
+
+Update memory statistics only when an external outcome for the relevant horizon/mask arrives.
+
+No reconstructible sensory in durable state
+
+Any persistent episodic store is limited to non-reconstructible summaries with hard caps and explicit audits.
+
+One sentence version:
+
+“Memory must be hard-capped, retrieval must be sublinear with two-stage Top-K gating, no full scans, no unbounded composition search, no usage-based reinforcement, and all memory ops must fit a fixed per-step budget using lean packed representations.”
+
 END.

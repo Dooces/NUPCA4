@@ -1,3 +1,5 @@
+# /mnt/data/NUPCA4/NUPCA4/nupca3/memory/working_set.py
+
 """nupca3/memory/working_set.py
 
 Working set selection A_t under cardinality and load constraints.
@@ -103,8 +105,12 @@ def _greedy_select(
 
 
 # =============================================================================
-# Cold Storage Retrieval (A4.3)
+# Cold Storage Retrieval (A4.3 / NUPCA5 A4.3′)
 # =============================================================================
+
+
+def _popcount64(x: int) -> int:
+    return int((x & ((1 << 64) - 1)).bit_count())
 
 
 def get_retrieval_candidates(
@@ -145,13 +151,61 @@ def get_retrieval_candidates(
 
     # Use the fovea blocks already chosen by the step pipeline.
     fovea_blocks = set(getattr(state, "current_fovea", set()))
-
     # Defensive fallback: recompute F_t from stored greedy_cov stats.
     if not fovea_blocks:
         try:
             fovea_blocks = set(select_fovea(state.fovea, cfg))
         except Exception:
             fovea_blocks = set()
+    # -------------------------
+    # NUPCA5 scan-proof retrieval (A4.3′)
+    # -------------------------
+    if hasattr(library, "sig_index"):
+        sig_index = getattr(library, "sig_index", None)
+        sig64_t = getattr(state, "last_sig64", None)
+        if sig_index is None or sig64_t is None or not fovea_blocks:
+            return set()
+
+        sig64_t = getattr(state, "last_sig64", None)
+        if sig_index is not None and sig64_t is not None and fovea_blocks:
+            cand_cap = int(cfg.sig_query_cand_cap)
+            cand_cap = max(1, cand_cap)
+            raw = sig_index.query(int(sig64_t), list(sorted(int(b) for b in fovea_blocks)), cand_cap=cand_cap)
+            # Stage-2 bounded rerank (A4.3′): score(u) = -popcount(sig64(t) XOR unit_sig64[u]) - α*err_ema[u,h_bin]
+            # IMPORTANT: `unit_sig64` is the unit's immutable 64-bit retrieval address (stored at creation).
+            alpha_err = float(cfg.sig_stage2_alpha_err)
+            scored_pairs = []
+            for node_id in raw:
+                nid = int(node_id)
+                if nid < 0 or nid in prev_active:
+                    continue
+                node = nodes.get(nid, None)
+                if node is None:
+                    continue
+
+                # v5 address: immutable at creation (not a per-node salt).
+                if not hasattr(node, "unit_sig64"):
+                    raise RuntimeError(
+                        "NUPCA5 retrieval stage-2 requires node.unit_sig64 (immutable 64-bit address)"
+                    )
+                u_addr = int(getattr(node, "unit_sig64")) & ((1 << 64) - 1)
+                dist = _popcount64(int(sig64_t) ^ u_addr)
+                # POS bin is index 2 by convention (NEG/ZERO/POS).
+                if not hasattr(sig_index, "get_error"):
+                    raise RuntimeError("PackedSigIndex must expose get_error() under v5")
+                err = float(sig_index.get_error(int(nid), 2))
+
+                score = -float(dist) - alpha_err * float(err)
+                scored_pairs.append((score, nid))
+
+            
+            if scored_pairs:
+                max_ret = int(cfg.max_retrieval_candidates)
+                max_ret = max(1, max_ret)
+                scored_pairs.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+                return set(nid for _, nid in scored_pairs[:max_ret])
+
+            return set()
 
     # Compute greedy_cov scores per block (explicit keying).
     import math
@@ -244,15 +298,23 @@ def select_working_set(
     # =========================================================================
     # Step 1: Force-include anchors (A5.6)
     # =========================================================================
-
     anchor_ids: List[int] = []
     anchor_load_raw = 0.0
 
-    for node_id, node in nodes.items():
-        if not getattr(node, "is_anchor", False):
+    # v5 requirement: anchor ids are maintained incrementally (no per-step full scans).
+    # The library is the authority via `library.anchors` (bounded by |anchors|).
+    anchors = getattr(library, "anchors", None)
+    if anchors is None:
+        raise RuntimeError("Library missing `anchors` set; v5 requires incremental anchor tracking")
+
+    for nid in sorted(int(x) for x in anchors):
+        node = nodes.get(int(nid))
+        if node is None:
+            continue
+        if not bool(getattr(node, "is_anchor", False)):
             continue
         cost = _get_node_cost(node)
-        anchor_ids.append(int(node_id))
+        anchor_ids.append(int(nid))
         anchor_load_raw += cost
 
     # A5.6 step 2: Verify anchors fit within budget
@@ -288,16 +350,56 @@ def select_working_set(
     for nid in retrieved:
         if nid in nodes and nid not in anchor_set:
             candidate_pool.add(int(nid))
-
     # Optional linger: recently active nodes remain candidates for a short TTL.
+    # v5 requirement: linger membership must be maintained incrementally or bounded;
+    # never via per-step scans over all nodes.
     linger_steps = int(getattr(cfg, "working_set_linger_steps", 0))
     if linger_steps > 0:
         t_now = int(getattr(state, "t", 0))
-        for nid, node in nodes.items():
-            if nid in anchor_set:
+        # Initialize / advance bounded linger index (expiry-ring).
+        ring = getattr(state, "_ws_linger_ring", None)
+        exp_map = getattr(state, "_ws_linger_exp", None)
+        linger_ids = getattr(state, "_ws_linger_ids", None)
+        last_t = getattr(state, "_ws_linger_last_t", None)
+        ring_len = int(linger_steps) + 1
+
+        def _reset_linger():
+            nonlocal ring, exp_map, linger_ids, last_t
+            ring = [set() for _ in range(ring_len)]
+            exp_map = {}
+            linger_ids = set()
+            last_t = int(t_now)
+
+        if ring is None or exp_map is None or linger_ids is None or last_t is None:
+            _reset_linger()
+        else:
+            # If linger_steps changed or time moved backwards/too far, reset.
+            if len(ring) != ring_len or int(t_now) < int(last_t) or (int(t_now) - int(last_t)) > ring_len:
+                _reset_linger()
+            else:
+                # Advance step-by-step if we skipped a small number of steps.
+                for s in range(int(last_t) + 1, int(t_now) + 1):
+                    idx = int(s) % ring_len
+                    due = ring[idx]
+                    if due:
+                        for nid in list(due):
+                            if int(exp_map.get(int(nid), -1)) == int(s):
+                                exp_map.pop(int(nid), None)
+                                linger_ids.discard(int(nid))
+                        due.clear()
+                last_t = int(t_now)
+
+        # Persist linger index back onto state (bounded structures).
+        state._ws_linger_ring = ring
+        state._ws_linger_exp = exp_map
+        state._ws_linger_ids = linger_ids
+        state._ws_linger_last_t = last_t
+
+        # Add current linger set to candidate pool (excluding anchors).
+        for nid in list(linger_ids):
+            if int(nid) in anchor_set:
                 continue
-            last_active = int(getattr(node, "last_active_step", -10**9))
-            if t_now - last_active <= linger_steps:
+            if int(nid) in nodes:
                 candidate_pool.add(int(nid))
 
     # Ensure incumbents for currently observed footprints are tried.
@@ -362,13 +464,20 @@ def select_working_set(
         remaining_load -= cost
         remaining_count -= 1
 
+    forced_set = set(int(n) for n in forced_ids)
+    remaining_candidates = [int(n) for n in candidate_pool if int(n) not in forced_set]
+
     selected_non_anchors = forced_ids + _greedy_select(
-        candidates=list(candidate_pool),
+        candidates=remaining_candidates,
         scores=scores,
         costs=costs,
         budget_load=remaining_load,
         budget_count=remaining_count,
     )
+
+    # De-duplicate while preserving order (forced ids win).
+    _seen = set()
+    selected_non_anchors = [n for n in selected_non_anchors if not (n in _seen or _seen.add(n))]
 
     # =========================================================================
     # Step 4: Assemble working set and compute metrics
@@ -403,6 +512,38 @@ def select_working_set(
             eff_anchor_load += eff_contribution
         else:
             eff_rollout_load += eff_contribution
+
+
+    # Commit linger membership for the NEXT step (bounded update; no scans).
+    if linger_steps > 0:
+        t_now = int(getattr(state, "t", 0))
+        ring_len = int(linger_steps) + 1
+        ring = getattr(state, "_ws_linger_ring", None)
+        exp_map = getattr(state, "_ws_linger_exp", None)
+        linger_ids = getattr(state, "_ws_linger_ids", None)
+        if ring is None or exp_map is None or linger_ids is None or len(ring) != ring_len:
+            # If the linger index was not initialized above (or config changed), reset now.
+            ring = [set() for _ in range(ring_len)]
+            exp_map = {}
+            linger_ids = set()
+
+        for nid in selected_non_anchors:
+            n = int(nid)
+            old_exp = exp_map.get(n)
+            if old_exp is not None:
+                try:
+                    ring[int(old_exp) % ring_len].discard(n)
+                except Exception:
+                    pass
+            new_exp = int(t_now) + int(linger_steps) + 1
+            exp_map[n] = int(new_exp)
+            ring[int(new_exp) % ring_len].add(n)
+            linger_ids.add(n)
+
+        state._ws_linger_ring = ring
+        state._ws_linger_exp = exp_map
+        state._ws_linger_ids = linger_ids
+        state._ws_linger_last_t = int(t_now)
 
     return WorkingSet(
         active=active,
@@ -454,21 +595,29 @@ def select_working_set_legacy(
 
     N_max = int(getattr(cfg, "N_max", getattr(cfg, "n_max", 64)))
     L_max = float(getattr(cfg, "L_work_max", getattr(cfg, "l_max_work", 48.0)))
-
-    # Separate anchors
+    # Separate anchors (bounded; no full scans)
     anchor_ids: List[int] = []
     anchor_load = 0.0
-    non_anchor_candidates: List[int] = []
 
-    for node_id, node in nodes.items():
-        if getattr(node, "is_anchor", False):
-            cost = _get_node_cost(node)
-            if anchor_load + cost <= L_max:
-                anchor_ids.append(int(node_id))
-                anchor_load += cost
-        else:
-            if node_id in a_raw:
-                non_anchor_candidates.append(int(node_id))
+    anchors = getattr(lib, "anchors", None)
+    if anchors is None:
+        raise RuntimeError("Library missing `anchors` set; v5 requires incremental anchor tracking")
+
+    for nid in sorted(int(x) for x in anchors):
+        node = nodes.get(int(nid))
+        if node is None or not bool(getattr(node, "is_anchor", False)):
+            continue
+        cost = _get_node_cost(node)
+        if anchor_load + cost <= L_max:
+            anchor_ids.append(int(nid))
+            anchor_load += cost
+
+    anchor_set = set(anchor_ids)
+
+    # Non-anchor candidates are sourced from the provided a_raw keys (bounded).
+    non_anchor_candidates: List[int] = [
+        int(nid) for nid in a_raw.keys() if int(nid) in nodes and int(nid) not in anchor_set
+    ]
 
     # Compute scores for non-anchors
     scores: Dict[int, float] = {}

@@ -1,301 +1,202 @@
+#!/usr/bin/env python3
 """nupca3/agent.py
 
-Public agent wrapper for NUPCA3.
+NUPCA3Agent implementation used by the v5 harness (test5.py).
 
-This file MUST remain a thin orchestrator:
-- It owns `AgentState` and exposes a stable `step()` API.
-- It performs A14.8 initialization for all axiom-required state.
-- It delegates the single authoritative step order to
-  `nupca3.step_pipeline.step_pipeline`.
+This module is intentionally thin:
+  - State initialization lives here (because it must be consistent and
+    pickleable for harness save/restore).
+  - Per-step logic is delegated to ``nupca3.step_pipeline.core.step_pipeline``.
 
-Axiom intent notes
-------------------
-- Long-term memory is the expert library (A4). `reset(clear_memory=False)` must
-  preserve it; otherwise Color×Shape holdout evaluation is invalid.
-- This wrapper must not introduce alternate authorities (e.g., writing into
-  Q_struct directly, bypassing REST gating, or storing pixel data in long-term
-  fields). Observations are passed into the pipeline and not retained here.
-
-Representation boundary (clarified project intent)
--------------------------------------------------
-Raw pixels may exist only in transient observation buffers for the current step.
-This wrapper does not store raw observation payloads beyond the pipeline call.
-
+Critical ordering note
+----------------------
+The v5 harness expects the sig_* fields to be present in AgentConfig.
+This repo is v5-only; no import-time compatibility patching is supported.
 """
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+import pickle
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-
 from .config import AgentConfig
 from .types import (
     Action,
     AgentState,
+    Baselines,
     EnvObs,
-    ExpertLibrary,
-    PersistentResidualState,
+    FoveaState,
+    MacrostateVars,
+    Margins,
+    ObservationBuffer,
+    Stress,
 )
 
-from .step_pipeline import step_pipeline
+from .geometry.block_spec import build_block_specs, BlockView
+from .geometry.fovea import build_blocks_from_cfg, init_fovea_state
+from .incumbents import rebuild_incumbents_by_block
+from .memory.library import init_library
+from .step_pipeline.core import step_pipeline
 from .step_pipeline.fovea import apply_signals_and_select
 
-from .geometry.buffer import init_observation_buffer
-from .geometry.block_spec import BlockSpec, BlockView, build_block_specs
-from .geometry.fovea import init_fovea_state, build_blocks_from_cfg
-from .geometry.streams import coarse_bin_count
 
-from .memory.library import init_library
-from .incumbents import ensure_incumbents_index, rebuild_incumbents_by_block
+def _init_primary_state(cfg: AgentConfig) -> AgentState:
+    """Create a fresh AgentState aligned to cfg.
 
-from .state.baselines import init_baselines
-from .state.macrostate import init_macro, rest_permitted
-from .state.margins import init_margins, init_stress
-
-
-# =============================================================================
-# Helper utilities
-# =============================================================================
-
-
-def _field_names(cls: type) -> Set[str]:
-    """Return dataclass field names for `cls` (empty set if not a dataclass)."""
-    if not is_dataclass(cls):
-        return set()
-    return {f.name for f in fields(cls)}
-
-
-def _build_blocks(state_dim: int, n_blocks: int) -> List[List[int]]:
-    """Build a DoF-aligned block partition with exactly `n_blocks` blocks (A16.1).
-
-    Partitions {0..D-1} into disjoint contiguous blocks. If D% B != 0 we distribute
-    the remainder so block sizes differ by at most 1.
-
-    NOTE
-    ----
-    If B > D, we fall back to D singleton blocks.
-    #ITOOKASHORTCUT: A16.1 presumes meaningful blocks; for B>D we cannot allocate
-    non-empty disjoint blocks without overlap.
+    This is the canonical initializer for harnesses that pickle state.
     """
-    D = int(state_dim)
-    B = max(1, int(n_blocks))
 
-    if D <= 0:
-        return [[]]
+    D = int(getattr(cfg, "D", 0))
+    B = int(getattr(cfg, "B", 0))
+    if D < 0:
+        raise ValueError(f"cfg.D must be >= 0, got {D}")
+    if B <= 0:
+        raise ValueError(f"cfg.B must be > 0, got {B}")
+    if D > 0 and B > D:
+        # Multiple subsystems assume B<=D (block partitions, per-block arrays,
+        # footprint indexing). Fail fast instead of silently mis-sizing.
+        raise ValueError(f"cfg.B ({B}) must be <= cfg.D ({D})")
 
-    base = D // B
-    rem = D % B
+    # Observation geometry.
+    blocks = build_blocks_from_cfg(cfg)
+    if blocks and len(blocks) != B:
+        # build_blocks_from_cfg should match cfg.B; if it doesn't, downstream
+        # array shapes will diverge.
+        raise ValueError(f"Block partition mismatch: len(blocks)={len(blocks)} != cfg.B={B}")
+    block_specs = build_block_specs(blocks, cost_fn=lambda dims: float(max(1, len(dims))))
+    block_view = BlockView(block_specs)
 
-    if B > D:
-        B = D
-        base = 1
-        rem = 0
+    # Per-block costs for budgeted fovea selection.
+    block_costs = np.array([max(1.0, float(len(spec.dims))) for spec in block_specs], dtype=float)
+    if block_costs.size != B:
+        block_costs = np.resize(block_costs, (B,))
 
-    blocks: List[List[int]] = []
-    start = 0
-    for b in range(B):
-        size = base + (1 if b < rem else 0)
-        end = start + size
-        blocks.append(list(range(start, end)))
-        start = end
+    fovea: FoveaState = init_fovea_state(cfg, block_costs=block_costs)
 
-    return blocks
+    # Dense belief buffer (allowed to persist per v1.5b; v5 only bans persisting
+    # ephemeral gist vectors, not the belief state itself).
+    x0 = np.zeros(D, dtype=float) if D > 0 else np.zeros(0, dtype=float)
+    buf = ObservationBuffer(x_last=x0.copy(), x_prior=x0.copy(), observed_dims=set())
 
+    margins = Margins(0.0, 0.0, 0.0, 0.0, 0.0)
+    stress = Stress(0.0, 0.0, 0.0, 0.0, 0.0)
+    baselines = Baselines(mu=np.zeros(5, dtype=float), var_fast=np.zeros(5, dtype=float), var_slow=np.zeros(5, dtype=float))
+    macro = MacrostateVars(rest=False)
 
-def _init_persistent_residuals(n_blocks: int) -> Dict[int, PersistentResidualState]:
-    """Initialize persistent residual accumulator R_phi(t) = 0 per footprint (A12.4, A14.8)."""
-    return {
-        int(block_id): PersistentResidualState(value=0.0, coverage_visits=0)
-        for block_id in range(int(n_blocks))
-    }
+    library = init_library(cfg)
 
+    state = AgentState(
+        t=0,
+        E=0.0,
+        D=0.0,
+        drift_P=0.0,
+        margins=margins,
+        stress=stress,
+        arousal=0.0,
+        baselines=baselines,
+        macro=macro,
+        fovea=fovea,
+        buffer=buf,
+        library=library,
+    )
 
-# =============================================================================
-# Agent
-# =============================================================================
+    # Attach geometry + incumbents indices.
+    state.blocks = [dims.copy() for dims in blocks]
+    state.block_specs = block_specs
+    state.block_view = block_view
+    state.incumbents_by_block = rebuild_incumbents_by_block(library, state.blocks)
+    state.incumbents_revision = int(getattr(library, "revision", 0))
+
+    # NUPCA5: ensure sig prev vectors exist (motion-sensitive delta term).
+    # Sizes are derived from the commit metadata path (see step_pipeline/core).
+    # Leave empty; core will resize on first use.
+    state.sig_prev_counts = np.zeros(0, dtype=np.int16)
+    state.sig_prev_hist = np.zeros(0, dtype=np.uint16)
+
+    return state
 
 
 class NUPCA3Agent:
-    """Stateful agent wrapper. The pipeline is the authority."""
+    """Unified agent wrapper expected by test5.py."""
 
-    def __init__(self, cfg: AgentConfig, init_state: Optional[AgentState] = None):
-        self.cfg = cfg
-        self.state = init_state if init_state is not None else self._fresh_state(clear_memory=True)
+    def __init__(self, cfg: AgentConfig, *, state: Optional[AgentState] = None):
+        self.cfg: AgentConfig = cfg
+        self.state: AgentState = state if state is not None else _init_primary_state(cfg)
 
-    def _fresh_state(
-        self,
-        *,
-        clear_memory: bool,
-        preserve_library: Optional[ExpertLibrary] = None,
-    ) -> AgentState:
-        """Construct a new AgentState instance following A14.8."""
-        cfg = self.cfg
-
-        # Core dimensions
-        D = int(getattr(cfg, "D", getattr(cfg, "state_dim", getattr(cfg, "obs_dim", 64))))
-        B = int(getattr(cfg, "B", getattr(cfg, "n_blocks", 2)))
-        blocks = build_blocks_from_cfg(cfg)
-        block_specs = build_block_specs(blocks)
-        block_view = BlockView(block_specs)
-        block_costs = np.asarray([float(spec.cost) for spec in block_specs], dtype=float)
-        periph_blocks = max(0, min(int(getattr(cfg, "periph_blocks", 0)), int(B)))
-        periph_bins = max(1, int(getattr(cfg, "periph_bins", 0)))
-        if periph_blocks > 0:
-            periph_cost = float(max(1, periph_bins * periph_bins))
-            start_idx = max(0, int(B) - periph_blocks)
-            for idx in range(start_idx, int(B)):
-                block_costs[idx] = periph_cost
-
-        # Underlying observables (A15/A2): initialize to safe midpoints.
-        E_min = float(getattr(cfg, "E_min", 0.0))
-        E_max = float(getattr(cfg, "E_max", 1.0))
-        D_min = float(getattr(cfg, "D_min", 0.0))
-        D_max = float(getattr(cfg, "D_max", 1.0))
-
-        E0 = 0.5 * (E_min + E_max)
-        D0 = 0.5 * (D_min + D_max)
-        drift0 = 0.0
-
-        # Subsystems (A14.8 init)
-        margins0 = init_margins(E=E0, D=D0, drift_P=drift0, cfg=cfg)
-        stress0 = init_stress(cfg)
-        rest_perm0, _ = rest_permitted(stress0, 0.0, cfg, arousal=0.0)
-        baselines0 = init_baselines(cfg)
-        macro0 = init_macro(cfg)
-        fovea0 = init_fovea_state(cfg, block_costs=block_costs)
-        buffer0 = init_observation_buffer(cfg)
-
-        # Library (A4)
-        if clear_memory or preserve_library is None:
-            library0 = init_library(cfg)
-        else:
-            library0 = preserve_library
-
-        # A4.4 incumbents and A12.4 persistent residuals
-        incumbents0 = rebuild_incumbents_by_block(library0, blocks)
-        residuals0 = _init_persistent_residuals(len(blocks))
-
-        # Build AgentState using schema-tolerant construction (keeps branch compatibility).
-        state_fields = _field_names(AgentState)
-        kw: Dict[str, Any] = {}
-
-        # Required primary fields
-        kw["t"] = 0
-        kw["E"] = float(E0)
-        kw["D"] = float(D0)
-        kw["drift_P"] = float(drift0)
-        kw["margins"] = margins0
-        kw["stress"] = stress0
-        kw["arousal"] = 0.0
-        kw["baselines"] = baselines0
-        kw["macro"] = macro0
-        kw["fovea"] = fovea0
-        kw["buffer"] = buffer0
-        kw["library"] = library0
-
-        # Optional fields present in this branch
-        if "blocks" in state_fields:
-            kw["blocks"] = blocks
-        if "block_specs" in state_fields:
-            kw["block_specs"] = block_specs
-        if "block_view" in state_fields:
-            kw["block_view"] = block_view
-        if "incumbents_by_block" in state_fields:
-            kw["incumbents_by_block"] = incumbents0
-        if "incumbents_revision" in state_fields:
-            kw["incumbents_revision"] = int(getattr(library0, "revision", 0))
-        if "persistent_residuals" in state_fields:
-            kw["persistent_residuals"] = residuals0
-        if "active_set" in state_fields:
-            kw["active_set"] = set()
-        if "b_cons" in state_fields:
-            kw["b_cons"] = 0.0
-
-        # Lagged values for timing discipline (A5.2/A10.2) and A14.6 gate
-        if "arousal_prev" in state_fields:
-            kw["arousal_prev"] = 0.0
-        if "scores_prev" in state_fields:
-            kw["scores_prev"] = {}
-        if "rest_permitted_prev" in state_fields:
-            kw["rest_permitted_prev"] = bool(rest_perm0)
-        if "demand_prev" in state_fields:
-            kw["demand_prev"] = False
-        if "interrupt_prev" in state_fields:
-            kw["interrupt_prev"] = False
-        if "s_int_need_prev" in state_fields:
-            kw["s_int_need_prev"] = 0.0
-        if "s_ext_th_prev" in state_fields:
-            kw["s_ext_th_prev"] = 0.0
-        if "x_C_prev" in state_fields:
-            kw["x_C_prev"] = float(getattr(cfg, "B_rt", 0.0))
-        if "rawE_prev" in state_fields:
-            kw["rawE_prev"] = float(E0 - E_min)
-        if "rawD_prev" in state_fields:
-            kw["rawD_prev"] = float(D_max - D0)
-        if "c_d_prev" in state_fields:
-            kw["c_d_prev"] = 1.0
-        coarse_len = coarse_bin_count(cfg)
-        if "coarse_prev" in state_fields:
-            kw["coarse_prev"] = np.zeros(coarse_len, dtype=float)
-        if "coarse_shift" in state_fields:
-            kw["coarse_shift"] = (0, 0)
-        if "context_register" in state_fields:
-            kw["context_register"] = np.zeros(coarse_len, dtype=float)
-        if "node_context_tags" in state_fields:
-            kw["node_context_tags"] = {}
-        if "node_band_levels" in state_fields:
-            kw["node_band_levels"] = {}
-        if "coverage_expert_debt" in state_fields:
-            kw["coverage_expert_debt"] = {}
-        if "coverage_band_debt" in state_fields:
-            kw["coverage_band_debt"] = {}
-        grid_side = int(getattr(cfg, "grid_side", 0))
-        grid_cells = max(0, grid_side * grid_side)
-        if "grid_prev_mass" in state_fields:
-            kw["grid_prev_mass"] = np.zeros(grid_cells, dtype=float)
-
-        return AgentState(**kw)
-
-    def reset(self, seed: Optional[int] = None, *, clear_memory: bool = False) -> None:
-        """Reset episodic state.
-
-        - clear_memory=False preserves long-term library (A4).
-        - clear_memory=True performs a cold start.
-
-        Note: this resets episodic traces/hidden state, not learned parameters,
-        unless explicitly requested.
-        """
-        preserve_library = None if clear_memory else getattr(self.state, "library", None)
-        self.state = self._fresh_state(clear_memory=clear_memory, preserve_library=preserve_library)
-
-        if seed is not None:
-            #ITOOKASHORTCUT: global RNG seed. A stricter implementation would plumb
-            # a per-agent Generator through all stochastic subsystems.
-            np.random.seed(int(seed))
+    # ------------------------------------------------------------------
+    # Harness-facing API
+    # ------------------------------------------------------------------
 
     def step(self, env_obs: EnvObs) -> Tuple[Action, Dict[str, Any]]:
-        """Advance one environment step by delegating to the step pipeline."""
-        ensure_incumbents_index(self.state)
-        action, next_state, trace = step_pipeline(self.state, env_obs, self.cfg)
-        self.state = next_state
+        action, new_state, trace = step_pipeline(self.state, env_obs, self.cfg)
+        self.state = new_state
         return action, trace
 
-    def prepare_fovea_selection(self, periph_full: np.ndarray | None = None) -> list[int]:
+    def prepare_fovea_selection(self, *, periph_full: np.ndarray | None = None) -> Dict[str, Any]:
+        """Precompute the next fovea selection.
+
+        test5.py uses this to decide which dims to reveal in env_obs.x_partial.
         """
-        Precompute the upcoming fovea blocks so the harness can sample the same dims.
+        prev_dims = set(getattr(self.state.buffer, "observed_dims", set()) or set())
+        pending = apply_signals_and_select(self.state, self.cfg, periph_full=periph_full, prev_observed_dims=prev_dims)
+        return pending
+
+    def reset(self, *, clear_memory: bool = False) -> None:
+        """Reset episode-level state.
+
+        If clear_memory is True, reinitialize library + indices.
+        Otherwise, keep learned memory and only clear transient episode fields.
         """
-        pending = getattr(self.state, "pending_fovea_selection", None)
-        if pending is None:
-            prev_obs = set(getattr(self.state.buffer, "observed_dims", set()) or set())
-            pending = apply_signals_and_select(
-                self.state,
-                self.cfg,
-                periph_full=periph_full,
-                prev_observed_dims=prev_obs,
-            )
-        return [int(b) for b in pending.get("blocks", [])]
+
+        if clear_memory:
+            self.state = _init_primary_state(self.cfg)
+            return
+
+        # Soft reset: keep library + learned params.
+        D = int(getattr(self.cfg, "D", 0))
+        x0 = np.zeros(D, dtype=float) if D > 0 else np.zeros(0, dtype=float)
+        self.state.t = 0
+        self.state.E = 0.0
+        self.state.D = 0.0
+        self.state.drift_P = 0.0
+        self.state.margins = Margins(0.0, 0.0, 0.0, 0.0, 0.0)
+        self.state.stress = Stress(0.0, 0.0, 0.0, 0.0, 0.0)
+        self.state.arousal = 0.0
+        self.state.arousal_prev = 0.0
+        self.state.baselines = Baselines(mu=np.zeros(5, dtype=float), var_fast=np.zeros(5, dtype=float), var_slow=np.zeros(5, dtype=float))
+        self.state.macro = MacrostateVars(rest=False)
+        self.state.fovea = init_fovea_state(self.cfg, block_costs=getattr(self.state.fovea, "block_costs", None))
+        self.state.buffer = ObservationBuffer(x_last=x0.copy(), x_prior=x0.copy(), observed_dims=set())
+        self.state.active_set = set()
+        self.state.pending_validation.clear()
+        self.state.last_sig64 = None
+        self.state.pending_fovea_selection = None
+        self.state.pending_fovea_signals = None
+        self.state.context_register = np.zeros(0, dtype=float)
+        self.state.node_context_tags = {}
+        self.state.observed_history.clear()
+
+    # ------------------------------------------------------------------
+    # Optional persistence helpers (used by some older harnesses).
+    # ------------------------------------------------------------------
+
+    def save_state(self, path: str | Path) -> None:
+        p = Path(path)
+        payload = {"cfg": self.cfg, "state": self.state}
+        p.write_bytes(pickle.dumps(payload))
+
+    @classmethod
+    def load_state(cls, path: str | Path) -> "NUPCA3Agent":
+        p = Path(path)
+        payload = pickle.loads(p.read_bytes())
+        cfg = payload.get("cfg")
+        state = payload.get("state")
+        if cfg is None or state is None:
+            raise ValueError("Invalid agent state payload")
+        return cls(cfg=cfg, state=state)
 
 
-__all__ = ["NUPCA3Agent"]
+# Back-compat alias used by some older scripts.
+NUPCAAgent = NUPCA3Agent
