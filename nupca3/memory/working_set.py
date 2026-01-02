@@ -22,7 +22,8 @@ from __future__ import annotations
 from typing import Dict, List, Set, Optional
 
 from ..config import AgentConfig
-from ..types import AgentState, Node, Library, WorkingSet
+from ..control.governor import BudgetMeter
+from ..types import AgentState, ExpertLibrary, Node, WorkingSet
 from ..geometry.fovea import select_fovea
 from ..incumbents import get_incumbent_bucket
 
@@ -116,6 +117,8 @@ def _popcount64(x: int) -> int:
 def get_retrieval_candidates(
     state: AgentState,
     cfg: AgentConfig,
+    *,
+    budget_meter: BudgetMeter | None = None,
 ) -> Set[int]:
     """Get candidates from cold storage via block-keyed retrieval (A4.3).
 
@@ -168,14 +171,37 @@ def get_retrieval_candidates(
 
         sig64_t = getattr(state, "last_sig64", None)
         if sig_index is not None and sig64_t is not None and fovea_blocks:
-            cand_cap = int(cfg.sig_query_cand_cap)
-            cand_cap = max(1, cand_cap)
-            raw = sig_index.query(int(sig64_t), list(sorted(int(b) for b in fovea_blocks)), cand_cap=cand_cap)
+            value_of_compute = min(max(0.0, float(getattr(state, "value_of_compute", 0.0))), 1.0)
+            candidate_scale = float(getattr(cfg, "value_of_compute_candidate_scale", 0.5))
+            stage2_scale = float(getattr(cfg, "value_of_compute_stage2_scale", 0.5))
+            candidate_boost = 1.0 + candidate_scale * value_of_compute
+            stage2_boost = 1.0 + stage2_scale * value_of_compute
+            base_cap = int(getattr(cfg, "sig_query_cand_cap", 64))
+            base_cap = max(1, base_cap)
+            degrade_level = 0
+            if budget_meter is not None:
+                degrade_level = max(0, int(getattr(budget_meter, "degrade_level", 0)))
+            else:
+                degrade_level = max(0, int(getattr(state, "budget_degradation_level", 0)))
+            cap_divisor = 1 << min(degrade_level, 4)
+            cand_cap = max(1, int(base_cap * candidate_boost))
+            if degrade_level > 0:
+                cand_cap = max(1, cand_cap // cap_divisor)
+            raw = list(sig_index.query(int(sig64_t), list(sorted(int(b) for b in fovea_blocks)), cand_cap=cand_cap))
+            raw = sorted(set(raw))
             # Stage-2 bounded rerank (A4.3′): score(u) = -popcount(sig64(t) XOR unit_sig64[u]) - α*err_ema[u,h_bin]
             # IMPORTANT: `unit_sig64` is the unit's immutable 64-bit retrieval address (stored at creation).
             alpha_err = float(cfg.sig_stage2_alpha_err)
             scored_pairs = []
+            stage2_limit = len(raw)
+            stage2_limit = max(1, int(stage2_limit * stage2_boost))
+            if degrade_level > 0 and stage2_limit > 0:
+                stage2_limit = max(1, stage2_limit // cap_divisor)
+            processed_stage2 = 0
             for node_id in raw:
+                if processed_stage2 >= stage2_limit:
+                    break
+                processed_stage2 += 1
                 nid = int(node_id)
                 if nid < 0 or nid in prev_active:
                     continue
@@ -201,7 +227,7 @@ def get_retrieval_candidates(
             
             if scored_pairs:
                 max_ret = int(cfg.max_retrieval_candidates)
-                max_ret = max(1, max_ret)
+                max_ret = max(1, int(max_ret * candidate_boost))
                 scored_pairs.sort(key=lambda x: (x[0], -x[1]), reverse=True)
                 return set(nid for _, nid in scored_pairs[:max_ret])
 
@@ -255,6 +281,8 @@ def select_working_set(
     state: AgentState,
     salience: Dict[int, float],
     cfg: AgentConfig,
+    *,
+    budget_meter: BudgetMeter | None = None,
 ) -> WorkingSet:
     """Select active experts A_t (A4.2, A5.4, A5.6).
 
@@ -336,7 +364,7 @@ def select_working_set(
     # =========================================================================
 
     prev_active = set(getattr(state, "active_set", set()))
-    retrieved = get_retrieval_candidates(state, cfg)
+    retrieved = get_retrieval_candidates(state, cfg, budget_meter=budget_meter)
 
     # U_t = A_{t-1} ∪ C^ret_t (non-anchors only; anchors handled separately)
     candidate_pool: Set[int] = set()
@@ -348,6 +376,12 @@ def select_working_set(
 
     # Retrieved from cold storage
     for nid in retrieved:
+        if nid in nodes and nid not in anchor_set:
+            candidate_pool.add(int(nid))
+
+    # Thread-pinned units (planning contexts / forced workloads)
+    pinned_units = set(getattr(state, "thread_pinned_units", set()) or set())
+    for nid in pinned_units:
         if nid in nodes and nid not in anchor_set:
             candidate_pool.add(int(nid))
     # Optional linger: recently active nodes remain candidates for a short TTL.
@@ -578,7 +612,7 @@ def get_load_decomposition(working_set: WorkingSet) -> tuple[float, float]:
 
 
 def select_working_set_legacy(
-    lib: Library,
+    lib: ExpertLibrary,
     a_raw: Dict[int, float],
     cfg: AgentConfig,
 ) -> WorkingSet:

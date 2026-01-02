@@ -3,7 +3,6 @@
 
 Non-negotiables:
 - No legacy modes.
-- No pickle persistence.
 - World tick is decoupled from agent compute (agent runs in a separate process).
 - Full observation (all 400 cells) is published every tick.
 - Overwrite semantics: if the agent lags, it consumes the latest observation; no backlog.
@@ -37,16 +36,38 @@ from rich.live import Live
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.text import Text
+from multiprocessing.shared_memory import SharedMemory
 
 
 # ----------------------------
 # Harness parameters
 # ----------------------------
 
-UPDATE_DELAY_MS = 1000  # world tick pacing. 0 = as fast as possible.
+UPDATE_DELAY_MS = 300  # world tick pacing. 0 = as fast as possible.
 
 STATE_PATH = "agent_state.npz"
 VAL_MAX = 4.0
+ENV_HISTORY_LIMIT = 64  # UI cache to align env/pred displays without growing unbounded
+SHM_PREFIX = "psm_"
+
+
+def _cleanup_stale_shm(prefix: str = SHM_PREFIX) -> None:
+    """Best-effort cleanup of leaked shared memory segments from prior runs."""
+    shm_dir = "/dev/shm"
+    try:
+        names = [n for n in os.listdir(shm_dir) if n.startswith(prefix)]
+    except Exception:
+        return
+    for name in names:
+        try:
+            shm = SharedMemory(name=name, create=False)
+        except Exception:
+            continue
+        try:
+            shm.close()
+            shm.unlink()
+        except Exception:
+            pass
 
 
 # ----------------------------
@@ -107,16 +128,22 @@ class Shape:
 
 
 class GridWorld:
-    def __init__(self, grid_size: int = 20):
+    def __init__(self, grid_size: int = 20, *, occlusion_width: int = 3):
         self.grid_size = int(grid_size)
         self.shapes: List[Shape] = []
         self.t = 0
 
-        self.spawn_p = 0.22
-        self.max_shapes = 8
+        self.spawn_p = 0.08
+        self.max_shapes = 3
 
         # None => horizontal bar
-        self.templates = [None, "vbar", "square", "L"]
+        self.templates = [None, "vbar", "square", "L", "diag"]
+
+        ow = max(1, int(occlusion_width))
+        c0 = max(0, self.grid_size // 2 - ow // 2)
+        c1 = min(self.grid_size - 1, c0 + ow - 1)
+        self.occlusion_mask = np.zeros((self.grid_size, self.grid_size), dtype=bool)
+        self.occlusion_mask[:, c0 : c1 + 1] = True
 
     def _make_hbar(self) -> List[Tuple[int, int]]:
         L = random.randint(2, 5)
@@ -132,6 +159,10 @@ class GridWorld:
     def _make_L(self) -> List[Tuple[int, int]]:
         return [(0, 0), (1, 0), (2, 0), (2, 1)]
 
+    def _make_diag(self) -> List[Tuple[int, int]]:
+        L = random.randint(2, 4)
+        return [(i, i) for i in range(L)]
+
     def spawn_shape(self) -> None:
         if len(self.shapes) >= self.max_shapes:
             return
@@ -143,6 +174,8 @@ class GridWorld:
             cells = self._make_vbar()
         elif typ == "square":
             cells = self._make_square()
+        elif typ == "diag":
+            cells = self._make_diag()
         else:
             cells = self._make_L()
 
@@ -193,6 +226,8 @@ class GridWorld:
                 r = sh.y + dr
                 c = sh.x + dc
                 if 0 <= r < self.grid_size and 0 <= c < self.grid_size:
+                    if self.occlusion_mask[r, c]:
+                        continue
                     grid[r, c] = int(sh.color_id)
         return grid
 
@@ -201,19 +236,28 @@ class GridWorld:
 # UI helpers
 # ----------------------------
 
-COLOR_STYLE = {0: "grey50", 1: "red", 2: "green", 3: "blue", 4: "yellow"}
+COLOR_STYLE = {0: "grey50", 1: "red", 2: "green", 3: "blue", 4: "yellow", 5: "white"}
 DIFF_STYLE = {".": "grey50", "X": "red"}
 
 
-def grid_to_text(grid: np.ndarray) -> Text:
+def grid_to_text(grid: np.ndarray, occlusion_mask: Optional[np.ndarray] = None) -> Text:
     grid = np.asarray(grid, dtype=np.int32)
     side_h, side_w = grid.shape
+    mask = None
+    if occlusion_mask is not None:
+        mask = np.asarray(occlusion_mask, dtype=bool)
+        if mask.shape != grid.shape:
+            mask = None
     t = Text()
     for r in range(side_h):
         for c in range(side_w):
             iv = int(grid[r, c])
             ch = "." if iv == 0 else "#"
-            t.append(ch, style=COLOR_STYLE.get(iv, "white"))
+            style = COLOR_STYLE.get(iv, "white")
+            if mask is not None and mask[r, c]:
+                ch = "|"
+                style = "grey37"
+            t.append(ch, style=style)
         t.append("\n")
     return t
 
@@ -234,6 +278,7 @@ def diff_to_text(pred: np.ndarray, actual: np.ndarray) -> Text:
 def build_layout(
     env_text: Text,
     pred_text: Text,
+    pred_future_text: Text,
     diff_text: Text,
     status_text: Text,
     *,
@@ -242,7 +287,7 @@ def build_layout(
     gap_w: int = 1,
 ) -> Layout:
     layout = Layout()
-    total_w = 3 * pane_w + 2 * gap_w
+    total_w = 4 * pane_w + 3 * gap_w
 
     top = Layout(name="top", size=pane_h)
     top.split_row(
@@ -251,6 +296,8 @@ def build_layout(
         Layout(name="gap1", size=gap_w),
         Layout(name="pred", size=pane_w),
         Layout(name="gap2", size=gap_w),
+        Layout(name="predf", size=pane_w),
+        Layout(name="gap3", size=gap_w),
         Layout(name="diff", size=pane_w),
         Layout(name="padR", ratio=1),
     )
@@ -266,6 +313,7 @@ def build_layout(
 
     top["env"].update(Panel(env_text, title="ENV", padding=(0, 0), box=box.SQUARE))
     top["pred"].update(Panel(pred_text, title="PRED (agent may lag)", padding=(0, 0), box=box.SQUARE))
+    top["predf"].update(Panel(pred_future_text, title="FORECAST", padding=(0, 0), box=box.SQUARE))
     top["diff"].update(Panel(diff_text, title="DIFF", padding=(0, 0), box=box.SQUARE))
     bottom["status"].update(Panel(status_text, title="NUPCA5", padding=(0, 1), box=box.SQUARE))
 
@@ -273,6 +321,7 @@ def build_layout(
     top["padL"].update(blank)
     top["gap1"].update(blank)
     top["gap2"].update(blank)
+    top["gap3"].update(blank)
     top["padR"].update(blank)
     bottom["padL2"].update(blank)
     bottom["padR2"].update(blank)
@@ -432,6 +481,8 @@ def save_nupca5_state_npz(path: str, *, agent, cfg, perm: np.ndarray, periph_rin
     def _arr(x, dt):
         return np.asarray(x, dtype=dt).reshape(-1)
 
+    t_w_val = int(getattr(st, "t_w", getattr(st, "t", 0)))
+
     np.savez_compressed(
         path,
         version=_np_bytes("nupca5_state_npz_v1"),
@@ -439,7 +490,8 @@ def save_nupca5_state_npz(path: str, *, agent, cfg, perm: np.ndarray, periph_rin
         perm=np.asarray(perm, dtype=np.int32),
         periph_ring=np.array([int(periph_ring)], dtype=np.int32),
 
-        t=np.array([int(getattr(st, "t", 0))], dtype=np.int64),
+        t=np.array([t_w_val], dtype=np.int64),
+        t_w=np.array([t_w_val], dtype=np.int64),
         E=np.array([float(getattr(st, "E", 0.0))], dtype=np.float32),
         D=np.array([float(getattr(st, "D", 0.0))], dtype=np.float32),
         drift_P=np.array([float(getattr(st, "drift_P", 0.0))], dtype=np.float32),
@@ -596,18 +648,30 @@ def make_status_text_v5(
     last_sig = getattr(st, "last_sig64", None)
     last_sig_s = "None" if last_sig is None else f"0x{int(last_sig):016x}"
 
-    t_step = int(getattr(st, "t", 0))
+    t_step = int(getattr(st, "t_w", getattr(st, "t", 0)))
+    kernel = str(trace.get("kernel", ""))
+    kernel_sfx = f"  kernel={kernel}" if kernel else ""
 
     t.append(
-        f"t={t_step}  env_t={env_t}  agent_env_t={agent_processed_env_t}  nodes={n_nodes}  |A|={active_n}  sig64={last_sig_s}\n",
+        f"t={t_step}  env_t={env_t}  agent_env_t={agent_processed_env_t}  nodes={n_nodes}  |A|={active_n}  sig64={last_sig_s}{kernel_sfx}\n",
         style="white",
     )
 
-    h = int(trace.get("horizon", 0))
+    h = int(trace.get("h", trace.get("horizon", 0)))
     b_enc = float(trace.get("b_enc", float("nan")))
     b_roll = float(trace.get("b_roll", float("nan")))
     xC = float(trace.get("x_C", float("nan")))
     t.append(f"h={h}  b_enc={b_enc:.3f}  b_roll={b_roll:.3f}  x_C={xC:.3f}\n", style="white")
+
+    b_use = float(trace.get("budget_B_use", float("nan")))
+    b_lim = float(trace.get("budget_limit", float("nan")))
+    b_plan = float(trace.get("budget_B_plan", float("nan")))
+    b_max = float(trace.get("budget_B_max", float("nan")))
+    b_deg = int(trace.get("budget_degrade_level", 0))
+    t.append(
+        f"budget use/lim={b_use:.3f}/{b_lim:.3f}  plan={b_plan:.3f}  max={b_max:.3f}  degrade={b_deg}\n",
+        style="white",
+    )
 
     rest_t = bool(trace.get("rest_t", False))
     rest_perm = bool(trace.get("rest_permitted_t", False))
@@ -615,8 +679,10 @@ def make_status_text_v5(
     intr = bool(trace.get("interrupt_t", False))
     permit_param = bool(trace.get("permit_param", False))
     permit_struct = bool(trace.get("permit_struct", False))
+    rest_q = int(trace.get("rest_queue_len", 0))
+    rest_reason = str(trace.get("rest_permit_reason", trace.get("rest_unsafe_reason", "")) or "")
     t.append(
-        f"REST={rest_t} perm={rest_perm} demand={demand} intr={intr}  learn_param={permit_param} learn_struct={permit_struct}\n",
+        f"REST={rest_t} perm={rest_perm} demand={demand} intr={intr}  learn_param={permit_param} learn_struct={permit_struct} rest_q={rest_q} reason={rest_reason}\n",
         style="white",
     )
 
@@ -653,6 +719,46 @@ def make_status_text_v5(
     mC = float(trace.get("mC", 0.0))
     t.append(
         f"arousal={ar:.3f}  s_need={s_need:.3f}  s_th={s_th:.3f}  mE={mE:.3f} mD={mD:.3f} mC={mC:.3f}\n",
+        style="white",
+    )
+
+    vals_proc = int(trace.get("validations_processed", 0))
+    tc_entries = int(trace.get("trace_cache_entries", 0))
+    tc_blocks = int(trace.get("trace_cache_blocks", 0))
+    tc_mass = int(trace.get("trace_cache_cue_mass", 0))
+    t.append(
+        f"pred/val: validations={vals_proc}  trace_cache E/B/M={tc_entries}/{tc_blocks}/{tc_mass}\n",
+        style="white",
+    )
+
+    permit_info = trace.get("permit_param_info", {}) or {}
+    cand_n = int(permit_info.get("candidate_count", 0) or 0)
+    upd_n = int(permit_info.get("updated", 0) or 0)
+    clamp_n = int(permit_info.get("clamped", 0) or 0)
+    theta_eff = permit_info.get("theta_learn_eff", float("nan"))
+    freeze = bool(trace.get("freeze", False))
+    t.append(
+        f"learn gate: freeze={freeze} theta_eff={theta_eff:.3f} cand={cand_n} upd={upd_n} clamp={clamp_n}\n",
+        style="white",
+    )
+
+    voc = float(trace.get("value_of_compute", float("nan")))
+    haz = float(trace.get("hazard_pressure", float("nan")))
+    nov = float(trace.get("novelty_pressure", float("nan")))
+    g_cont = bool(trace.get("g_contemplate", False))
+    focus_mode = str(trace.get("planning_focus_mode", "operate"))
+    plan_budget = float(trace.get("planning_budget", 0.0))
+    plan_targets = tuple(trace.get("planning_target_blocks") or ())
+    t.append(
+        f"compute V={voc:.3f}  haz={haz:.3f}  nov={nov:.3f}  contemplate={g_cont}  focus={focus_mode}  plan_budget={plan_budget:.2f}  targets={len(plan_targets)}\n",
+        style="white",
+    )
+
+    pv_len = len(getattr(agent_state, "pending_validation", []) or [])
+    lc_prev = getattr(agent_state, "learning_candidates_prev", None) or {}
+    lc_keys = sorted(lc_prev.keys())[:3] if isinstance(lc_prev, dict) else []
+    t.append(
+        f"pending_validation={pv_len} learn_prev_keys={lc_keys}\n",
         style="white",
     )
 
@@ -704,6 +810,8 @@ def _atomic_write_out(
     env_t: int,
     last_sig64: int,
     x_prior_f32: np.ndarray,
+    x_post_f32: np.ndarray,
+    x_forecast_f32: np.ndarray,
     status_bytes: bytes,
     out_hdr: int,
     status_max: int,
@@ -711,8 +819,10 @@ def _atomic_write_out(
     """Write payload then commit seq last (prevents torn reads)."""
     obs_bytes = x_prior_f32.nbytes
     shm_out_buf[out_hdr : out_hdr + obs_bytes] = x_prior_f32.tobytes(order="C")
-    struct.pack_into("<I", shm_out_buf, out_hdr + obs_bytes, int(len(status_bytes)))
-    start = out_hdr + obs_bytes + 4
+    shm_out_buf[out_hdr + obs_bytes : out_hdr + 2 * obs_bytes] = x_post_f32.tobytes(order="C")
+    shm_out_buf[out_hdr + 2 * obs_bytes : out_hdr + 3 * obs_bytes] = x_forecast_f32.tobytes(order="C")
+    struct.pack_into("<I", shm_out_buf, out_hdr + 3 * obs_bytes, int(len(status_bytes)))
+    start = out_hdr + 3 * obs_bytes + 4
     shm_out_buf[start : start + status_max] = b"\x00" * status_max
     shm_out_buf[start : start + len(status_bytes)] = status_bytes[:status_max]
     struct.pack_into("<QQQ", shm_out_buf, 8, int(agent_t), int(env_t), int(last_sig64))
@@ -726,7 +836,7 @@ def _atomic_try_read_out(
     obs_n: int,
     out_hdr: int,
     status_max: int,
-) -> Optional[Tuple[int, int, int, int, np.ndarray, str]]:
+) -> Optional[Tuple[int, int, int, int, np.ndarray, np.ndarray, np.ndarray, str]]:
     """Read a stable snapshot (out_seq, agent_t, env_t, last_sig64, x_prior, status_str) or None."""
     seq1 = int(struct.unpack_from("<Q", shm_out_buf, 0)[0])
     if seq1 == 0 or seq1 == int(last_seq):
@@ -737,15 +847,17 @@ def _atomic_try_read_out(
     last_sig = int(last_sig)
     x_prior = np.frombuffer(shm_out_buf, dtype=np.float32, count=obs_n, offset=out_hdr).copy()
     obs_bytes = obs_n * 4
-    slen = int(struct.unpack_from("<I", shm_out_buf, out_hdr + obs_bytes)[0])
-    start = out_hdr + obs_bytes + 4
+    x_post = np.frombuffer(shm_out_buf, dtype=np.float32, count=obs_n, offset=out_hdr + obs_bytes).copy()
+    x_forecast = np.frombuffer(shm_out_buf, dtype=np.float32, count=obs_n, offset=out_hdr + 2 * obs_bytes).copy()
+    slen = int(struct.unpack_from("<I", shm_out_buf, out_hdr + 3 * obs_bytes)[0])
+    start = out_hdr + 3 * obs_bytes + 4
     slen = max(0, min(int(slen), int(status_max)))
     sb = bytes(shm_out_buf[start : start + slen])
     status_plain = sb.decode("utf-8", errors="replace") if sb else ""
     seq2 = int(struct.unpack_from("<Q", shm_out_buf, 0)[0])
     if seq1 != seq2:
         return None
-    return seq1, agent_t, env_t, last_sig, x_prior, status_plain
+    return seq1, agent_t, env_t, last_sig, x_prior, x_post, x_forecast, status_plain
 
 
 # -----------------------------
@@ -774,6 +886,7 @@ def agent_worker(
     from nupca3.agent import NUPCA3Agent
     from nupca3.config import AgentConfig
     from nupca3.types import EnvObs, PendingValidationRecord
+    import traceback
 
     cfg_dict = json.loads(cfg_json_str)
     cfg_w = AgentConfig(**cfg_dict)
@@ -789,7 +902,10 @@ def agent_worker(
             agent.state.library = lib2
 
             st = agent.state
-            st.t = int(_np.asarray(npz2["t"]).reshape(-1)[0])
+            t_loaded = int(_np.asarray(npz2["t"]).reshape(-1)[0])
+            st.t_w = t_loaded
+            st.t = t_loaded
+            st.k_op = 0
             st.E = float(_np.asarray(npz2["E"]).reshape(-1)[0])
             st.D = float(_np.asarray(npz2["D"]).reshape(-1)[0])
             st.drift_P = float(_np.asarray(npz2["drift_P"]).reshape(-1)[0])
@@ -905,12 +1021,16 @@ def agent_worker(
             last_in_seq = int(in_seq)
 
             x_partial = {i: float(obs[i]) for i in range(int(obs.size))}
+            env_tick = int(getattr(agent.state, "t_w", getattr(agent.state, "t", 0))) + 1
+            wall_ms = int(_time.perf_counter() * 1000)
+            pos_dims = {int(i) for i, v in enumerate(obs.tolist()) if float(v) != 0.0}
             o = EnvObs(
                 x_partial=x_partial,
-                x_full=obs,
                 periph_full=obs,
-                allow_full_state=True,
                 selected_blocks=tuple(range(int(cfg_w.B))),
+                t_w=env_tick,
+                wall_ms=wall_ms,
+                pos_dims=pos_dims,
             )
 
             _action, trace = agent.step(o)
@@ -924,6 +1044,13 @@ def agent_worker(
             x_post = _np.asarray(getattr(st.buffer, "x_last", _np.zeros(obs_n, dtype=_np.float32)), dtype=_np.float32).reshape(-1)
             if x_post.size != obs_n:
                 x_post = _np.resize(x_post, (obs_n,)).astype(_np.float32, copy=False)
+
+            forecast = _np.asarray(
+                getattr(getattr(st, "learn_cache", None), "yhat_tp1", _np.zeros(obs_n, dtype=_np.float32)),
+                dtype=_np.float32,
+            ).reshape(-1)
+            if forecast.size != obs_n:
+                forecast = _np.resize(forecast, (obs_n,)).astype(_np.float32, copy=False)
 
             try:
                 prior_mae_full = float(_np.mean(_np.abs(x_prior - obs)))
@@ -994,7 +1121,7 @@ def agent_worker(
                     autosave_in_s=0.0,
                     periph_ring=periph_ring_inner,
                     env_t=env_t,
-                    agent_processed_env_t=env_t,
+                    agent_processed_env_t=int(getattr(st, "t_w", getattr(st, "t", 0))),
                 )
                 status_plain = txt.plain
             except Exception:
@@ -1005,10 +1132,12 @@ def agent_worker(
             _atomic_write_out(
                 shm_out_w.buf,
                 seq=int(in_seq),
-                agent_t=int(getattr(st, "t", 0)),
-                env_t=int(env_t),
+                agent_t=int(getattr(st, "t_w", getattr(st, "t", 0))),
+                env_t=int(env_tick),
                 last_sig64=int(getattr(st, "last_sig64", 0) or 0),
                 x_prior_f32=x_prior,
+                x_post_f32=x_post,
+                x_forecast_f32=forecast,
                 status_bytes=status_bytes,
                 out_hdr=out_hdr,
                 status_max=status_max,
@@ -1016,6 +1145,12 @@ def agent_worker(
 
             _time.sleep(0.001)
 
+    except Exception as e:  # pragma: no cover - crash propagation for harness visibility
+        try:
+            conn.send({"cmd": "error", "ok": False, "err": f"{e.__class__.__name__}: {e}", "trace": traceback.format_exc()})
+        except Exception:
+            pass
+        raise
     finally:
         try:
             shm_in_w.close()
@@ -1049,6 +1184,9 @@ def main() -> None:
     state_path = str(args.state_path)
     periph_ring = int(args.periph_ring)
 
+    # Clear out any leaked shared memory segments from prior runs.
+    _cleanup_stale_shm()
+
     perm, inv_perm = build_periphery_permutation(side=side, ring=periph_ring)
 
     loaded = False
@@ -1056,30 +1194,34 @@ def main() -> None:
     cfg = dc_replace(cfg, D=D, B=D, grid_width=side, grid_height=side, grid_channels=1, fovea_blocks_per_step=D)
     cfg.validate()
 
+    state_t_w_loaded = 0
     if os.path.exists(state_path) and state_path.endswith(".npz"):
         try:
-            cfg_loaded, _lib_loaded, perm_loaded, ring_loaded, _ = load_nupca5_state_npz(state_path)
+            cfg_loaded, _lib_loaded, perm_loaded, ring_loaded, npz_loaded = load_nupca5_state_npz(state_path)
             if int(cfg_loaded.D) == D and int(cfg_loaded.B) == D:
                 cfg = cfg_loaded
                 perm = perm_loaded.astype(np.int32, copy=False)
                 inv_perm = np.argsort(perm)
                 periph_ring = int(ring_loaded)
                 loaded = True
+                state_t_w_loaded = int(np.asarray(npz_loaded.get("t_w", npz_loaded.get("t", np.array([0], dtype=np.int64)))).reshape(-1)[0])
         except Exception as e:
             print(f"State load failed ({state_path}): {e}")
-
-    world = GridWorld(grid_size=side)
+    world = GridWorld(grid_size=side, occlusion_width=max(1, side // 5))
+    if state_t_w_loaded > 0:
+        world.t = int(state_t_w_loaded)
 
     OBS_N = D
     OBS_BYTES = OBS_N * 4
     IN_HDR = 16
     OUT_HDR = 32
     STATUS_MAX = 4096
+    OUT_ARRAY_BYTES = OBS_BYTES * 3
 
-    shm_in = SharedMemory(create=True, size=IN_HDR + OBS_BYTES)
-    shm_out = SharedMemory(create=True, size=OUT_HDR + OBS_BYTES + 4 + STATUS_MAX)
+    shm_in = SharedMemory(create=True, size=IN_HDR + OBS_BYTES, name=None)
+    shm_out = SharedMemory(create=True, size=OUT_HDR + OUT_ARRAY_BYTES + 4 + STATUS_MAX, name=None)
     shm_in.buf[:] = b"\x00" * (IN_HDR + OBS_BYTES)
-    shm_out.buf[:] = b"\x00" * (OUT_HDR + OBS_BYTES + 4 + STATUS_MAX)
+    shm_out.buf[:] = b"\x00" * (OUT_HDR + OUT_ARRAY_BYTES + 4 + STATUS_MAX)
 
     ctx = mp.get_context("spawn")
     parent_conn, child_conn = ctx.Pipe(duplex=True)
@@ -1094,10 +1236,19 @@ def main() -> None:
     )
     proc.start()
 
-    env_seq = 0
+    env_seq = world.t
     last_out_seq = 0
     x_prior_perm = np.zeros(D, dtype=np.float32)
+    x_post_perm = np.zeros(D, dtype=np.float32)
+    x_forecast_perm = np.zeros(D, dtype=np.float32)
     status_plain = ""
+    env_history: Dict[int, np.ndarray] = {}
+    env_history_order: List[int] = []
+    forecast_cache: Dict[int, Tuple[int, np.ndarray]] = {}
+    last_agent_t = 0
+    last_proc_env_t = 0
+    last_sig64 = 0
+    worker_err: Optional[str] = None
 
     autosave_every_s = float(args.autosave_every_s)
     last_autosave_wall = time.time()
@@ -1105,17 +1256,21 @@ def main() -> None:
     console = Console()
 
     env_grid = world.get_current_grid()
-    env_text = grid_to_text(env_grid)
+    env_text = grid_to_text(env_grid, world.occlusion_mask)
     pred_text = grid_to_text(np.zeros_like(env_grid))
+    pred_future_text = grid_to_text(np.zeros_like(env_grid))
     diff_text = diff_to_text(np.zeros_like(env_grid), env_grid)
     status_text = Text("starting...", style="white")
-    layout = build_layout(env_text, pred_text, diff_text, status_text, pane_w=24, pane_h=22)
+    layout = build_layout(env_text, pred_text, pred_future_text, diff_text, status_text, pane_w=24, pane_h=22)
 
     try:
         with KeyPoller() as kp, Live(layout, console=console, refresh_per_second=30, screen=True):
             while True:
                 if not proc.is_alive():
-                    raise RuntimeError("agent worker died")
+                    err_msg = "agent worker died"
+                    if worker_err:
+                        err_msg += f" (last error: {worker_err})"
+                    raise RuntimeError(err_msg)
 
                 world.update()
                 env_grid = world.get_current_grid()
@@ -1123,10 +1278,22 @@ def main() -> None:
                 env_flat_perm = env_flat[perm]
 
                 env_seq += 1
-                _atomic_write_in(shm_in.buf, seq=env_seq, env_t=world.t, obs_f32=env_flat_perm, in_hdr=IN_HDR)
+                env_show = env_flat_perm[inv_perm].reshape(side, side).astype(np.int32, copy=False)
+                env_history[env_seq] = env_show.copy()
+                env_history_order.append(env_seq)
+                if len(env_history_order) > ENV_HISTORY_LIMIT:
+                    old_seq = env_history_order.pop(0)
+                    env_history.pop(old_seq, None)
+
+                _atomic_write_in(shm_in.buf, seq=env_seq, env_t=env_seq, obs_f32=env_flat_perm, in_hdr=IN_HDR)
 
                 while parent_conn.poll():
-                    _ = parent_conn.recv()
+                    msg = parent_conn.recv()
+                    if isinstance(msg, dict) and msg.get("cmd") == "error":
+                        worker_err = str(msg.get("err", "agent worker error"))
+                        trace_s = msg.get("trace", "")
+                        raise RuntimeError(f"agent worker error: {worker_err}\n{trace_s}")
+                    # ignore other control replies (save/reset/quit)
 
                 out = _atomic_try_read_out(
                     shm_out.buf,
@@ -1136,16 +1303,33 @@ def main() -> None:
                     status_max=STATUS_MAX,
                 )
                 if out is not None:
-                    out_seq, _agent_t, _proc_env_t, _last_sig, x_prior_perm, status_plain = out
+                    out_seq, _agent_t, _proc_env_t, _last_sig, x_prior_perm, x_post_perm, x_forecast_perm, status_plain = out
                     last_out_seq = int(out_seq)
+                    last_agent_t = int(_agent_t)
+                    last_proc_env_t = int(_proc_env_t)
+                    last_sig64 = int(_last_sig)
+                    target_env_t = int(_proc_env_t) + 1
+                    forecast_cache[target_env_t] = (int(_proc_env_t), x_forecast_perm.copy())
+                    # Keep cache bounded roughly with env history.
+                    while len(forecast_cache) > ENV_HISTORY_LIMIT:
+                        oldest_key = min(forecast_cache.keys())
+                        forecast_cache.pop(oldest_key, None)
 
-                env_show = env_flat_perm[inv_perm].reshape(side, side).astype(np.int32, copy=False)
+                display_env_t = last_proc_env_t if last_proc_env_t > 0 else env_seq
+                display_env = env_history.get(display_env_t, env_show)
                 pred_show = x_prior_perm[inv_perm].reshape(side, side)
+                forecast_entry = forecast_cache.get(display_env_t)
+                if forecast_entry is None:
+                    forecast_entry = (-1, np.zeros_like(x_forecast_perm))
+                predicted_from_t, forecast_perm = forecast_entry
+                forecast_show = forecast_perm[inv_perm].reshape(side, side)
                 pred_int = np.rint(np.clip(pred_show, 0, 4)).astype(np.int32)
+                forecast_int = np.rint(np.clip(forecast_show, 0, 4)).astype(np.int32)
 
-                env_text = grid_to_text(env_show)
+                env_text = grid_to_text(display_env, world.occlusion_mask)
                 pred_text = grid_to_text(pred_int)
-                diff_text = diff_to_text(pred_int, env_show)
+                pred_future_text = grid_to_text(forecast_int, world.occlusion_mask)
+                diff_text = diff_to_text(pred_int, display_env)
 
                 autosave_in = max(0.0, autosave_every_s - (time.time() - last_autosave_wall)) if autosave_every_s > 0 else 0.0
 
@@ -1164,9 +1348,18 @@ def main() -> None:
                 else:
                     status_text = Text(f"t={world.t}  (waiting for agent)\nautosave_in={autosave_in:5.1f}s")
 
-                layout["top"]["env"].update(Panel(env_text, title=f"ENV t={world.t}", padding=(0, 0), box=box.SQUARE))
-                layout["top"]["pred"].update(Panel(pred_text, title="PRED (agent may lag)", padding=(0, 0), box=box.SQUARE))
-                layout["top"]["diff"].update(Panel(diff_text, title="DIFF", padding=(0, 0), box=box.SQUARE))
+                env_title = f"ENV t={display_env_t} (world {world.t})"
+                pred_title = f"PRIOR t={last_agent_t or '?'} env={last_proc_env_t or '?'}"
+                if predicted_from_t >= 0:
+                    predf_title = f"FORECAST for t={display_env_t} (made at t={predicted_from_t})"
+                else:
+                    predf_title = f"FORECAST for t={display_env_t}"
+                diff_title = f"DIFF env t={display_env_t}"
+
+                layout["top"]["env"].update(Panel(env_text, title=env_title, padding=(0, 0), box=box.SQUARE))
+                layout["top"]["pred"].update(Panel(pred_text, title=pred_title, padding=(0, 0), box=box.SQUARE))
+                layout["top"]["predf"].update(Panel(pred_future_text, title=predf_title, padding=(0, 0), box=box.SQUARE))
+                layout["top"]["diff"].update(Panel(diff_text, title=diff_title, padding=(0, 0), box=box.SQUARE))
                 layout["bottom"]["status"].update(Panel(status_text, title="NUPCA5", padding=(0, 1), box=box.SQUARE))
 
                 k = kp.poll()

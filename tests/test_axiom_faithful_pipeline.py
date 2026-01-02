@@ -1,6 +1,7 @@
 import math
 import os
 import sys
+import time
 
 import numpy as np
 
@@ -17,6 +18,12 @@ from nupca3.memory.completion import complete
 from nupca3.memory.fusion import fuse_predictions
 from nupca3.memory.working_set import get_retrieval_candidates
 from nupca3.types import EnvObs, ExpertNode, LearningCache, Stress, WorkingSet
+
+
+def _step_agent(agent: NUPCA3Agent, obs: EnvObs):
+    obs.t_w = agent.state.t_w + 1
+    obs.wall_ms = int(time.perf_counter() * 1000)
+    return agent.step(obs)
 
 
 def test_completion_operator_unified_modes() -> None:
@@ -80,7 +87,7 @@ def test_step_pipeline_respects_fovea_mask() -> None:
         danger=0.0,
     )
 
-    agent.step(full_obs)
+    _step_agent(agent, full_obs)
 
     current_blocks = getattr(agent.state.fovea, "current_blocks", set()) or set()
     expected_obs = make_observation_set(current_blocks, cfg)
@@ -113,7 +120,7 @@ def test_permit_struct_requires_rest_and_stability() -> None:
     assert check_permit_struct(agent.state, cfg) is False
 
     agent.state.macro.rest = True
-    agent.state.t = 1000
+    agent.state.t_w = 1000
     agent.state.probe_var = 0.0
     agent.state.feature_var = 0.0
     assert check_permit_struct(agent.state, cfg) is True
@@ -159,7 +166,7 @@ def test_responsibility_gating_updates_only_observed_block() -> None:
     b1_before = anchor_b1.b.copy()
 
     obs = EnvObs(x_partial={0: 0.05, 1: 0.05, 2: 0.9, 3: 0.9})
-    agent.step(obs)
+    _step_agent(agent, obs)
 
     observed_blocks = {int(b) for b in getattr(agent.state.fovea, "current_blocks", set()) or set()}
     assert observed_blocks, "Expected at least one observed block"
@@ -202,7 +209,7 @@ def test_responsibility_gating_respects_error_threshold() -> None:
     b_before = anchor_b0.b.copy()
 
     obs = EnvObs(x_partial={0: 0.05, 1: 0.05, 2: 0.9, 3: 0.9})
-    agent.step(obs)
+    _step_agent(agent, obs)
 
     assert np.allclose(anchor_b0.W, w_before)
     assert np.allclose(anchor_b0.b, b_before)
@@ -269,14 +276,14 @@ def test_rest_state_uses_lagged_predicates() -> None:
     agent.state.interrupt_prev = False
 
     obs = EnvObs(x_partial={0: 0.0})
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
     assert trace["rest"] is True
 
     agent.state.rest_permitted_prev = True
     agent.state.demand_prev = False
     agent.state.interrupt_prev = False
 
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
     assert trace["rest"] is False
 
 
@@ -295,11 +302,11 @@ def test_permit_param_uses_lagged_signals() -> None:
     agent.state.rawD_prev = 1.0
 
     obs = EnvObs(x_partial={0: 0.0})
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
     assert trace["permit_param"] is True
 
     agent.state.x_C_prev = -1.0
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
     assert trace["permit_param"] is False
 
 
@@ -314,7 +321,7 @@ def test_rest_permission_requires_stability_window() -> None:
     agent.state.feature_window = []
 
     obs = EnvObs(x_partial={0: 0.0})
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
 
     assert trace["rest_permitted_t"] is False
 
@@ -325,7 +332,7 @@ def test_margins_use_opportunity_signal() -> None:
 
     opp = 0.37
     obs = EnvObs(x_partial={0: 0.0}, opp=opp, danger=0.0)
-    agent.step(obs)
+    _step_agent(agent, obs)
 
     assert abs(agent.state.margins.m_L - opp) < 1e-9
 
@@ -345,7 +352,7 @@ def test_spawn_proposals_enqueue_in_operating() -> None:
     agent.state.fovea.block_age = np.array([0, 0], dtype=int)
 
     obs = EnvObs(x_partial={0: 1.0, 1: 1.0})
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
 
     assert trace["rest"] is False
     assert trace["Q_struct_len"] >= 1
@@ -356,7 +363,7 @@ def test_salience_trace_never_full_library() -> None:
     agent = NUPCA3Agent(cfg)
     obs = EnvObs(x_partial={0: 1.0})
 
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
     library_size = int(trace["salience_library_size"])
     candidate_count = int(trace["salience_candidate_count"])
     nodes_scored = int(trace["salience_nodes_scored"])
@@ -379,7 +386,7 @@ def test_salience_trace_debug_exhaustive_includes_full_library() -> None:
     agent = NUPCA3Agent(cfg)
     obs = EnvObs(x_partial={0: 1.0})
 
-    _action, trace = agent.step(obs)
+    _action, trace = _step_agent(agent, obs)
     library_size = int(trace["salience_library_size"])
     candidate_count = int(trace["salience_candidate_count"])
     nodes_scored = int(trace["salience_nodes_scored"])

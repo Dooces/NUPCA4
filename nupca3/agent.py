@@ -6,7 +6,7 @@ NUPCA3Agent implementation used by the v5 harness (test5.py).
 This module is intentionally thin:
   - State initialization lives here (because it must be consistent and
     pickleable for harness save/restore).
-  - Per-step logic is delegated to ``nupca3.step_pipeline.core.step_pipeline``.
+  - Per-step logic is delegated to ``nupca3.step_pipeline.v5_kernel.step_v5_kernel``.
 
 Critical ordering note
 ----------------------
@@ -38,7 +38,9 @@ from .geometry.block_spec import build_block_specs, BlockView
 from .geometry.fovea import build_blocks_from_cfg, init_fovea_state
 from .incumbents import rebuild_incumbents_by_block
 from .memory.library import init_library
-from .step_pipeline.core import step_pipeline
+from .memory.pred_store import PredStore
+from .memory.trace_cache import init_trace_cache
+from .step_pipeline.v5_kernel import step_v5_kernel
 from .step_pipeline.fovea import apply_signals_and_select
 
 
@@ -88,7 +90,9 @@ def _init_primary_state(cfg: AgentConfig) -> AgentState:
     library = init_library(cfg)
 
     state = AgentState(
-        t=0,
+        t_w=0,
+        k_op=0,
+        wall_ms=0,
         E=0.0,
         D=0.0,
         drift_P=0.0,
@@ -101,6 +105,27 @@ def _init_primary_state(cfg: AgentConfig) -> AgentState:
         buffer=buf,
         library=library,
     )
+
+    state.pred_store = PredStore(capacity=int(cfg.pred_store_capacity))
+    state.trace_cache = init_trace_cache(cfg)
+    state.thread_pinned_units = set()
+    state.budget_degradation_level = 0
+    state.budget_degradation_history = ()
+    state.budget_hat_max = float(cfg.B_rt)
+    state.g_contemplate = False
+    state.focus_mode = "operate"
+    state.planning_budget = 0.0
+    state.planning_target_blocks = None
+
+    B = int(getattr(cfg, "B", 0))
+    state.P_nov_state = np.zeros(B, dtype=float)
+    state.U_prev_state = np.zeros(B, dtype=float)
+    state.value_of_compute = 0.0
+    state.hazard_pressure = 0.0
+    state.novelty_pressure = 0.0
+
+    state.planning_threads = {}
+    state.planning_thread_stage = {}
 
     # Attach geometry + incumbents indices.
     state.blocks = [dims.copy() for dims in blocks]
@@ -124,13 +149,15 @@ class NUPCA3Agent:
     def __init__(self, cfg: AgentConfig, *, state: Optional[AgentState] = None):
         self.cfg: AgentConfig = cfg
         self.state: AgentState = state if state is not None else _init_primary_state(cfg)
+        if getattr(self.state, "trace_cache", None) is None:
+            self.state.trace_cache = init_trace_cache(cfg)
 
     # ------------------------------------------------------------------
     # Harness-facing API
     # ------------------------------------------------------------------
 
     def step(self, env_obs: EnvObs) -> Tuple[Action, Dict[str, Any]]:
-        action, new_state, trace = step_pipeline(self.state, env_obs, self.cfg)
+        action, new_state, trace = step_v5_kernel(self.state, env_obs, self.cfg)
         self.state = new_state
         return action, trace
 
@@ -157,7 +184,7 @@ class NUPCA3Agent:
         # Soft reset: keep library + learned params.
         D = int(getattr(self.cfg, "D", 0))
         x0 = np.zeros(D, dtype=float) if D > 0 else np.zeros(0, dtype=float)
-        self.state.t = 0
+        self.state.t_w = 0
         self.state.E = 0.0
         self.state.D = 0.0
         self.state.drift_P = 0.0
@@ -177,6 +204,26 @@ class NUPCA3Agent:
         self.state.context_register = np.zeros(0, dtype=float)
         self.state.node_context_tags = {}
         self.state.observed_history.clear()
+        self.state.k_op = 0
+        self.state.wall_ms = 0
+        self.state.budget_degradation_level = 0
+        self.state.budget_degradation_history = ()
+        self.state.budget_hat_max = float(self.cfg.B_rt)
+        self.state.thread_pinned_units = set()
+        self.state.trace_cache = init_trace_cache(self.cfg)
+        self.state.pred_store = PredStore(capacity=int(self.cfg.pred_store_capacity))
+        self.state.g_contemplate = False
+        self.state.focus_mode = "operate"
+        self.state.planning_budget = 0.0
+        self.state.planning_target_blocks = None
+        B = int(getattr(self.cfg, "B", 0))
+        self.state.P_nov_state = np.zeros(B, dtype=float)
+        self.state.U_prev_state = np.zeros(B, dtype=float)
+        self.state.value_of_compute = 0.0
+        self.state.hazard_pressure = 0.0
+        self.state.novelty_pressure = 0.0
+        self.state.planning_threads = {}
+        self.state.planning_thread_stage = {}
 
     # ------------------------------------------------------------------
     # Optional persistence helpers (used by some older harnesses).
@@ -184,8 +231,13 @@ class NUPCA3Agent:
 
     def save_state(self, path: str | Path) -> None:
         p = Path(path)
-        payload = {"cfg": self.cfg, "state": self.state}
-        p.write_bytes(pickle.dumps(payload))
+        cache = getattr(self.state, "trace_cache", None)
+        self.state.trace_cache = None  # do not serialize trace cache (A16.8.4)
+        try:
+            payload = {"cfg": self.cfg, "state": self.state}
+            p.write_bytes(pickle.dumps(payload))
+        finally:
+            self.state.trace_cache = cache
 
     @classmethod
     def load_state(cls, path: str | Path) -> "NUPCA3Agent":
@@ -195,8 +247,10 @@ class NUPCA3Agent:
         state = payload.get("state")
         if cfg is None or state is None:
             raise ValueError("Invalid agent state payload")
+        state.pred_store = PredStore(capacity=int(cfg.pred_store_capacity))
+        state.budget_degradation_level = getattr(state, "budget_degradation_level", 0)
+        state.budget_degradation_history = tuple(getattr(state, "budget_degradation_history", ()))
+        state.budget_hat_max = float(getattr(state, "budget_hat_max", cfg.B_rt))
+        state.thread_pinned_units = set(getattr(state, "thread_pinned_units", set()))
+        state.trace_cache = init_trace_cache(cfg)
         return cls(cfg=cfg, state=state)
-
-
-# Back-compat alias used by some older scripts.
-NUPCAAgent = NUPCA3Agent

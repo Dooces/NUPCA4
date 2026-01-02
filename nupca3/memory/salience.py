@@ -101,14 +101,21 @@ def _get_node_mask(node: Node) -> Optional[np.ndarray]:
 
 
 def infer_node_band_level(node: Node, cfg: AgentConfig) -> int:
-    """Infer a coarse abstraction level (band) for a node based on mask size."""
+    """Infer a coarse abstraction level (band) for a node using supported dims."""
+    support: Set[int] = set()
     mask = _get_node_mask(node)
-    if mask is None:
+    if mask is not None:
+        mask_arr = np.asarray(mask, dtype=int).reshape(-1)
+        support.update(int(x) for x in mask_arr if x >= 0)
+    for idx_name in ("out_idx", "in_idx"):
+        idx_arr = getattr(node, idx_name, None)
+        if idx_arr is None:
+            continue
+        idx_np = np.asarray(idx_arr, dtype=int).reshape(-1)
+        support.update(int(x) for x in idx_np if x >= 0)
+    if not support:
         return 1
-    support = int(np.count_nonzero(mask > 0.5))
-    if support <= 0:
-        return 1
-    level = math.ceil(math.sqrt(float(support)))
+    level = math.ceil(math.sqrt(float(len(support))))
     return max(1, int(level))
 
 
@@ -672,83 +679,3 @@ def bootstrap_scores(state: AgentState, cfg: AgentConfig) -> Dict[int, float]:
     """Compute initial scores for bootstrap on first timestep."""
     return compute_scores(state, cfg, observed_dims=None)
 
-
-# =============================================================================
-# Legacy Compatibility
-# =============================================================================
-
-
-def temperature_legacy(
-    norm_margins: np.ndarray,
-    arousal: float,
-    stress,
-    cfg: AgentConfig,
-) -> float:
-    """Legacy temperature interface.
-    
-    WARNING: This does not implement A5.2 correctly. Use compute_temperature().
-    """
-    # Convert legacy stress object to StressSignals
-    s_E = float(getattr(stress, "s_E", getattr(stress, "s_E_need", 0.0)))
-    s_D = float(getattr(stress, "s_D", getattr(stress, "s_D_need", 0.0)))
-    s_int_need = max(s_E, s_D)
-    s_ext_th = float(getattr(stress, "s_ext_th", 0.0))
-    
-    signals = StressSignals(
-        arousal=arousal,
-        s_int_need=s_int_need,
-        s_ext_th=s_ext_th,
-    )
-    
-    tau_eff, _ = compute_temperature(signals, cfg)
-    return tau_eff
-
-
-def score_experts_legacy(
-    lib,
-    buf,
-    O_t: Set[int],
-    cfg: AgentConfig,
-) -> Dict[int, float]:
-    """Legacy score interface.
-    
-    WARNING: This does not have full state context. Use compute_scores().
-    """
-    nodes = getattr(lib, "nodes", {})
-    if not nodes:
-        return {}
-    
-    # Simplified scoring without full A5.1
-    alpha_pi = float(cfg.alpha_pi)
-    alpha_ctx = float(cfg.alpha_ctx)
-    
-    scores: Dict[int, float] = {}
-    
-    for node_id, node in nodes.items():
-        # Reliability
-        pi_j = _get_node_reliability(node)
-        
-        # Context overlap
-        mask = _get_node_mask(node)
-        if mask is not None:
-            mask_dims = set(int(i) for i in np.where(mask > 0.5)[0].tolist())
-            overlap = len(mask_dims & O_t) if O_t else 0
-            relevance = float(overlap) / max(len(mask_dims), 1)
-        else:
-            relevance = 0.0
-        
-        scores[int(node_id)] = alpha_pi * pi_j + alpha_ctx * relevance
-    
-    return scores
-
-
-def activation_weights_legacy(
-    scores: Dict[int, float],
-    tau_eff: float,
-    cfg: AgentConfig,
-) -> Dict[int, float]:
-    """Legacy activation interface.
-    
-    WARNING: Original used softmax which is not A5.3. This now uses sigmoid.
-    """
-    return compute_activations(scores, tau_eff, cfg)

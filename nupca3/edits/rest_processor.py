@@ -69,18 +69,13 @@ def _unit_sig64_for_new_unit(state: AgentState, cfg: AgentConfig) -> int:
     In NUPCA5 mode, missing/zero last_sig64 is a hard error (do not silently
     substitute salts or fallbacks).
     """
-    sig = getattr(state, 'last_sig64', None)
-    if bool(getattr(cfg, 'nupca5_enabled', False)):
-        if sig is None:
-            raise ValueError('NUPCA5: cannot create unit during REST without state.last_sig64 set')
-        sig = int(sig) & ((1 << 64) - 1)
-        if sig == 0:
-            raise ValueError('NUPCA5: state.last_sig64 is 0; invalid stored unit address')
-        return sig
-    # Non-v5 mode: best-effort populate if present, otherwise 0.
+    sig = getattr(state, "last_sig64", None)
     if sig is None:
-        return 0
-    return int(sig) & ((1 << 64) - 1)
+        raise ValueError("NUPCA5: cannot create unit during REST without state.last_sig64 set")
+    sig = int(sig) & ((1 << 64) - 1)
+    if sig == 0:
+        raise ValueError("NUPCA5: state.last_sig64 is 0; invalid stored unit address")
+    return sig
 
 
 # =============================================================================
@@ -377,8 +372,8 @@ def apply_spawn(
         cost=compute_mdl_cost(mask, cfg),
         is_anchor=False,
         footprint=footprint,
-        last_active_step=state.timestep,
-        created_step=state.timestep
+        last_active_step=state.t_w,
+        created_step=state.t_w
     )
 
     new_node.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
@@ -481,8 +476,8 @@ def apply_split(
         cost=compute_mdl_cost(mask_1, cfg),
         is_anchor=False,
         footprint=footprint,
-        last_active_step=state.timestep,
-        created_step=state.timestep
+        last_active_step=state.t_w,
+        created_step=state.t_w
     )
     node_2 = Node(
         node_id=-1,
@@ -497,8 +492,8 @@ def apply_split(
         cost=compute_mdl_cost(mask_2, cfg),
         is_anchor=False,
         footprint=footprint,
-        last_active_step=state.timestep,
-        created_step=state.timestep
+        last_active_step=state.t_w,
+        created_step=state.t_w
     )
 
     node_1.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
@@ -689,7 +684,7 @@ def process_struct_queue(
                 # A3.3: record that a structural edit occurred at time t.
                 try:
                     from ..state.baselines import commit_struct_edit
-                    state.baselines = commit_struct_edit(state.baselines, t=int(state.t))
+                    state.baselines = commit_struct_edit(state.baselines, t=int(state.t_w))
                 except Exception:
                     # Best-effort; keep edit application authoritative.
                     pass

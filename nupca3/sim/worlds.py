@@ -18,8 +18,10 @@ The key is that they emit partial observations and accept fovea selections if yo
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple, Dict
+
+import time
 
 import numpy as np
 
@@ -30,18 +32,37 @@ from ..types import EnvObs
 class ToyWorld:
     D: int
     x: np.ndarray
+    _t_w: int = field(init=False, default=0)
 
     def reset(self, seed: int = 0) -> EnvObs:
         rng = np.random.default_rng(seed)
         self.x = rng.normal(size=self.D)
-        return EnvObs(x_partial={0: float(self.x[0])}, opp=0.0, danger=0.0)
+        self._t_w = 1
+        return EnvObs(
+            x_partial={0: float(self.x[0])},
+            opp=0.0,
+            danger=0.0,
+            t_w=self._t_w,
+            wall_ms=int(time.perf_counter() * 1000),
+        )
 
     def step(self, action: int) -> Tuple[EnvObs, bool]:
         # Simple linear drift + noise
         self.x = 0.99 * self.x + 0.01 * np.random.normal(size=self.D)
         done = False
+        self._t_w = int(getattr(self, "_t_w", 0)) + 1
+        wall_ms = int(time.perf_counter() * 1000)
         # Partial observe dim 0 only
-        return EnvObs(x_partial={0: float(self.x[0])}, opp=0.0, danger=0.0), done
+        return (
+            EnvObs(
+                x_partial={0: float(self.x[0])},
+                opp=0.0,
+                danger=0.0,
+                t_w=self._t_w,
+                wall_ms=wall_ms,
+            ),
+            done,
+        )
 
 
 @dataclass
@@ -65,6 +86,7 @@ class ColorShapeWorld:
     rng: np.random.Generator | None = None
     color: int = 0
     shape: int = 0
+    _t_w: int = field(init=False, default=0)
 
     @property
     def D(self) -> int:
@@ -89,7 +111,14 @@ class ColorShapeWorld:
             if not self.reject_pairs or (self.color, self.shape) not in self.reject_pairs:
                 break
         x = self._onehot()
-        return EnvObs(x_partial={i: float(x[i]) for i in range(self.D)}, opp=0.0, danger=0.0)
+        self._t_w = 1
+        return EnvObs(
+            x_partial={i: float(x[i]) for i in range(self.D)},
+            opp=0.0,
+            danger=0.0,
+            t_w=self._t_w,
+            wall_ms=int(time.perf_counter() * 1000),
+        )
 
     def step(self, action: int = 0) -> tuple[EnvObs, bool]:
         # independent transitions
@@ -104,7 +133,18 @@ class ColorShapeWorld:
                 tries += 1
         x = self._onehot()
         done = False
-        return EnvObs(x_partial={i: float(x[i]) for i in range(self.D)}, opp=0.0, danger=0.0), done
+        self._t_w = int(getattr(self, "_t_w", 0)) + 1
+        wall_ms = int(time.perf_counter() * 1000)
+        return (
+            EnvObs(
+                x_partial={i: float(x[i]) for i in range(self.D)},
+                opp=0.0,
+                danger=0.0,
+                t_w=self._t_w,
+                wall_ms=wall_ms,
+            ),
+            done,
+        )
 
 
 def _sample_cat(p: np.ndarray, rng: np.random.Generator) -> int:

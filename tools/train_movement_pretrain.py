@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import pickle
+import time
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
@@ -43,7 +44,7 @@ def build_obs(vec: Sequence[float]) -> EnvObs:
         x_partial=x_partial,
         opp=0.0,
         danger=0.0,
-        x_full=flat.copy(),
+        periph_full=flat.copy(),
         pos_dims=set(int(idx) for idx in nonzero),
     )
 
@@ -320,6 +321,12 @@ class MovementTrainer:
         self.control_command = "idle"
         self.control_target: str | None = None
 
+    def _prepare_obs(self, vec: np.ndarray) -> EnvObs:
+        obs = build_obs(vec)
+        obs.t_w = self.agent.state.t_w + 1
+        obs.wall_ms = int(time.perf_counter() * 1000)
+        return obs
+
     def run_phase(self, *, world: object, steps: int, phase_name: str) -> None:
         print(f"\n--- Starting phase {phase_name}: {steps} steps ---")
         vec = world.reset()
@@ -329,7 +336,7 @@ class MovementTrainer:
         self._update_control_pos(world)
         vec, control_pos = self._apply_control(vec, side, -1, control_pos=self.control_pos)
         self.control_pos = control_pos
-        obs = build_obs(vec)
+        obs = self._prepare_obs(vec)
         action, trace = self.agent.step(obs)
         self.control_command = self._interpret_action(action)
         transport_matches = 0
@@ -353,7 +360,7 @@ class MovementTrainer:
             self._update_control_pos(world)
             vec, control_pos = self._apply_control(vec, side, step, control_pos=self.control_pos)
             self.control_pos = control_pos
-            obs = build_obs(vec)
+            obs = self._prepare_obs(vec)
             action, trace = self.agent.step(obs)
             self.control_command = self._interpret_action(action)
             tdelta = tuple(trace.get("transport_delta", (0, 0)))

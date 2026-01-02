@@ -66,6 +66,9 @@ def _tracked_node_ids(state: AgentState, cfg: AgentConfig) -> Set[int]:
       3) optional extra ids attached by other modules
     """
 
+    library = getattr(state, "library", None)
+    nodes = getattr(library, "nodes", None) if library is not None else None
+
     tracked: Set[int] = set(int(n) for n in (getattr(state, "active_set", set()) or set()))
     tracked.update(int(n) for n in (getattr(state, "salience_candidate_ids", set()) or set()))
     tracked.update(int(n) for n in (getattr(state, "coverage_tracked_ids", set()) or set()))
@@ -78,6 +81,39 @@ def _tracked_node_ids(state: AgentState, cfg: AgentConfig) -> Set[int]:
         )
     )
     cap = max(32, cap)
+    if not nodes:
+        return tracked
+
+    if len(tracked) < min(cap, 2):
+        need = min(cap, 2) - len(tracked)
+        for nid in sorted(nodes.keys()):
+            if nid in tracked:
+                continue
+            tracked.add(int(nid))
+            need -= 1
+            if need <= 0:
+                break
+
+    target_levels = min(2, len(nodes))
+    tracked_levels: Set[int] = set()
+    if target_levels > 0:
+        for nid in tracked:
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            tracked_levels.add(int(infer_node_band_level(node, cfg)))
+        if len(tracked_levels) < target_levels:
+            for nid in sorted(nodes.keys()):
+                if len(tracked_levels) >= target_levels:
+                    break
+                if int(nid) in tracked:
+                    continue
+                node = nodes.get(nid)
+                if node is None:
+                    continue
+                tracked.add(int(nid))
+                tracked_levels.add(int(infer_node_band_level(node, cfg)))
+
     if len(tracked) <= cap:
         return tracked
 
@@ -105,7 +141,7 @@ def _ensure_node_band_levels(state: AgentState, cfg: AgentConfig) -> None:
 
     node_levels: Dict[int, int] = dict(getattr(state, "node_band_levels", {}) or {})
     last_seen: Dict[int, int] = dict(getattr(state, "coverage_debt_last_seen", {}) or {})
-    t_now = int(getattr(state, "t", 0))
+    t_now = int(getattr(state, "t_w", 0))
 
     # Infer for tracked ids only.
     for nid in tracked:
@@ -318,6 +354,7 @@ def compute_sig_gist_u8(
 
 
 def _update_context_register(state: AgentState, gist: np.ndarray, cfg: AgentConfig) -> None:
+    gist_vec = np.asarray(gist, dtype=float).reshape(-1)
     if bool(cfg.sig_disable_context_register):
         # NUPCA5: do not persist gist/context state.
         state.context_register = np.zeros(0, dtype=float)
@@ -326,11 +363,9 @@ def _update_context_register(state: AgentState, gist: np.ndarray, cfg: AgentConf
     beta = float(cfg.beta_context)
     beta = max(0.0, min(1.0, beta))
     prev = getattr(state, "context_register", None)
-    if prev is None:
-        prev = np.zeros_like(gist)
-    if prev.shape != gist.shape:
-        prev = np.zeros_like(gist)
-    new_reg = (1.0 - beta) * prev + beta * gist
+    if prev is None or prev.shape != gist_vec.shape:
+        prev = np.zeros_like(gist_vec)
+    new_reg = (1.0 - beta) * prev + beta * gist_vec
     state.context_register = new_reg
 
 
@@ -389,7 +424,7 @@ def _update_coverage_debts(state: AgentState, cfg: AgentConfig) -> None:
     node_levels: Dict[int, int] = dict(getattr(state, "node_band_levels", {}) or {})
     last_seen: Dict[int, int] = dict(getattr(state, "coverage_debt_last_seen", {}) or {})
 
-    t_now = int(getattr(state, "t", 0))
+    t_now = int(getattr(state, "t_w", 0))
     debt_max = int(getattr(cfg, "coverage_debt_max", 10_000))
     debt_max = max(1, debt_max)
 

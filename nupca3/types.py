@@ -77,10 +77,10 @@ class EnvObs:
     x_partial: Dict[int, float]
     opp: float = 0.0
     danger: float = 0.0
-    x_full: np.ndarray | None = None
     periph_full: np.ndarray | None = None
-    allow_full_state: bool = False
     true_delta: Tuple[int, int] | None = None
+    t_w: int = 0
+    wall_ms: int | None = None
     pos_dims: Set[int] = field(default_factory=set)
     selected_blocks: Tuple[int, ...] = field(default_factory=tuple)
 
@@ -232,6 +232,19 @@ class WorkingSet:
     # Selection metadata
     anchor_ids: List[int] = field(default_factory=list)
     non_anchor_ids: List[int] = field(default_factory=list)
+
+
+@dataclass
+class PlanningThread:
+    """Persistent planning thread metadata (A0.6)."""
+
+    thread_id: int
+    focus_blocks: Tuple[int, ...] = field(default_factory=tuple)
+    focus_object: Any | None = None
+    timeline: Tuple[int, ...] = field(default_factory=tuple)
+    status: str = "idle"
+    plan_state: Dict[str, Any] = field(default_factory=dict)
+    last_progress_t_w: int = 0
 
 
 # =============================================================================
@@ -419,13 +432,6 @@ class ExpertLibrary:
     @staticmethod
     def unpack(packed: "PackedExpertLibrary") -> "ExpertLibrary":
         return unpack_expert_library(packed)
-
-
-# Back-compat: some files historically called this "Library".
-Library = ExpertLibrary
-
-
-
 
 # =============================================================================
 # Packed durability format (v5 A0.BUDGET.6)
@@ -1205,7 +1211,9 @@ class AgentState:
       - s^ar(0) = s_inst^ar(0) (arousal)
     """
     # ----- Primary fields -----
-    t: int
+    t_w: int
+    k_op: int
+    wall_ms: int
     # Underlying margin observables (A2.1) evolved by A15 dynamics.
     # These are kept explicitly so A0.3 and A10.2 can use raw headrooms.
     E: float
@@ -1224,6 +1232,7 @@ class AgentState:
     b_cons: float = 0.0
     world_hypotheses: List[WorldHypothesis] = field(default_factory=list)
     observed_history: Deque[Set[int]] = field(default_factory=lambda: deque())
+    scan_counter: int = 0
 
     # Lagged A14 predicates evaluated at time t-1 (A14.7).
     rest_permitted_prev: bool = True
@@ -1241,6 +1250,17 @@ class AgentState:
     sig_prev_hist: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.uint16))
     # bounded deferred validation queue
     pending_validation: Deque[PendingValidationRecord] = field(default_factory=lambda: deque())
+    pred_store: Any = field(default=None, repr=False)
+    trace_cache: Any = field(default=None, repr=False)
+    value_of_compute: float = 0.0
+    hazard_pressure: float = 0.0
+    novelty_pressure: float = 0.0
+    P_nov_state: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    U_prev_state: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    g_contemplate: bool = False
+    focus_mode: str = "operate"
+    planning_budget: float = 0.0
+    planning_target_blocks: Tuple[int, ...] | None = None
 
     # ----- Observation geometry (A16) -----
     blocks: List[List[int]] = field(default_factory=list)
@@ -1255,6 +1275,9 @@ class AgentState:
     residual_stats: Dict[int, FootprintResidualStats] = field(default_factory=dict)
     persistent_residuals: Dict[int, PersistentResidualState] = field(default_factory=dict)
     active_set: Set[int] = field(default_factory=set)
+    thread_pinned_units: Set[int] = field(default_factory=set)
+    planning_threads: Dict[int, "PlanningThread"] = field(default_factory=dict)
+    planning_thread_stage: Dict[int, "PlanningThread"] = field(default_factory=dict)
     # Peripheral gist / coverage bookkeeping
     context_register: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     node_context_tags: Dict[int, np.ndarray] = field(default_factory=dict)
@@ -1280,6 +1303,11 @@ class AgentState:
 
     # Lagged compute slack x_C(t-1) for A10.2 timing discipline
     x_C_prev: float = 0.0
+
+    # Budget governor telemetry
+    budget_degradation_level: int = 0
+    budget_degradation_history: Tuple[str, ...] = field(default_factory=tuple)
+    budget_hat_max: float = 0.0
 
     # Lagged raw headrooms for A10.2 timing discipline.
     rawE_prev: float = 0.0
@@ -1321,11 +1349,6 @@ class AgentState:
     # -------------------------------------------------------------------------
     # Compatibility properties (used by edit modules)
     # -------------------------------------------------------------------------
-
-    @property
-    def timestep(self) -> int:
-        """Alias for t."""
-        return int(self.t)
 
     @property
     def is_rest(self) -> bool:
@@ -1398,6 +1421,7 @@ __all__ = [
     "infer_footprint",
     # NUPCA5
     "PendingValidationRecord",
+    "PlanningThread",
     # Main container
     "AgentState",
 ]

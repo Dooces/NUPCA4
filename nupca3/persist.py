@@ -23,6 +23,8 @@ from typing import Any, Dict, Tuple
 from collections import deque
 
 import numpy as np
+from .memory.pred_store import PredStore
+from .memory.trace_cache import init_trace_cache
 
 from .config import AgentConfig
 from .types import (
@@ -152,6 +154,8 @@ def save_checkpoint(path: Path, cfg: AgentConfig, state: AgentState) -> None:
 
     arrays["state.sig_prev_counts"] = np.asarray(state.sig_prev_counts, dtype=np.int16)
     arrays["state.sig_prev_hist"] = np.asarray(state.sig_prev_hist, dtype=np.uint16)
+    arrays["state.P_nov_state"] = np.asarray(getattr(state, "P_nov_state", np.zeros(0, dtype=float)), dtype=float)
+    arrays["state.U_prev_state"] = np.asarray(getattr(state, "U_prev_state", np.zeros(0, dtype=float)), dtype=float)
 
     # NOTE: pending_validation is intentionally NOT persisted in v5.
 
@@ -161,7 +165,9 @@ def save_checkpoint(path: Path, cfg: AgentConfig, state: AgentState) -> None:
         "packed_lib_scalars": lib_scalars,
         "sig_index": sig_meta,
         "state": {
-            "t": int(state.t),
+            "t_w": int(state.t_w),
+            "k_op": int(state.k_op),
+            "wall_ms": int(state.wall_ms),
             "E": float(state.E),
             "D": float(state.D),
             "drift_P": float(state.drift_P),
@@ -190,6 +196,11 @@ def save_checkpoint(path: Path, cfg: AgentConfig, state: AgentState) -> None:
                 "last_sig64": None
                 if state.last_sig64 is None
                 else int(state.last_sig64) & ((1 << 64) - 1),
+            },
+            "value_of_compute": {
+                "value_of_compute": float(getattr(state, "value_of_compute", 0.0)),
+                "hazard_pressure": float(getattr(state, "hazard_pressure", 0.0)),
+                "novelty_pressure": float(getattr(state, "novelty_pressure", 0.0)),
             },
             "prev": {
                 "rest_permitted_prev": bool(getattr(state, "rest_permitted_prev", True)),
@@ -240,34 +251,27 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
 
         base_lib = ExpertLibrary.unpack(packed)
 
-        # In v5 mode, use V5ExpertLibrary to preserve lifecycle hooks.
-        if bool(getattr(cfg, "nupca5_enabled", False)):
-            from .memory.library import V5ExpertLibrary
+        from .memory.library import V5ExpertLibrary
 
-            lib = V5ExpertLibrary(
-                nodes=base_lib.nodes,
-                anchors=base_lib.anchors,
-                footprint_index=base_lib.footprint_index,
-                next_node_id=int(getattr(base_lib, "next_node_id", 0)),
-                revision=int(getattr(base_lib, "revision", 0)),
-            )
-        else:
-            lib = base_lib
+        lib = V5ExpertLibrary(
+            nodes=base_lib.nodes,
+            anchors=base_lib.anchors,
+            footprint_index=base_lib.footprint_index,
+            next_node_id=int(getattr(base_lib, "next_node_id", 0)),
+            revision=int(getattr(base_lib, "revision", 0)),
+        )
 
         # Restore/build sig_index (v5 requires an index; buckets are rebuilt deterministically).
-        if bool(getattr(cfg, "nupca5_enabled", False)):
-            from .memory.sig_index import PackedSigIndex
+        from .memory.sig_index import PackedSigIndex
 
-            si = PackedSigIndex.from_cfg_obj(cfg)
-            # Load error cache first so overflow replacement uses vetted priority.
-            if "sig_index.err_cache" in z:
-                ec = np.asarray(z["sig_index.err_cache"], dtype=np.float32)
-                if ec.ndim != 2:
-                    raise ValueError("sig_index.err_cache must be a 2D array")
-                setattr(si, "_err_cache", ec.copy())
-            lib.sig_index = si
-        else:
-            lib.sig_index = None
+        si = PackedSigIndex.from_cfg_obj(cfg)
+        # Load error cache first so overflow replacement uses vetted priority.
+        if "sig_index.err_cache" in z:
+            ec = np.asarray(z["sig_index.err_cache"], dtype=np.float32)
+            if ec.ndim != 2:
+                raise ValueError("sig_index.err_cache must be a 2D array")
+            setattr(si, "_err_cache", ec.copy())
+        lib.sig_index = si
 
         # Rebuild small state
         st = meta["state"]
@@ -326,7 +330,9 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
         )
 
         state = AgentState(
-            t=int(st["t"]),
+            t_w=int(st.get("t_w", int(st.get("t", 0)))),
+            k_op=int(st.get("k_op", 0)),
+            wall_ms=int(st.get("wall_ms", 0)),
             E=float(st["E"]),
             D=float(st["D"]),
             drift_P=float(st["drift_P"]),
@@ -340,6 +346,20 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
             library=lib,
             b_cons=float(st.get("b_cons", 0.0)),
         )
+
+        B = int(getattr(cfg, "B", 0))
+        if "state.P_nov_state" in z:
+            state.P_nov_state = np.asarray(z["state.P_nov_state"], dtype=float).copy()
+        else:
+            state.P_nov_state = np.zeros(B, dtype=float)
+        if "state.U_prev_state" in z:
+            state.U_prev_state = np.asarray(z["state.U_prev_state"], dtype=float).copy()
+        else:
+            state.U_prev_state = np.zeros(B, dtype=float)
+        adviser_meta = st.get("value_of_compute", {}) or {}
+        state.value_of_compute = float(adviser_meta.get("value_of_compute", 0.0))
+        state.hazard_pressure = float(adviser_meta.get("hazard_pressure", 0.0))
+        state.novelty_pressure = float(adviser_meta.get("novelty_pressure", 0.0))
 
         # Restore v5 sig state
         state.last_sig64 = st.get("sig", {}).get("last_sig64", None)
@@ -374,33 +394,38 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
         state.incumbents_revision = int(getattr(state.library, "revision", 0))
 
         # Ensure v5 lifecycle removal works: compute and store node.sig_index_blocks.
-        if bool(getattr(cfg, "nupca5_enabled", False)):
-            from .memory.library import register_unit_in_sig_index
+        from .memory.library import register_unit_in_sig_index
 
-            D0 = int(getattr(cfg, "D", 0))
-            dim2block = _dim2block_from_blocks(state.blocks, D0) if D0 > 0 else None
-            setattr(state.library, "_sig_dim2block", dim2block)
+        D0 = int(getattr(cfg, "D", 0))
+        dim2block = _dim2block_from_blocks(state.blocks, D0) if D0 > 0 else None
+        setattr(state.library, "_sig_dim2block", dim2block)
 
-            # Rebuild buckets deterministically from loaded nodes.
-            si = getattr(state.library, "sig_index", None)
-            if si is None:
-                from .memory.sig_index import PackedSigIndex
+        # Rebuild buckets deterministically from loaded nodes.
+        si = getattr(state.library, "sig_index", None)
+        if si is None:
+            from .memory.sig_index import PackedSigIndex
 
-                state.library.sig_index = PackedSigIndex.from_cfg_obj(cfg)
-                si = state.library.sig_index
+            state.library.sig_index = PackedSigIndex.from_cfg_obj(cfg)
+            si = state.library.sig_index
 
-            # Clear buckets if the structure exists.
-            if hasattr(si, "buckets"):
-                try:
-                    si.buckets.fill(-1)
-                except Exception:
-                    pass
+        # Clear buckets if the structure exists.
+        if hasattr(si, "buckets"):
+            try:
+                si.buckets.fill(-1)
+            except Exception:
+                pass
 
-            for nid in sorted(int(k) for k in state.library.nodes.keys()):
-                node = state.library.nodes[int(nid)]
-                addr = int(getattr(node, "unit_sig64", 0)) & ((1 << 64) - 1)
-                if addr == 0:
-                    raise ValueError(f"NUPCA5: loaded node {nid} has unit_sig64=0 (invalid stored address)")
-                register_unit_in_sig_index(state.library, node, dim2block=dim2block)
+        for nid in sorted(int(k) for k in state.library.nodes.keys()):
+            node = state.library.nodes[int(nid)]
+            addr = int(getattr(node, "unit_sig64", 0)) & ((1 << 64) - 1)
+            if addr == 0:
+                raise ValueError(f"NUPCA5: loaded node {nid} has unit_sig64=0 (invalid stored address)")
+            register_unit_in_sig_index(state.library, node, dim2block=dim2block)
 
+        state.pred_store = PredStore(capacity=int(cfg.pred_store_capacity))
+        state.budget_degradation_level = getattr(state, "budget_degradation_level", 0)
+        state.budget_degradation_history = tuple(getattr(state, "budget_degradation_history", ()))
+        state.budget_hat_max = float(getattr(state, "budget_hat_max", cfg.B_rt))
+        state.thread_pinned_units = set(getattr(state, "thread_pinned_units", set()))
+        state.trace_cache = init_trace_cache(cfg)
         return cfg, state

@@ -240,7 +240,7 @@ def propose_split_by_residual(state: AgentState, cfg: AgentConfig) -> List[EditP
 
     nodes = state.library.nodes
     residual_stats = state.residual_stats
-    timestep = int(state.t)
+    timestep = int(state.t_w)
 
     # Scan-safe: iterate incumbents per footprint (bounded), not all nodes.
     for footprint, incumbent_ids in iter_incumbent_buckets(state):
@@ -306,7 +306,7 @@ def propose_merge_by_redundancy(state: AgentState, cfg: AgentConfig) -> List[Edi
 
     nodes = state.library.nodes
     activation_log = state.activation_log
-    timestep = int(state.t)
+    timestep = int(state.t_w)
 
     proposed_pairs: Set[Tuple[int, int]] = set()
 
@@ -449,7 +449,7 @@ def propose_spawn_from_residual(state: AgentState, cfg: AgentConfig) -> List[Edi
 
     nodes = state.library.nodes
     persistent_residuals = state.persistent_residuals
-    timestep = int(state.t)
+    timestep = int(state.t_w)
 
     for footprint, rstate in persistent_residuals.items():
         footprint = int(footprint)

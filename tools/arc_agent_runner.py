@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
 import math
+import time
 
 import numpy as np
 
@@ -59,7 +60,7 @@ def _grid_to_obs(x: Sequence[Sequence[int]], D: int) -> EnvObs:
         x_partial=cue,
         opp=0.0,
         danger=0.0,
-        x_full=vec.copy(),
+        periph_full=vec.copy(),
     )
 
 
@@ -327,6 +328,11 @@ class ArcAgentRunner:
         self._cases: List[TrainingCase] = []
         self.confidence_threshold = confidence_threshold
 
+    def _prepare_obs(self, obs: EnvObs) -> EnvObs:
+        obs.t_w = self.agent.state.t_w + 1
+        obs.wall_ms = int(time.perf_counter() * 1000)
+        return obs
+
     def load_state(self, path: Path) -> bool:
         if not path.exists():
             return False
@@ -338,12 +344,12 @@ class ArcAgentRunner:
 
     def ingest_examples(self, pairs: Iterable[Dict[str, List[List[int]]]], D: int) -> None:
         for pair in pairs:
-            obs_in = _grid_to_obs(pair["input"], D)
+            obs_in = self._prepare_obs(_grid_to_obs(pair["input"], D))
             self.agent.step(obs_in)
             self._record_training_case(pair["input"], pair["output"])
 
     def predict(self, grid: Sequence[Sequence[int]], D: int) -> List[List[int]]:
-        obs = _grid_to_obs(grid, D)
+        obs = self._prepare_obs(_grid_to_obs(grid, D))
         self.agent.step(obs)
         return self._predict_from_cases(grid)
 

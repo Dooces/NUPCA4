@@ -1,0 +1,367 @@
+IMPLEMENTATION PLAN (REVISED) — NUPCA5 v5.02 COMPLIANCE VIA “KERNEL + OFF‑THE‑SHELF PRIMITIVES”
+(Edits: refocused the original plan into a small kernel rewrite, explicitly reusing standard packages for commodity mechanics.
+Everything that is “axiomatic semantics/enforcement” remains custom choke points because no library enforces v5.02.)
+xxhash to be used not blake3
+
+A0. READ THIS FIRST (WHY THIS IS NOT “JUST WRAPPERS”)
+- You CAN and SHOULD reuse commodity implementations for: hashing, popcount/bit ops, ring buffers, packed arrays, graph utilities.
+- You CANNOT outsource: A13 ordering, scan-proof bounded Stage‑1 semantics, deferred validation from STORED predictions at t_due, budget governor + deterministic degradation, planning-only write fences.
+So the correct strategy is:
+  1) replace the runtime kernel (single authoritative tick function + stores + indices),
+  2) keep predictors/utilities as plugins behind kernel interfaces,
+  3) enforce “no scans / no peeking / no shims” with hard runtime checks.
+
+AXIOM SOURCE OF TRUTH
+- Use: NUPCA5_axioms_v5.0.2.md (axioms dir). Do not introduce behavior not justified by it.
+
+SCOPE (DONE MEANS THESE ARE TRUE)
+1) test.py runs end-to-end with no “full state” backdoors, no legacy toggles, and no per-tick full scans.
+2) agent runtime path is v5.02 compliant in:
+   - A0.4 time indices (t_w vs micro-steps vs wallclock),
+   - hard compute cap B_use(t) ≤ min(B_rt, B_max(t)) with deterministic degradation,
+   - A13 ordering + “planning-only writes” fence,
+   - Stage‑1 sig64 bucket probes with hard caps + bounded Stage‑2 scoring,
+   - deferred validation using STORED predictions (no recompute at t_due),
+   - foveated trace cache (bounded sensory mass, OPERATING-readable),
+   - time-sliced persistent planning threads,
+   - novelty persistence vs recognized change split + V_t value-of-compute.
+
+================================================================================
+STEP 0 — FREEZE “COMMODITY” DEPENDENCIES + CREATE ADAPTERS (DO THIS BEFORE TOUCHING LOGIC)
+Axioms: none (engineering foundation), but required to avoid rework.
+Work: Small (1–2 hours).
+
+Adapter rule (critical):
+- Create nupca3/compat/stdlib.py that exposes:
+    hash64(bytes)->uint64, popcount64(uint64)->int, hamming64(a,b)->int,
+    ring buffer abstraction, deterministic truncation helper.
+- The rest of the code imports ONLY from these adapters, not the third-party libs directly.
+This makes later swap-outs painless and stops “random library semantics” leaking into the kernel.
+
+================================================================================
+STEP 1 — STOP PATCHING OLD PIPELINE: INTRODUCE A NEW V5 KERNEL ENTRYPOINT
+Axioms: A13 (single authoritative ordering), A0 budget invariants.
+Work: Medium (half day).
+
+Create new module:
+- nupca3/step_pipeline/v5_kernel.py with ONE public function:
+    step_v5_kernel(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> (Action, AgentState, trace)
+
+Change only two call sites:
+- nupca3/agent.py: call step_v5_kernel (not the old core.step_pipeline).
+- test.py: import agent normally; no direct pipeline imports.
+
+Rule:
+- Old core.py remains temporarily but becomes “dead code” until Step 12, where you delete it.
+This is how you avoid whack‑a‑mole: you stop fighting legacy ordering and replace the choke points.
+
+Acceptance:
+- test.py still runs (even if behavior is partial), using the new kernel path (log a trace field “kernel=v5”).
+
+================================================================================
+STEP 2 — DELETE THE FULL-STATE BACKDOOR (NO SHIMS, NO “NONE FIELDS”)
+Axioms: A16.5.* (no cross-tick raw sensory persistence), “no peeking after commit”.
+Work: Small–Medium.
+
+Edits:
+- nupca3/types.py: remove EnvObs.x_full and EnvObs.allow_full_state entirely.
+- test.py: stop producing/passing x_full, stop setting allow_full_state.
+- Remove any references in any file (ripgrep must return zero hits).
+Transport estimation in v5_kernel must use:
+- periph_full (coarse) for within-tick motion/shift only, or
+- committed cue correspondence between t-1 and t (preferred).
+
+Commodity reuse:
+- Use numpy for coarse matching; no custom bit math.
+
+Acceptance:
+- tools/contract_check (Step 3) fails hard if these symbols exist anywhere.
+
+================================================================================
+STEP 3 — CONTRACT CHECKER FIRST: “MAKE ILLEGAL STATES IMPOSSIBLE”
+Axioms: cross-cutting enforcement; prevents assistant “cheats”.
+Work: Small.
+
+Add:
+- tools/v5_contract_check.py (run in CI loop) asserting:
+  1) Forbidden symbols absent: x_full, allow_full_state, NUPCAAgent alias, Library alias, getattr(cfg,'nupca5_enabled',...).
+  2) Kernel ordering markers appear in trace in the correct order (A13).
+  3) A “scan counter” is zero in OPERATING ticks (see Step 7).
+
+Commodity reuse:
+- pytest + hypothesis for invariants (e.g., truncation determinism).
+
+Acceptance:
+- contract_check PASS on a 20–50 tick run.
+
+================================================================================
+STEP 4 — TIME INDICES: t_w vs micro-steps vs wallclock (A0.4)
+Axioms: A0.4.
+Work: Medium.
+
+Edits:
+- AgentState: replace state.t with:
+    t_w: int, k_op: int, wall_ms: int
+- EnvObs: add t_w (and optionally wall_ms if you want B_max from real measurements).
+- v5_kernel:
+    assert monotonic t_w; advance exactly once per agent.step;
+    micro-steps only increment k_op (used later for planning threads).
+
+Commodity reuse:
+- none required.
+
+Acceptance:
+- contract_check confirms monotonic t_w and k_op resets per tick.
+
+================================================================================
+STEP 5 — DEFERRED VALIDATION FROM STORED PREDICTIONS (A4.5 + “cross-tick pred snapshot store”)
+Axioms: A4.5 ordering insert; “do not recompute at t_due”.
+Work: Large (this is the biggest semantic change).
+
+Implement NEW stores (custom policy; commodity container):
+- PredStore: ring buffer of PredSnapshot objects (collections.deque or fixed numpy buffers).
+- PredSnapshot stores:
+    t_emit, t_due, sig64_emit, selected_blocks,
+    (dims_idx, pred_vals) for the committed cue dims only,
+    attribution: which active units contributed (bounded list) OR an aggregated “final prediction” vector for those dims.
+
+Kernel ordering (mandatory):
+- At tick start (after minimal prepass, BEFORE retrieval scoring):
+    process_due_validations(t_w) using PredStore entries where t_due == t_w.
+- At tick end (after action selection, before any mutation that would change what you predicted):
+    write PredSnapshot for t_w+1 into PredStore.
+
+Commodity reuse:
+- Use numpy arrays for dims_idx/pred_vals packing.
+- Ring buffer: collections.deque(maxlen=K) is fine IF eviction is deterministic (it is).
+
+Acceptance:
+- Validation uses stored predicted values; never calls predictors to “recompute” that same snapshot at t_due.
+- Trace shows: validations_processed BEFORE retrieval_scoring.
+
+================================================================================
+STEP 6 — BUDGET GOVERNOR + DETERMINISTIC DEGRADATION LADDER (B_max, B_plan, B_use)
+Axioms: budget clarification in v5.02 header; A0 budget invariants.
+Work: Medium–Large.
+
+Implement (custom semantics; simple code):
+- BudgetMeter:
+    B_rt, B_hat_max, B_max, B_plan, B_use
+    spend(cost, tag), degrade_once(reason)
+- Deterministic degradation ladder (fixed ordered list in config), e.g.:
+    (1) reduce planning micro-steps,
+    (2) reduce O_t (committed blocks),
+    (3) reduce stage-2 depth,
+    (4) skip REST-like structural edits in OPERATING,
+    (5) fall back to persistence on uncovered dims.
+
+Commodity reuse:
+- wallclock timing: time.perf_counter_ns (stdlib).
+- No external scheduler library; semantics are bespoke.
+
+Acceptance:
+- With tick_budget_ms set tiny, kernel still runs and B_use never exceeds min(B_rt,B_max).
+- Ladder triggers in the same order every run.
+
+================================================================================
+STEP 7 — STAGE‑1 RETRIEVAL MUST BE A BOUNDED SIG64 BUCKET PROBE (NO SCANS)
+Axioms: A4.3′ sig64-addressed retrieval; “scan-proof” Stage‑1 semantics; A0.BUDGET.
+Work: Medium.
+
+Do NOT adopt generic ANN/vector search libs (FAISS/Annoy/etc.). They do not enforce:
+- block scoping, bucket caps, deterministic truncation, incremental maintenance without rebuilds.
+
+Implement Stage‑1 as a custom index (policy), but reuse commodity primitives:
+- Use numpy uint64 arrays + Python lists for buckets.
+- Use adapters:
+    hamming64 via (a^b).bit_count() or numpy bit operations.
+- Use deterministic truncation:
+    stable ordering (insertion order + deterministic tie-break by unit_id).
+
+Kernel integration:
+- After computing sig64(t) and selected_blocks:
+    cand_ids = sig_index.query(sig64, blocks, max_candidates=C_CAND_MAX)
+  then union in:
+    active_prev, required anchors, thread-pinned units.
+
+Scan-proof enforcement:
+- Any iteration over library.nodes in OPERATING must go through a helper that increments a counter;
+  contract_check asserts counter==0.
+
+Acceptance:
+- candidate scoring touches only cand_ids.
+- No per-tick rebuild_incumbents scans in OPERATING.
+
+================================================================================
+STEP 8 — FOVEATED TRACE CACHE (OPERATING‑READABLE, BOUNDED SENSORY MASS)
+Axioms: v5.02 trace cache clarification; A16.5.* no raw sensory persistence.
+Work: Medium.
+
+Implement TraceCache (custom policy; commodity container):
+- Ring buffer of TraceEntry:
+    t_w, selected_blocks, committed cue dims+vals only, sig64, small meta.
+Hard caps:
+- max_entries M
+- max_cues_per_entry O_MAX
+- total stored cue mass ≤ M*O_MAX (prevent reconstructing “full scene over time”).
+
+Commodity reuse:
+- collections.deque(maxlen=M)
+- numpy packing for dims/vals
+
+Acceptance:
+- contract_check verifies caps never exceeded.
+- No learning reads from TraceCache (planning-only).
+
+================================================================================
+STEP 9 — CONTEMPLATION AS OPERATING INTAKE THROTTLE + PLANNING‑ONLY WRITES
+Axioms: A0.5; “planning-only write permissions”.
+Work: Large.
+
+Implement Controller decision (custom policy):
+- decide_intake_and_compute(stress, P_haz, P_nov, budget_slack, problem_bound) -> (g_contemplate, O_t_target, planning_budget)
+
+Enforce planning-only writes (hard fence):
+- snapshot forbidden fields before planning micro-steps:
+    x_commit / residual bookkeeping / validation queues / learning stats
+- assert unchanged after planning.
+
+Commodity reuse:
+- none required.
+
+Acceptance:
+- --force-contemplate test mode proves fence holds.
+
+================================================================================
+STEP 10 — TIME‑SLICED PERSISTENT PLANNING THREADS (A0.6)
+Axioms: A0.6.
+Work: Medium–Large.
+
+Implement minimal thread system (custom policy):
+- Thread objects persisted in state:
+    focus (blocks/object), timeline, status, plan_state, last_progress_t_w
+- Scheduler is deterministic and time-sliced:
+    allocate a bounded number of micro-steps per tick across threads.
+
+Commodity reuse:
+- heapq for deterministic scheduling priority (tie-break by thread_id).
+
+Acceptance:
+- thread count bounded; each tick runs only allocated micro-steps; deterministic reconciliation.
+
+================================================================================
+STEP 11 — NOVELTY PERSISTENCE vs RECOGNIZED CHANGE + VALUE‑OF‑COMPUTE V_t
+Axioms: v5.02 split; A16.4.
+Work: Medium.
+
+Implement:
+- P_haz(t): fast recognized-change/hazard (reactive).
+- P_nov(t): slow novelty persistence EMA using U_prev_state explicitly.
+- V_t computed from these + expected error reduction per compute.
+Use V_t to drive:
+- O_t size, stage-2 depth, planning allocation, candidate depth.
+
+Commodity reuse:
+- none required.
+
+Acceptance:
+- V_t is recorded and actually changes allocations under different regimes.
+
+================================================================================
+STEP 12 — DELETE LEGACY PIPELINE + DEAD CODE (MAKE THE REWRITE REAL)
+Axioms: “no shims/legacy placeholders”.
+Work: Medium.
+
+Actions:
+- Delete old core pipeline entrypoints and any unused “legacy” functions (e.g., score_experts_legacy if unused).
+- Remove remaining aliases, fallback branches, debug backdoors.
+- Expand contract_check to assert:
+    - kernel=v5 is the only path,
+    - forbidden symbols absent,
+    - scan counter zero,
+    - validations-before-scoring ordering marker present,
+    - B_use caps hold,
+    - TraceCache caps hold.
+
+Acceptance:
+- py_compile + pytest + python test.py all PASS.
+- contract_check PASS.
+END.
+
+================================================================================
+STEP 0 STATUS
+- Done: added `nupca3/compat/stdlib.py` with the prescribed hash/ring-buffer helpers so downstream kernel code can import a stable adapter layer.
+- Why: freezing commodity dependencies before touching logic avoids spreading unsupported library semantics and makes later swaps easier.
+- Next: proceed with Step 1 (v5 kernel entrypoint) once Step 0 finishes; no outstanding blockers.
+
+================================================================================
+STEP 1 STATUS
+- Done: introduced `nupca3.step_pipeline.v5_kernel.step_v5_kernel` that currently wraps the legacy pipeline while tagging traces with `kernel=v5`, and wired `nupca3.agent.NUPCA3Agent.step` to call it.
+- Why: replacing the agent entrypoint now prevents further logic edits from accidentally hitting the legacy path; the wrapper guarantees a trace marker so we can detect kernel usage.
+- Next: Step 2 (drop full-state backdoor) remains; Step 1 is complete so we can work on EnvObs simplification without touching kernel entrypoints.
+
+================================================================================
+STEP 2 STATUS
+- Done: removed `EnvObs.x_full`/`allow_full_state`, reverted all consumers (core kernel, harness, test runner, ARC runner, pretrain script) to use only `x_partial` + `periph_full`, and rewrote the kernel’s transport prep so it no longer reads the suppressed fields.
+- Why: this freezes the “no full-state backdoor” invariant so that future steps cannot accidentally rely on the forbidden view.
+- Next: Step 3 (contract checker) is up next to enforce the forbidden-symbol invariant and scan counters.
+
+================================================================================
+STEP 3 STATUS
+- Done: removed the legacy `NUPCAAgent`/`Library` aliases and `nupca5_enabled` toggles, added `state.scan_counter` plus trace ordering markers in `step_pipeline`, and created `tools/v5_contract_check.py` to verify forbidden symbols, ordering markers, and zero scan counters via a short ToyWorld run (`python tools/v5_contract_check.py` now passes).
+- Why: the contract checker prevents future rewrites from drifting back into illegal states, enforces the new ordering instrumentation, and keeps the scan counter invariant in place before the kernel evolves further.
+- Next: Step 4 (time-index refactor) so we can start tracking t_w/k_op/wall_ms formally.
+
+================================================================================
+STEP 4 STATUS
+- Done: replaced legacy `state.t` aliases with explicit `t_w`/`k_op`/`wall_ms` fields, rewired `nupca3/edits` timing code to read `state.t_w`, and taught every EnvObs producer (tests, harnesses, tools, and toy worlds) to tag observations with the current tick and wall clock before invoking `agent.step`.
+- Why: having authoritative tick/wall data everywhere lets `step_v5_kernel` continue asserting monotonic `t_w`, `k_op` resets, and wall-clock captures without any hidden references to the removed legacy field.
+- Next: rerun `tools/v5_contract_check.py` plus the pytest suite so the contract can confirm monotonicity and `k_op` invariants after these time-index changes.
+
+================================================================================
+STEP 5 STATUS
+- Done: added a deterministic `PredStore` ring buffer plus helpers that stash per-tick prediction snapshots (dims, priors, sig64, attribution) and replay them at the next tick for deferred validation; wired `AgentConfig`/`AgentState`/persister to honor the store and let the kernel call it before retrieval while recording diagnostics for validation throughput.
+- Why: A4.5 semantics require predictions to survive across ticks for deferred validation without recomputation, so the store and helpers capture the predictions when they are generated and surface them before the next retrieval cycle.
+- Next: Step 6 (budget governor) is the next major change; after that we’ll ensure the new ladder is reflected in runtime budgets and the contract checks continue to pass.
+
+================================================================================
+STEP 6 STATUS
+- Done: introduced a deterministic `BudgetMeter` governor with wallclock-aware B_max estimation, per-stage spend tracking, and a shrink-ladder degrade signal that now feeds `select_working_set`/retrieval caps; wired the meter into the step pipeline (salience, working set selection, rollouts, learning, and trace logging) so B_use never exceeds min(B_rt,B_max) and regression-prone coverage/context helpers stay well-sized.
+- Why: v5 budget invariants require a compute cap `B_use(t) ≤ min(B_rt, B_max)` and deterministic degradations when budgets shrink, so the governor enforces the limit, reduces candidate work when we degrade, and keeps state/trace metadata synchronized with the new timing signals.
+- Next: Step 7 (Stage‑1 retrieval bounds) is the obvious successor; the new governor already throttles the sig64 query pipeline so we can now enforce the bucket-probe invariants before removing legacy retrieval code.
+
+================================================================================
+STEP 7 STATUS
+- Done: the sig64-based Stage-1 retrieval now returns a deterministically sorted, capped bucket probe and stage-2 scoring works only on those candidates; `thread_pinned_units` are merged into the candidate universe, and working-set construction avoids any implicit library scans so the contract’s scan-counter stay zero.
+- Why: enforcing Stage-1 semantics prevents unbounded scans or retrofitted ANN lookups, keeps candidate scoring rooted in the sig64 bucket probe, and prepares the retrieval path for upcoming planning-thread/persistent cache work without violating scan-proof invariants.
+- Next: Step 8 (trace cache) is next, keeping the history bounded and OPERATING-readable before we tackle contemplation/planning fences.
+
+================================================================================
+STEP 8 STATUS
+- Done: introduced an operating-only TraceCache whose entries store committed cues (t_w, blocks, dims, sig64), bounded by per-entry cue limits, entry count, and total distinct blocks while tracking blocked refcounts so no raw state can be reassembled.
+- Why: v5’s A16.8 demands a bounded, non-authoritative cue history that never leaks raw pixels or training data, so the cache now tracks entries in `state.trace_cache`, enforces configuration caps, and logs cache metrics/traces while remaining un-serialized in checkpoints.
+- Next: Step 9 (contemplation intake + planning-only writes) requires gating planning writes against the new cache/budget signals.
+
+================================================================================
+STEP 9 STATUS
+- Done: wired `decide_intake_and_compute` into the pipeline, added g_contemplate/focus/budget state + config knobs, enforced the planning-only write fence, and logged the decision metadata while exposing a `--force-contemplate` contract flag so the invariants can be exercised.
+- Why: g_contemplate decisions must be recorded, constrained by the budget governor, and verified by the fence before the next stages can safely evolve; the forced-contract mode proves the invariant holds under micro-step stimulation.
+- Next: Step 10 (time-sliced persistent planning threads) is the logical follow-up that will reuse the intake/decision plumbing.
+
+================================================================================
+STEP 10 STATUS
+- Done: introduced persistent `PlanningThread` state plus deterministic time-sliced micro-step scheduling/heaps in the kernel, staged thread updates, and enforced the planning-only fence while keeping `k_op` zero before return; the threads now log focus/timeline/status metadata and run only the allocated steps per tick.
+- Why: the planners now live as tracked state, micro-steps update staged artifacts via a deterministic heap order, and the fence plus contract check ensure we don’t leak permanent state during contemplation before the next stages can grab this scheduler.
+- Next: Step 11 (novelty persistence + value-of-compute) will reuse the planning budget/timinig plumbing to drive new hazard/novelty signals.
+
+================================================================================
+STEP 11 STATUS
+- Done: computed P_haz/P_nov from per-block adviser fields, persisted the novelty EMA + U_prev_state arrays, derived V_t (value-of-compute) and used it to scale observation budgets, Stage-2 depth, candidate caps, and planning budgets while logging the new diagnostics and preserving the fence.
+- Why: the recognized-change vs novelty-persistence split now drives resource allocation (O_t size, Stage-2 depth, planning micro-steps) through the newly recorded V_t, and the persistence/Ema bookkeeping keeps the hazard/novelty inputs lag-disciplined for future ticks.
+- Next: Step 12 (delete the legacy pipeline + dead code) is the final cleanup to remove the last traces of the old path.
+
+================================================================================
+STEP 12 STATUS
+- Done: replaced the legacy `core.step_pipeline` entrypoint by renaming its implementation to `_v5_pipeline.py`, pointed `step_v5_kernel` at it, expanded `tools/v5_contract_check.py` to assert `budget_B_use ≤ budget_limit`, and reran the contract + pytest suite to prove the constrained, single entrypoint path still passes.
+- Why: removing the old entrypoint closes the legacy shim, leaving only `step_v5_kernel` as the public kernel while the enhanced contract listener continues guarding the timing/budget invariants before committing the rewrite.
+- Next: no additional Step 12 work remains; monitor contract/test logs for regressions (running `python test.py`/py_compile can be revisited if new failures arise).

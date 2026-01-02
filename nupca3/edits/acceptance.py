@@ -275,8 +275,8 @@ def create_merged_node(state: AgentState, evidence: MergeEvidence, cfg: AgentCon
         cost=merged_cost,
         is_anchor=False,
         footprint=evidence.footprint,
-        last_active_step=state.timestep,
-        created_step=state.timestep
+        last_active_step=state.t_w,
+        created_step=state.t_w
     )
 
 
@@ -450,8 +450,8 @@ def evaluate_spawn(proposal: EditProposal, state: AgentState, cfg: AgentConfig) 
         reliability=0.5,
         cost=compute_mdl_cost(candidate_mask, cfg),
         is_anchor=False,
-        last_active_step=state.timestep,
-        created_step=state.timestep
+        last_active_step=state.t_w,
+        created_step=state.t_w
     )
 
     ok_to_add, aliased_with, should_replace = check_anti_aliasing(state, evidence.footprint, candidate_node, cfg)
@@ -585,7 +585,7 @@ def evaluate_prune(proposal: EditProposal, state: AgentState, cfg: AgentConfig) 
         return result
 
     current_reliability = float(node.reliability)
-    current_time_since_active = int(state.timestep - node.last_active_step)
+    current_time_since_active = int(state.t_w - node.last_active_step)
 
     prune_ok = (current_reliability < theta_cull) or (current_time_since_active > t_inactive)
     if not prune_ok:

@@ -282,6 +282,7 @@ def _plan_fovea_selection(
     *,
     periph_full: Iterable[float] | np.ndarray | None = None,
     prev_observed_dims: Set[int] | None = None,
+    value_of_compute: float = 0.0,
 ) -> dict[str, Any]:
     """Compute the upcoming fovea blocks using A16.3 and cache the result."""
     D = _cfg_D(state, cfg)
@@ -302,6 +303,9 @@ def _plan_fovea_selection(
             if 0 <= dim < full_arr.size:
                 routing_vec[int(dim)] = float(full_arr[int(dim)])
     update_fovea_routing_scores(state.fovea, routing_vec, cfg, t=int(getattr(state, "t", 0)))
+    value_of_compute_scaled = min(max(0.0, float(value_of_compute)), 1.0)
+    budget_boost = float(getattr(cfg, "value_of_compute_budget_scale", 0.5))
+    budget_units *= 1.0 + budget_boost * value_of_compute_scaled
     grid_center = None
     if circle_mode and periph_full is not None and float(getattr(cfg, "fovea_routing_weight", 0.0)) > 0.0:
         grid_center = _update_grid_routing_from_full(state, cfg, periph_full=periph_full, budget_units=budget_units)
@@ -370,6 +374,7 @@ def apply_signals_and_select(
     signals: FoveaSignals | None = None,
     periph_full: Iterable[float] | np.ndarray | None = None,
     prev_observed_dims: Set[int] | None = None,
+    value_of_compute: float = 0.0,
 ) -> dict[str, Any]:
     """Merge pending block signals, refresh routing bias, and plan the next fovea selection."""
     available_signals = signals if signals is not None else getattr(state, "pending_fovea_signals", None)
@@ -383,4 +388,5 @@ def apply_signals_and_select(
         cfg,
         periph_full=periph_full,
         prev_observed_dims=prev_observed_dims,
+        value_of_compute=value_of_compute,
     )

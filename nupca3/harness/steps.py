@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Dict, List, Tuple
 
+import time
 import numpy as np
 
 from nupca3.agent import NUPCA3Agent
@@ -15,8 +16,8 @@ from nupca3.step_pipeline import (
     _enforce_peripheral_blocks,
     _peripheral_block_ids,
     _select_motion_probe_blocks,
-    step_pipeline,
 )
+from nupca3.step_pipeline.v5_kernel import step_v5_kernel
 from nupca3.types import EnvObs
 
 from .logging import (
@@ -269,7 +270,7 @@ def run_steps(
             print(
                 f"[obs policy] step={step_idx} override_selected_blocks={force_selected_blocks} "
                 f"fovea_blocks_per_step={k_eff} selected_blocks={blocks} "
-                f"O_t={len(obs_dims)} periph_uses_x_full={periph_bg_full and periph_bg_dims > 0} "
+                f"O_t={len(obs_dims)} periph_uses_full={periph_bg_full and periph_bg_dims > 0} "
                 f"periph_bg_dims={periph_bg_dims} periph_bg_cost={periph_bg_cost}"
             )
             block_partitions = getattr(agent.state, "blocks", []) or []
@@ -344,17 +345,18 @@ def run_steps(
             periph_full = np.zeros(int(D_agent), dtype=float)
             for dim in periph_dims_set:
                 periph_full[int(dim)] = float(full_x[int(dim)])
-        diag_full = full_x.copy() if debug_full_state else None
+        env_tick = step_idx + 1
+        wall_ms = int(time.perf_counter() * 1000)
         obs = EnvObs(
             x_partial=build_partial_obs(full_x, obs_dims),
             opp=0.0,
             danger=0.0,
-            x_full=diag_full,
             periph_full=periph_full,
-            allow_full_state=False,
             true_delta=true_delta,
             pos_dims=pos_dims,
             selected_blocks=selected_blocks_tuple if force_selected_blocks else tuple(),
+            t_w=env_tick,
+            wall_ms=wall_ms,
         )
 
         buffer_prev = agent.state.buffer.x_last.copy()
@@ -364,7 +366,7 @@ def run_steps(
         prior_arr: np.ndarray | None = None
         if prior is not None:
             prior_arr = np.asarray(prior, dtype=float).reshape(-1)
-        action, next_state, trace = step_pipeline(agent.state, obs, cfg_step)
+        action, next_state, trace = step_v5_kernel(agent.state, obs, cfg_step)
         agent.state = next_state
         obs_dims_req = list(obs_dims)
         obs_dims_actual = sorted(int(dim) for dim in agent.state.buffer.observed_dims)

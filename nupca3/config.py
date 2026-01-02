@@ -100,6 +100,35 @@ class AgentConfig:
     # Allow env-provided selected_blocks to override fovea selection.
     allow_selected_blocks_override: bool = False
 
+    # Trace cache (A16.8) bounds (operating-only cue history).
+    trace_cache_max_entries: int = 16
+    trace_cache_max_cues_per_entry: int = 12
+    trace_cache_block_cap: int = 32
+
+    # Contemplation intake gating (A0.5) + planning-only budget reuse.
+    contemplate_force: bool = False
+    contemplate_hazard_threshold: float = 1.0
+    contemplate_novelty_threshold: float = 1.0
+    contemplate_novelty_slack_frac: float = 0.5
+    contemplate_budget_slack_frac: float = 0.5
+    contemplate_budget_reuse_frac: float = 0.5
+    contemplate_anchor_blocks: Tuple[int, ...] = (0,)
+
+    # Value-of-compute advisor (A0.BUDGET / A16.4)
+    value_of_compute_alpha: float = 1.0
+    value_of_compute_beta: float = 0.5
+    value_of_compute_gamma: float = 0.5
+    value_of_compute_periph_weight: float = 0.1
+    value_of_compute_novelty_decay: float = 0.8
+    value_of_compute_budget_scale: float = 0.5
+    value_of_compute_planning_scale: float = 0.5
+    value_of_compute_stage2_scale: float = 0.5
+    value_of_compute_candidate_scale: float = 0.5
+
+    # Planning-thread scheduler (A0.6 time-sliced micro-steps)
+    planning_threads_max: int = 2
+    planning_micro_steps_per_tick: int = 4
+
     # Allowed transport span (blocks) for expert input masks.
     transport_span_blocks: int = 0
 
@@ -227,6 +256,9 @@ class AgentConfig:
     sig_err_init: float = 1e6
     sig_eviction_bin: int = 2
 
+    # Pending prediction storage capacity (PREDVAL_MAX).
+    pred_store_capacity: int = 64
+
     # =========================================================================
     # A3 — Stability / introversion thresholds used by permit_struct
     # =========================================================================
@@ -256,6 +288,10 @@ class AgentConfig:
     # =========================================================================
     # Real-time compute budget per step (A6.1). Reference value from v1.5b.
     B_rt: float = 260.0
+
+    # Optional wallclock-based tick budget (converted to same units via compute_units_per_ms).
+    tick_budget_ms: float = 0.0
+    compute_units_per_ms: float = 1.0
 
     # Encoding base cost b_enc,0 (A6.2). Reference value from v1.5b.
     b_enc_base: float = 3.2
@@ -554,6 +590,10 @@ class AgentConfig:
             raise ValueError("eps_budget must be > 0")
         if self.h_max <= 0:
             raise ValueError("h_max must be > 0")
+        if self.tick_budget_ms < 0.0:
+            raise ValueError("tick_budget_ms must be >= 0")
+        if self.compute_units_per_ms <= 0.0:
+            raise ValueError("compute_units_per_ms must be > 0")
 
         # Time constants
         if self.tau_E <= 0.0 or self.tau_D <= 0.0 or self.tau_S <= 0.0:
@@ -580,6 +620,12 @@ class AgentConfig:
             raise ValueError("fovea_uncertainty_weight must be >= 0")
         if self.fovea_uncertainty_default < 0.0:
             raise ValueError("fovea_uncertainty_default must be >= 0")
+        if self.trace_cache_max_entries <= 0:
+            raise ValueError("trace_cache_max_entries must be > 0")
+        if self.trace_cache_max_cues_per_entry <= 0:
+            raise ValueError("trace_cache_max_cues_per_entry must be > 0")
+        if self.trace_cache_block_cap <= 0:
+            raise ValueError("trace_cache_block_cap must be > 0")
 
         # Transport
         if self.transport_search_radius < 0:
@@ -637,6 +683,8 @@ class AgentConfig:
             raise ValueError("sig_query_cand_cap must be >= 1")
         if self.sig_stage2_alpha_err < 0.0:
             raise ValueError("sig_stage2_alpha_err must be >= 0")
+        if self.pred_store_capacity < 1:
+            raise ValueError("pred_store_capacity must be >= 1")
         if not self.sig_enable_err_cache:
             raise ValueError("sig_enable_err_cache must be True under v5")
         if self.sig_err_bins < 1:
@@ -655,6 +703,24 @@ class AgentConfig:
             raise ValueError("max_candidates must be > 0")
         if self.max_proposals_per_step < 0:
             raise ValueError("max_proposals_per_step must be >= 0")
+        if self.value_of_compute_beta < 0.0:
+            raise ValueError("value_of_compute_beta must be >= 0")
+        if self.value_of_compute_gamma < 0.0:
+            raise ValueError("value_of_compute_gamma must be >= 0")
+        if not (0.0 <= self.value_of_compute_novelty_decay <= 1.0):
+            raise ValueError("value_of_compute_novelty_decay must be in [0,1]")
+        if self.value_of_compute_budget_scale < 0.0:
+            raise ValueError("value_of_compute_budget_scale must be >= 0")
+        if self.value_of_compute_planning_scale < 0.0:
+            raise ValueError("value_of_compute_planning_scale must be >= 0")
+        if self.value_of_compute_stage2_scale < 0.0:
+            raise ValueError("value_of_compute_stage2_scale must be >= 0")
+        if self.value_of_compute_candidate_scale < 0.0:
+            raise ValueError("value_of_compute_candidate_scale must be >= 0")
+        if self.planning_threads_max <= 0:
+            raise ValueError("planning_threads_max must be > 0")
+        if self.planning_micro_steps_per_tick < 0:
+            raise ValueError("planning_micro_steps_per_tick must be >= 0")
 
     def replace(self, **overrides: Any) -> "AgentConfig":
         """
