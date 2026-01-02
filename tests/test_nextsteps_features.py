@@ -187,7 +187,8 @@ def test_make_observation_set_respects_selected_blocks() -> None:
     cfg = AgentConfig(
         D=16,
         B=4,
-        grid_side=4,
+        grid_width=4,
+        grid_height=4,
         grid_color_channels=1,
         grid_shape_channels=0,
         grid_channels=1,

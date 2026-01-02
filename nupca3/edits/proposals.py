@@ -50,8 +50,7 @@ from ..types import (
 # =============================================================================
 # Proposal hyperparameters
 # =============================================================================
-# These are proposal-side thresholds. They are intentionally explicit (no silent
-# config fallbacks). If you want them configurable, add them to AgentConfig.
+# These are proposal-side thresholds. They are intentionally explicit (no silent config changes).
 _SPLIT_MIN_SAMPLES: int = 30
 _SPLIT_INDEPENDENCE_THRESHOLD: float = 0.30
 

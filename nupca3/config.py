@@ -47,8 +47,14 @@ class AgentConfig:
     # Number of DoF-aligned blocks (A16.1). Typical default: one block per pixel.
     B: int = 256
 
+    # Metadata cap on block domain size for sig64 (B_MAX). 0 -> use B.
+    B_max: int = 0
+
     # Fovea budget per step (A16.3): number of blocks to observe.
     fovea_blocks_per_step: int = 64
+
+    # Metadata cap on selected blocks for sig64 (F_MAX). 0 -> use fovea_blocks_per_step.
+    F_max: int = 0
 
     # Hard coverage cap G (A16.4): if age(b,t-1) >= G, block b must be observed.
     coverage_cap_G: int = 50
@@ -56,10 +62,7 @@ class AgentConfig:
     # Starting age for each block; use < G so the coverage emergency path waits for real data.
     initial_block_age: int = 0
 
-    # Implementation-only: sticky retention (NOT part of v1.5b A16).
-    # Kept for backwards compatibility with earlier experiments, but unused by
-    # the axiom-faithful selector in geometry.fovea.
-    sticky_k: int = 0
+    # Removed legacy sticky retention; not allowed in v5.
 
     # Coverage regularizer for greedy_cov fovea selection (A16).
     alpha_cov: float = 0.10
@@ -67,6 +70,10 @@ class AgentConfig:
     # Coverage debt boosts for expert and abstraction strata (Fix 1).
     alpha_cov_exp: float = 0.05
     alpha_cov_band: float = 0.05
+    # Coverage debt limits and caps used by debt trackers.
+    coverage_debt_cap: int = 64
+    coverage_debt_max: int = 10_000
+    coverage_debt_thresh: float = 1e6
 
     # Diagnostic mode: if True, select fovea blocks by residual only (ignores age).
     fovea_residual_only: bool = False
@@ -194,8 +201,7 @@ class AgentConfig:
     binding_enabled: bool = False
     binding_shift_radius: int = 1
     binding_rotations: bool = True
-    grid_side: int = 0
-    # Optional explicit grid dimensions for non-square harnesses (metadata only).
+    # Explicit grid dimensions (no legacy aliases).
     # When provided (and when B matches grid_width*grid_height for 1-channel
     # grids), geometry-aware fovea selection can enforce a circular receptive
     # field over a rectangular plane.
@@ -361,7 +367,7 @@ class AgentConfig:
     # Salience / context control (A5: biasing expert scores and gist tracking).
     alpha_pi: float = 0.4
     alpha_deg: float = 0.2
-    alpha_ctx: float = 0.6  # legacy hook used by the simplified score interface.
+    alpha_ctx: float = 0.6  # unused legacy hook; kept as scalar field only.
     alpha_ctx_relevance: float = 0.4
     alpha_ctx_gist: float = 0.1
     beta_context: float = 0.1
@@ -407,6 +413,7 @@ class AgentConfig:
     # =========================================================================
     mdl_beta: float = 0.10
     epsilon_merge: float = 1e-3
+    eps_baseline: float = 1e-6
 
     # A12 MDL deltas used as rough complexity penalties for different edits.
     delta_L_MDL_merge: float = 0.50
@@ -480,10 +487,16 @@ class AgentConfig:
     tau_E: float = 2000.0
     tau_D: float = 2000.0
     tau_S: float = 2000.0
+    tau_E_need: float = 2000.0
+    tau_D_need: float = 2000.0
+    tau_S_need: float = 2000.0
 
     kappa_E: float = 1.0
     kappa_D: float = 1.0
     kappa_S: float = 1.0
+    kappa_E_need: float = 1.0
+    kappa_D_need: float = 1.0
+    kappa_S_need: float = 1.0
 
     k_rest_E: float = 0.05
     k_rest_D: float = 0.05
@@ -495,10 +508,16 @@ class AgentConfig:
     w_S_ar: float = 1.0
     w_deltam_ar: float = 1.0
     w_Epred_ar: float = 1.0
+    w_L: float = 1.0
+    w_C: float = 1.0
+    w_S: float = 1.0
+    w_delta: float = 1.0
+    w_E: float = 0.0
 
     # Arousal logistic parameters (θ_ar, κ_ar).
     theta_ar: float = 0.50
     kappa_ar: float = 0.20
+    theta_a: float = 0.50
 
     # Arousal leaky dynamics (τ_rise, τ_decay).
     tau_rise: float = 50.0
@@ -521,6 +540,8 @@ class AgentConfig:
     # =========================================================================
     N_max: int = 256
     L_work_max: float = 48.0
+    K_max: int = 0
+    C_cand_max: int = 0
     max_candidates: int = 32
     max_retrieval_candidates: int = 64
     salience_max_candidates: int = 64
@@ -562,8 +583,18 @@ class AgentConfig:
             raise ValueError("B must be a positive int")
         if self.B > self.D:
             raise ValueError("B must be <= D")
+        B_cap = int(self.B_max) if int(self.B_max) > 0 else int(self.B)
+        if B_cap <= 0:
+            raise ValueError("B_max must resolve to a positive int")
+        if B_cap < self.B:
+            raise ValueError("B_max must be >= B")
         if self.fovea_blocks_per_step <= 0:
             raise ValueError("fovea_blocks_per_step must be > 0")
+        F_cap = int(self.F_max) if int(self.F_max) > 0 else int(self.fovea_blocks_per_step)
+        if F_cap <= 0:
+            raise ValueError("F_max must resolve to a positive int")
+        if F_cap < self.fovea_blocks_per_step:
+            raise ValueError("F_max must be >= fovea_blocks_per_step")
         if self.coverage_cap_G <= 0:
             raise ValueError("coverage_cap_G must be > 0")
         if self.initial_block_age < 0:
@@ -602,8 +633,6 @@ class AgentConfig:
             raise ValueError("tau_rise and tau_decay must be > 0")
 
         # Coverage / fovea tuning
-        if self.sticky_k < 0:
-            raise ValueError("sticky_k must be >= 0")
         if self.alpha_cov < 0.0 or self.alpha_cov_exp < 0.0 or self.alpha_cov_band < 0.0:
             raise ValueError("alpha_cov/alpha_cov_exp/alpha_cov_band must be >= 0")
         if self.fovea_residual_ema < 0.0 or self.fovea_residual_ema > 1.0:
@@ -693,10 +722,20 @@ class AgentConfig:
             raise ValueError("sig_err_init must be >= 0")
         if not (0 <= self.sig_eviction_bin < self.sig_err_bins):
             raise ValueError("sig_eviction_bin out of range")
+        cand_cap = int(self.C_cand_max) if int(self.C_cand_max) > 0 else int(self.sig_query_cand_cap)
+        if cand_cap < 1:
+            raise ValueError("C_cand_max or sig_query_cand_cap must be >= 1")
+        k_cap = int(self.K_max) if int(self.K_max) > 0 else int(self.max_retrieval_candidates)
+        if k_cap < 1:
+            raise ValueError("K_max or max_retrieval_candidates must be >= 1")
+        if self.max_retrieval_candidates <= 0:
+            raise ValueError("max_retrieval_candidates must be > 0")
 
         # Operational bounds
         if self.N_max <= 0:
             raise ValueError("N_max must be > 0")
+        if k_cap > int(self.N_max):
+            raise ValueError("K_max must be <= N_max")
         if self.max_queue <= 0:
             raise ValueError("max_queue must be > 0")
         if self.max_candidates <= 0:

@@ -178,7 +178,6 @@ def fit_expert_from_transitions(
     This fitter learns a compact model over the active dims:
       y_active ≈ W_active @ x_active + b_active
 
-    It still returns full-length b and Sigma vectors for compatibility.
     """
     active_dims = np.where(np.asarray(mask, dtype=float).reshape(-1) > 0.5)[0].astype(int)
     k = int(active_dims.size)
@@ -604,7 +603,7 @@ def peek_queue_prefix(queue: List[EditProposal], max_count: int = 1) -> List[Edi
 
 
 def get_queue_size(state: AgentState) -> int:
-    """Return |Q_struct| (compat helper)."""
+    """Return |Q_struct|."""
     return len(state.q_struct)
 
 
@@ -705,23 +704,3 @@ def process_struct_queue(
 
     return result
 
-
-def add_proposals_to_queue(state: AgentState, proposals: List[EditProposal]) -> List[EditProposal]:
-    """Deprecated queue helper (A14.2 ownership purity).
-
-    v1.5b A14.2 makes Q_struct(t) a macrostate variable updated only by the
-    macrostate evolution rule. REST processors must not mutate Q_struct.
-
-    This helper is kept only for older call sites. It returns the proposals
-    unchanged so the *caller* (typically the step pipeline) can pass them to
-    `evolve_macrostate(..., proposals_t=...)`.
-
-    Args:
-        state: AgentState (unused; retained for signature compatibility)
-        proposals: proposed structural edits to enqueue
-
-    Returns:
-        A list copy of proposals, suitable for macrostate-managed enqueue.
-    """
-    _ = state
-    return list(proposals)

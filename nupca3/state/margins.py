@@ -169,13 +169,13 @@ def compute_stress(
     rawD = D_max - float(D)
     rawS = S_max - float(drift_P)
 
-    tau_E = float(getattr(cfg, "tau_E_need", getattr(cfg, "tau_E", 0.0)))
-    tau_D = float(getattr(cfg, "tau_D_need", getattr(cfg, "tau_D", 0.0)))
-    tau_S = float(getattr(cfg, "tau_S_need", getattr(cfg, "tau_S", 0.0)))
+    tau_E = float(cfg.tau_E_need)
+    tau_D = float(cfg.tau_D_need)
+    tau_S = float(cfg.tau_S_need)
 
-    kappa_E = float(getattr(cfg, "kappa_E_need", getattr(cfg, "kappa_E", 1.0)))
-    kappa_D = float(getattr(cfg, "kappa_D_need", getattr(cfg, "kappa_D", 1.0)))
-    kappa_S = float(getattr(cfg, "kappa_S_need", getattr(cfg, "kappa_S", 1.0)))
+    kappa_E = float(cfg.kappa_E_need)
+    kappa_D = float(cfg.kappa_D_need)
+    kappa_S = float(cfg.kappa_S_need)
 
     s_E = _sigmoid(-(rawE - tau_E) / max(kappa_E, 1e-12))
     s_D = _sigmoid(-(rawD - tau_D) / max(kappa_D, 1e-12))
@@ -227,11 +227,11 @@ def compute_arousal(
     mE, mD, mL, mC, mS = [float(x) for x in tilde]
     dE, dD, dL, dC, dS = [float(x) for x in delta_tilde]
 
-    w_L = float(getattr(cfg, "w_L", getattr(cfg, "w_L_ar", 1.0)))
-    w_C = float(getattr(cfg, "w_C", getattr(cfg, "w_C_ar", 1.0)))
-    w_S = float(getattr(cfg, "w_S", getattr(cfg, "w_S_ar", 1.0)))
-    w_delta = float(getattr(cfg, "w_delta", getattr(cfg, "w_delta_ar", 1.0)))
-    w_E = float(getattr(cfg, "w_E", getattr(cfg, "w_E_ar", 0.0)))
+    w_L = float(cfg.w_L)
+    w_C = float(cfg.w_C)
+    w_S = float(cfg.w_S)
+    w_delta = float(cfg.w_delta)
+    w_E = float(cfg.w_E)
 
     theta_ar = float(getattr(cfg, "theta_ar", 0.5))
     kappa_ar = float(getattr(cfg, "kappa_ar", 0.1))

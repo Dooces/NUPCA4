@@ -124,21 +124,8 @@ def _select_motion_probe_blocks(
                 continue
             _add_block(block_id)
 
-    fallback_blocks = list(range(fine_block_limit if fine_block_limit > 0 else 0))
-    if len(fallback_blocks) < budget:
-        fallback_blocks += [b for b in range(fine_block_limit, B) if b not in fallback_blocks]
-
-    for block_id in fallback_blocks:
-        if len(probe_blocks) >= budget:
-            break
-        _add_block(block_id)
-
     if len(probe_blocks) < budget:
-        extra = [b for b in range(B) if b not in seen]
-        for block_id in extra:
-            if len(probe_blocks) >= budget:
-                break
-            _add_block(block_id)
+        raise RuntimeError("insufficient observed dims to fill motion probe blocks")
 
     return probe_blocks
 
@@ -274,8 +261,9 @@ def _update_grid_routing_from_full(
     if prev.size != B:
         prev = np.zeros(B, dtype=float)
     state.fovea.routing_scores = (1.0 - ema) * prev + ema * bias
-    state.fovea.routing_last_t = int(getattr(state, "t", 0))
+    state.fovea.routing_last_t = int(getattr(state, "t_w", 0))
     return center
+
 def _plan_fovea_selection(
     state: AgentState,
     cfg: AgentConfig,
@@ -302,27 +290,23 @@ def _plan_fovea_selection(
         for dim in periph_dims:
             if 0 <= dim < full_arr.size:
                 routing_vec[int(dim)] = float(full_arr[int(dim)])
-    update_fovea_routing_scores(state.fovea, routing_vec, cfg, t=int(getattr(state, "t", 0)))
+    update_fovea_routing_scores(state.fovea, routing_vec, cfg, t=int(getattr(state, "t_w", 0)))
     value_of_compute_scaled = min(max(0.0, float(value_of_compute)), 1.0)
     budget_boost = float(getattr(cfg, "value_of_compute_budget_scale", 0.5))
     budget_units *= 1.0 + budget_boost * value_of_compute_scaled
     grid_center = None
     if circle_mode and periph_full is not None and float(getattr(cfg, "fovea_routing_weight", 0.0)) > 0.0:
         grid_center = _update_grid_routing_from_full(state, cfg, periph_full=periph_full, budget_units=budget_units)
-    B = max(0, int(getattr(cfg, "B", 0)))
-    routing_scores = np.asarray(
-        getattr(state.fovea, "routing_scores", np.zeros(B)), dtype=float
-    )
+    B = max(0, int(cfg.B))
+    routing_scores = np.asarray(state.fovea.routing_scores, dtype=float)
     routing_scores = _apply_pending_transport_disagreement(state, cfg, routing=routing_scores)
     state.fovea.routing_scores = routing_scores
     blocks_t = select_fovea(state.fovea, cfg) or []
     G = int(getattr(cfg, "coverage_cap_G", 0))
-    ages_now = np.asarray(
-        getattr(state.fovea, "block_age", np.zeros(int(getattr(cfg, "B", 0)))), dtype=float
-    )
+    ages_now = np.asarray(state.fovea.block_age, dtype=float)
     budget = max(1, int(getattr(cfg, "fovea_blocks_per_step", 0)))
     if (not circle_mode) and G > 0 and ages_now.size:
-        mandatory = [int(b) for b in range(int(getattr(cfg, "B", 0))) if float(ages_now[b]) >= float(G)]
+        mandatory = [int(b) for b in range(B) if float(ages_now[b]) >= float(G)]
         if mandatory and not set(mandatory).intersection(set(blocks_t or [])):
             mandatory = sorted(mandatory, key=lambda b: float(ages_now[b]), reverse=True)
             blocks_t = mandatory[: min(len(mandatory), budget)]
@@ -347,7 +331,7 @@ def _plan_fovea_selection(
     state.fovea.current_blocks = set(int(b) for b in pending["blocks"])
     residuals = np.asarray(getattr(state.fovea, "block_residual", np.zeros(0)), dtype=float)
     log_details = {
-        "t": int(getattr(state, "t", -1)),
+        "t_w": int(getattr(state, "t_w", -1)),
         "budget_units": budget_units,
         "coverage_cap_G": G,
         "periph_block_request": len(periph_candidates),

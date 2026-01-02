@@ -56,7 +56,6 @@ class CurriculumCommand(Enum):
 @dataclass
 class Action:
     command: CurriculumCommand = CurriculumCommand.NONE
-    # Preserve scalar action if needed for other domains (stubbed as int)
     value: int = 0
 
 
@@ -674,7 +673,7 @@ def pack_expert_library(lib: ExpertLibrary) -> PackedExpertLibrary:
         is_anchor[i] = 1 if bool(getattr(n, "is_anchor", False)) else 0
         is_transport[i] = 1 if bool(getattr(n, "is_transport", False)) else 0
         reliability[i] = float(getattr(n, "reliability", 1.0))
-        cost[i] = float(getattr(n, "cost", getattr(n, "L", 0.0)))
+        cost[i] = float(getattr(n, "cost"))
         created_step[i] = int(getattr(n, "created_step", 0))
         last_active_step[i] = int(getattr(n, "last_active_step", 0))
         unit_sig64[i] = np.uint64(int(getattr(n, "unit_sig64", 0)) & 0xFFFFFFFFFFFFFFFF)

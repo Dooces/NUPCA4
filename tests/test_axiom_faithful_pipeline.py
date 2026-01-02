@@ -16,6 +16,7 @@ from nupca3.edits.acceptance import check_permit_struct
 from nupca3.geometry.fovea import make_observation_set, select_fovea
 from nupca3.memory.completion import complete
 from nupca3.memory.fusion import fuse_predictions
+from nupca3.memory.audit import audit_sig64_index_health
 from nupca3.memory.working_set import get_retrieval_candidates
 from nupca3.types import EnvObs, ExpertNode, LearningCache, Stress, WorkingSet
 
@@ -243,6 +244,7 @@ def test_retrieval_keyed_to_greedy_cov_blocks() -> None:
         cost=1.0,
         is_anchor=False,
         footprint=0,
+        unit_sig64=1,
     )
     node_b1 = ExpertNode(
         node_id=11,
@@ -254,9 +256,12 @@ def test_retrieval_keyed_to_greedy_cov_blocks() -> None:
         cost=1.0,
         is_anchor=False,
         footprint=1,
+        unit_sig64=2,
     )
     agent.state.library.add_node(node_b0)
     agent.state.library.add_node(node_b1)
+    agent.state.last_sig64 = node_b1.unit_sig64
+    agent.state.fovea.current_blocks = {1}
 
     agent.state.incumbents_by_block = [{node_b0.node_id}, {node_b1.node_id}]
     agent.state.incumbents_revision = int(agent.state.library.revision)
@@ -265,6 +270,79 @@ def test_retrieval_keyed_to_greedy_cov_blocks() -> None:
     retrieved = get_retrieval_candidates(agent.state, cfg)
     assert node_b1.node_id in retrieved
     assert node_b0.node_id not in retrieved
+
+
+def test_retrieval_streaming_topk_enforces_caps_and_ties() -> None:
+    cfg = AgentConfig(
+        D=4,
+        B=2,
+        fovea_blocks_per_step=1,
+        B_max=4,
+        F_max=2,
+        C_cand_max=3,
+        K_max=2,
+        sig_query_cand_cap=5,
+        max_retrieval_candidates=5,
+    )
+    agent = NUPCA3Agent(cfg)
+    agent.state.fovea.current_blocks = {0}
+    base_sig = 0b1111
+    agent.state.last_sig64 = base_sig
+    agent.state.active_set = set()
+
+    class StubSigIndex:
+        def __init__(self, out: list[int]):
+            self.out = out
+            self.calls: list[int] = []
+            self.tables = 1
+            self.bucket_bits = 1
+            self.bucket_cap = 1
+            self.n_buckets = 2
+            self.err_bins = 3
+            self.buckets = [dict()]
+
+        def query(self, sig64: int, block_ids, cand_cap: int = 0):
+            self.calls.append(int(cand_cap))
+            return list(self.out)
+
+        def get_error(self, node_id: int, h_bin: int) -> float:
+            return 0.0
+
+    stub = StubSigIndex([1, 2, 3, 4])
+    agent.state.library.sig_index = stub
+    agent.state.library.nodes = {}
+
+    for nid in range(1, 5):
+        node = ExpertNode(
+            node_id=nid,
+            mask=np.ones(cfg.D),
+            W=np.eye(cfg.D),
+            b=np.zeros(cfg.D),
+            Sigma=np.eye(cfg.D),
+            reliability=1.0,
+            cost=1.0,
+            is_anchor=False,
+            footprint=0,
+            unit_sig64=base_sig if nid <= 3 else base_sig ^ 1,
+        )
+        agent.state.library.nodes[nid] = node
+
+    retrieved = get_retrieval_candidates(agent.state, cfg)
+    assert stub.calls and max(stub.calls) <= cfg.C_cand_max
+    assert retrieved == {1, 2}
+
+
+def test_sig64_metadata_respects_configured_caps() -> None:
+    cfg = AgentConfig(D=4, B=2, B_max=16, fovea_blocks_per_step=1, F_max=3)
+    agent = NUPCA3Agent(cfg)
+
+    obs = EnvObs(x_partial={0: 0.5}, periph_full=np.zeros(cfg.D), pos_dims={0})
+    _step_agent(agent, obs)
+
+    expected_mask_bytes = max(1, (cfg.B_max + 7) // 8)
+    assert agent.state.sig_prev_counts.shape[0] == cfg.F_max
+    assert agent.state.sig_prev_hist.size == expected_mask_bytes
+    assert audit_sig64_index_health(agent.state, cfg) == []
 
 
 def test_rest_state_uses_lagged_predicates() -> None:

@@ -159,8 +159,6 @@ def evaluate_merge_replacement_consistent(
     cfg: AgentConfig
 ) -> Tuple[bool, bool, bool]:
     """Replacement-consistent MERGE test (A12.3).
-
-    Uses evidence.taus as authoritative T_AB if provided (compat with (3)).
     """
     epsilon_merge = getattr(cfg, "epsilon_merge", 0.05)
 

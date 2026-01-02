@@ -19,6 +19,7 @@ This module selects the active working set each step. It does NOT:
 
 from __future__ import annotations
 
+import heapq
 from typing import Dict, List, Set, Optional
 
 from ..config import AgentConfig
@@ -120,156 +121,96 @@ def get_retrieval_candidates(
     *,
     budget_meter: BudgetMeter | None = None,
 ) -> Set[int]:
-    """Get candidates from cold storage via block-keyed retrieval (A4.3).
-
-    v1.5b definition:
-      C^ret_t := ∪_{b∈F_t} (I_b ∩ (V \ A_{t-1}))
-
-    Critical clarification (A4.3 keyed to A16.3 / A17.1):
-    - Retrieval is *explicitly* keyed to the greedy_cov signal used to select
-      the fovea blocks (A16.3): block_residual(b,t-1) + α_cov·log(1+age(b,t-1)).
-    - This prevents retrieval from degenerating into "some candidates" when
-      call sites forget to pass a fresh fovea.
-
-    Implementation note:
-    - v1.5b does not mandate a hard cap on |C^ret_t|. We apply an optional
-      implementation cap (cfg.max_retrieval_candidates / cfg.max_candidates)
-      purely to keep worst-case CPU bounded in toy harnesses.
-      #ITOOKASHORTCUT: cap is an implementation bound, not an axiom.
-
-    Args:
-        state: AgentState (must include fovea residual/age and incumbents map)
-        cfg: Agent configuration
-
-    Returns:
-        A (possibly capped) set of node IDs retrieved from cold storage.
-    """
+    """Scan-proof retrieval (A4.3′). Fails loudly if any prerequisite is missing."""
     library = getattr(state, "library", None)
     if library is None:
-        return set()
+        raise RuntimeError("v5 retrieval requires state.library")
 
     nodes = getattr(library, "nodes", {})
+    sig_index = getattr(library, "sig_index", None)
+    if sig_index is None:
+        raise RuntimeError("v5 retrieval requires library.sig_index")
+
+    sig64_t = getattr(state, "last_sig64", None)
+    if sig64_t is None:
+        raise RuntimeError("v5 retrieval requires state.last_sig64")
+
+    fovea_blocks = set(getattr(state, "current_fovea", set()))
+    if not fovea_blocks:
+        raise RuntimeError("v5 retrieval requires current_fovea to be set")
 
     prev_active = set(getattr(state, "active_set", set()))
 
-    # Use the fovea blocks already chosen by the step pipeline.
-    fovea_blocks = set(getattr(state, "current_fovea", set()))
-    # Defensive fallback: recompute F_t from stored greedy_cov stats.
-    if not fovea_blocks:
-        try:
-            fovea_blocks = set(select_fovea(state.fovea, cfg))
-        except Exception:
-            fovea_blocks = set()
-    # -------------------------
-    # NUPCA5 scan-proof retrieval (A4.3′)
-    # -------------------------
-    if hasattr(library, "sig_index"):
-        sig_index = getattr(library, "sig_index", None)
-        sig64_t = getattr(state, "last_sig64", None)
-        if sig_index is None or sig64_t is None or not fovea_blocks:
-            return set()
+    value_of_compute = min(max(0.0, float(getattr(state, "value_of_compute", 0.0))), 1.0)
+    candidate_scale = float(getattr(cfg, "value_of_compute_candidate_scale", 0.5))
+    stage2_scale = float(getattr(cfg, "value_of_compute_stage2_scale", 0.5))
+    candidate_boost = 1.0 + candidate_scale * value_of_compute
+    stage2_boost = 1.0 + stage2_scale * value_of_compute
+    C_cand_max = int(getattr(cfg, "C_cand_max", 0)) or int(getattr(cfg, "sig_query_cand_cap", 64))
+    C_cand_max = max(1, C_cand_max)
+    base_cap = C_cand_max
+    degrade_level = 0
+    if budget_meter is not None:
+        degrade_level = max(0, int(getattr(budget_meter, "degrade_level", 0)))
+    else:
+        degrade_level = max(0, int(getattr(state, "budget_degradation_level", 0)))
+    cap_divisor = 1 << min(degrade_level, 4)
+    cand_cap = max(1, int(base_cap * candidate_boost))
+    if degrade_level > 0:
+        cand_cap = max(1, cand_cap // cap_divisor)
+    cand_cap = min(cand_cap, C_cand_max)
+    K_max = int(getattr(cfg, "K_max", 0)) or int(getattr(cfg, "max_retrieval_candidates", 1))
+    K_max = max(1, K_max)
+    N_max = max(1, int(getattr(cfg, "N_max", K_max)))
+    K_cap = min(K_max, N_max)
+    if degrade_level > 0:
+        K_cap = max(1, K_cap // cap_divisor)
 
-        sig64_t = getattr(state, "last_sig64", None)
-        if sig_index is not None and sig64_t is not None and fovea_blocks:
-            value_of_compute = min(max(0.0, float(getattr(state, "value_of_compute", 0.0))), 1.0)
-            candidate_scale = float(getattr(cfg, "value_of_compute_candidate_scale", 0.5))
-            stage2_scale = float(getattr(cfg, "value_of_compute_stage2_scale", 0.5))
-            candidate_boost = 1.0 + candidate_scale * value_of_compute
-            stage2_boost = 1.0 + stage2_scale * value_of_compute
-            base_cap = int(getattr(cfg, "sig_query_cand_cap", 64))
-            base_cap = max(1, base_cap)
-            degrade_level = 0
-            if budget_meter is not None:
-                degrade_level = max(0, int(getattr(budget_meter, "degrade_level", 0)))
-            else:
-                degrade_level = max(0, int(getattr(state, "budget_degradation_level", 0)))
-            cap_divisor = 1 << min(degrade_level, 4)
-            cand_cap = max(1, int(base_cap * candidate_boost))
-            if degrade_level > 0:
-                cand_cap = max(1, cand_cap // cap_divisor)
-            raw = list(sig_index.query(int(sig64_t), list(sorted(int(b) for b in fovea_blocks)), cand_cap=cand_cap))
-            raw = sorted(set(raw))
-            # Stage-2 bounded rerank (A4.3′): score(u) = -popcount(sig64(t) XOR unit_sig64[u]) - α*err_ema[u,h_bin]
-            # IMPORTANT: `unit_sig64` is the unit's immutable 64-bit retrieval address (stored at creation).
-            alpha_err = float(cfg.sig_stage2_alpha_err)
-            scored_pairs = []
-            stage2_limit = len(raw)
-            stage2_limit = max(1, int(stage2_limit * stage2_boost))
-            if degrade_level > 0 and stage2_limit > 0:
-                stage2_limit = max(1, stage2_limit // cap_divisor)
-            processed_stage2 = 0
-            for node_id in raw:
-                if processed_stage2 >= stage2_limit:
-                    break
-                processed_stage2 += 1
-                nid = int(node_id)
-                if nid < 0 or nid in prev_active:
-                    continue
-                node = nodes.get(nid, None)
-                if node is None:
-                    continue
+    raw = list(
+        sig_index.query(int(sig64_t), list(sorted(int(b) for b in fovea_blocks)), cand_cap=cand_cap)
+    )
+    raw = sorted(set(raw))[:C_cand_max]
 
-                # v5 address: immutable at creation (not a per-node salt).
-                if not hasattr(node, "unit_sig64"):
-                    raise RuntimeError(
-                        "NUPCA5 retrieval stage-2 requires node.unit_sig64 (immutable 64-bit address)"
-                    )
-                u_addr = int(getattr(node, "unit_sig64")) & ((1 << 64) - 1)
-                dist = _popcount64(int(sig64_t) ^ u_addr)
-                # POS bin is index 2 by convention (NEG/ZERO/POS).
-                if not hasattr(sig_index, "get_error"):
-                    raise RuntimeError("PackedSigIndex must expose get_error() under v5")
-                err = float(sig_index.get_error(int(nid), 2))
+    alpha_err = float(cfg.sig_stage2_alpha_err)
+    stage2_limit = max(1, int(len(raw) * stage2_boost))
+    if degrade_level > 0 and stage2_limit > 0:
+        stage2_limit = max(1, stage2_limit // cap_divisor)
+    stage2_limit = min(stage2_limit, C_cand_max)
+    top_heap: List[tuple[float, int]] = []
+    processed_stage2 = 0
+    for node_id in raw:
+        if processed_stage2 >= stage2_limit:
+            break
+        processed_stage2 += 1
+        nid = int(node_id)
+        if nid < 0 or nid in prev_active:
+            continue
+        node = nodes.get(nid, None)
+        if node is None:
+            continue
 
-                score = -float(dist) - alpha_err * float(err)
-                scored_pairs.append((score, nid))
+        if not hasattr(node, "unit_sig64"):
+            raise RuntimeError(
+                "NUPCA5 retrieval stage-2 requires node.unit_sig64 (immutable 64-bit address)"
+            )
+        u_addr = int(getattr(node, "unit_sig64")) & ((1 << 64) - 1)
+        dist = _popcount64(int(sig64_t) ^ u_addr)
+        if not hasattr(sig_index, "get_error"):
+            raise RuntimeError("PackedSigIndex must expose get_error() under v5")
+        err = float(sig_index.get_error(int(nid), 2))
 
-            
-            if scored_pairs:
-                max_ret = int(cfg.max_retrieval_candidates)
-                max_ret = max(1, int(max_ret * candidate_boost))
-                scored_pairs.sort(key=lambda x: (x[0], -x[1]), reverse=True)
-                return set(nid for _, nid in scored_pairs[:max_ret])
+        score = -float(dist) - alpha_err * float(err)
+        entry = (score, -nid)
+        if len(top_heap) < K_cap:
+            heapq.heappush(top_heap, entry)
+        elif entry > top_heap[0]:
+            heapq.heapreplace(top_heap, entry)
 
-            return set()
+    if top_heap:
+        top_sorted = sorted(top_heap, key=lambda x: (x[0], x[1]), reverse=True)
+        return {int(-nid_neg) for _, nid_neg in top_sorted}
 
-    # Compute greedy_cov scores per block (explicit keying).
-    import math
-
-    alpha_cov = float(getattr(cfg, "alpha_cov", 0.10))
-    resid = getattr(state.fovea, "block_residual", None)
-    age = getattr(state.fovea, "block_age", None)
-
-    block_scores: Dict[int, float] = {}
-    for b in fovea_blocks:
-        r_b = float(resid[b]) if resid is not None and int(b) < len(resid) else 0.0
-        a_b = float(age[b]) if age is not None and int(b) < len(age) else 0.0
-        block_scores[int(b)] = r_b + alpha_cov * math.log1p(max(0.0, a_b))
-
-    # Score each retrieved node by its footprint block score.
-    scored: Dict[int, float] = {}
-    for b in fovea_blocks:
-        score_b = float(block_scores.get(int(b), 0.0))
-        bucket = get_incumbent_bucket(state, int(b))
-        for node_id in bucket or set():
-            nid = int(node_id)
-            if nid in prev_active:
-                continue
-            if nid not in nodes:
-                continue
-            scored[nid] = max(float(scored.get(nid, -1e18)), score_b)
-
-    if not scored:
-        return set()
-
-    # Optional implementation cap.
-    max_ret = int(getattr(cfg, "max_retrieval_candidates", getattr(cfg, "max_candidates", 256)))
-    max_ret = max(1, max_ret)
-
-    ranked = sorted(scored.items(), key=lambda kv: (kv[1], -kv[0]), reverse=True)
-    ranked = ranked[:max_ret]
-
-    return set(nid for nid, _ in ranked)
+    return set()
 
 
 # =============================================================================
@@ -320,8 +261,8 @@ def select_working_set(
         return WorkingSet()
 
     # Configuration bounds (A4.2)
-    N_max = int(getattr(cfg, "N_max", getattr(cfg, "n_max", 64)))
-    L_max = float(getattr(cfg, "L_work_max", getattr(cfg, "l_max_work", 48.0)))
+    N_max = int(cfg.N_max)
+    L_max = float(cfg.L_work_max)
 
     # =========================================================================
     # Step 1: Force-include anchors (A5.6)
@@ -389,7 +330,7 @@ def select_working_set(
     # never via per-step scans over all nodes.
     linger_steps = int(getattr(cfg, "working_set_linger_steps", 0))
     if linger_steps > 0:
-        t_now = int(getattr(state, "t", 0))
+        t_now = int(getattr(state, "t_w", 0))
         # Initialize / advance bounded linger index (expiry-ring).
         ring = getattr(state, "_ws_linger_ring", None)
         exp_map = getattr(state, "_ws_linger_exp", None)
@@ -550,7 +491,7 @@ def select_working_set(
 
     # Commit linger membership for the NEXT step (bounded update; no scans).
     if linger_steps > 0:
-        t_now = int(getattr(state, "t", 0))
+        t_now = int(getattr(state, "t_w", 0))
         ring_len = int(linger_steps) + 1
         ring = getattr(state, "_ws_linger_ring", None)
         exp_map = getattr(state, "_ws_linger_exp", None)
@@ -604,115 +545,3 @@ def compute_effective_complexity(working_set: WorkingSet) -> float:
 def get_load_decomposition(working_set: WorkingSet) -> tuple[float, float]:
     """Return (L^eff_anc, L^eff_roll) for horizon computation (A6.2)."""
     return working_set.anchor_load, working_set.rollout_load
-
-
-# =============================================================================
-# Legacy Compatibility Wrapper
-# =============================================================================
-
-
-def select_working_set_legacy(
-    lib: ExpertLibrary,
-    a_raw: Dict[int, float],
-    cfg: AgentConfig,
-) -> WorkingSet:
-    """Legacy interface for backward compatibility.
-
-    WARNING: This wrapper cannot implement full A4.3 retrieval or A5.6 anchors
-    correctly because it lacks AgentState. Use select_working_set() instead.
-
-    This provides a best-effort selection using only the library and raw weights.
-    """
-    nodes = getattr(lib, "nodes", {})
-    if not nodes:
-        return WorkingSet()
-
-    N_max = int(getattr(cfg, "N_max", getattr(cfg, "n_max", 64)))
-    L_max = float(getattr(cfg, "L_work_max", getattr(cfg, "l_max_work", 48.0)))
-    # Separate anchors (bounded; no full scans)
-    anchor_ids: List[int] = []
-    anchor_load = 0.0
-
-    anchors = getattr(lib, "anchors", None)
-    if anchors is None:
-        raise RuntimeError("Library missing `anchors` set; v5 requires incremental anchor tracking")
-
-    for nid in sorted(int(x) for x in anchors):
-        node = nodes.get(int(nid))
-        if node is None or not bool(getattr(node, "is_anchor", False)):
-            continue
-        cost = _get_node_cost(node)
-        if anchor_load + cost <= L_max:
-            anchor_ids.append(int(nid))
-            anchor_load += cost
-
-    anchor_set = set(anchor_ids)
-
-    # Non-anchor candidates are sourced from the provided a_raw keys (bounded).
-    non_anchor_candidates: List[int] = [
-        int(nid) for nid in a_raw.keys() if int(nid) in nodes and int(nid) not in anchor_set
-    ]
-
-    # Compute scores for non-anchors
-    scores: Dict[int, float] = {}
-    costs: Dict[int, float] = {}
-
-    for nid in non_anchor_candidates:
-        node = nodes[nid]
-        a_j = float(a_raw.get(nid, 0.0))
-        pi_j = _get_node_reliability(node)
-        L_j = _get_node_cost(node)
-
-        if L_j > 0:
-            scores[nid] = (a_j * pi_j) / L_j
-        else:
-            scores[nid] = a_j * pi_j * 1e6
-
-        costs[nid] = L_j
-
-    # Select non-anchors
-    remaining_load = L_max - anchor_load
-    remaining_count = N_max - len(anchor_ids)
-
-    selected_non_anchors = _greedy_select(
-        candidates=non_anchor_candidates,
-        scores=scores,
-        costs=costs,
-        budget_load=remaining_load,
-        budget_count=remaining_count,
-    )
-
-    # Assemble result
-    active = anchor_ids + selected_non_anchors
-    weights: Dict[int, float] = {}
-    total_load = 0.0
-    effective_load = 0.0
-    eff_anchor_load = 0.0
-    eff_rollout_load = 0.0
-
-    for nid in active:
-        node = nodes[nid]
-        is_anchor = getattr(node, "is_anchor", False)
-        a_j = float(a_raw.get(nid, 1.0 if is_anchor else 0.0))
-        L_j = _get_node_cost(node)
-
-        weights[nid] = a_j
-        total_load += L_j
-        eff = a_j * L_j
-        effective_load += eff
-
-        if is_anchor:
-            eff_anchor_load += eff
-        else:
-            eff_rollout_load += eff
-
-    return WorkingSet(
-        active=active,
-        weights=weights,
-        load=total_load,
-        effective_load=effective_load,
-        anchor_load=eff_anchor_load,
-        rollout_load=eff_rollout_load,
-        anchor_ids=anchor_ids,
-        non_anchor_ids=selected_non_anchors,
-    )

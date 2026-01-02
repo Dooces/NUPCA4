@@ -19,9 +19,6 @@ class BlockView:
     def __init__(self, specs: Sequence[BlockSpec]):
         self.specs: Dict[int, BlockSpec] = {int(s.block_id): s for s in specs}
 
-    def legacy_blocks(self) -> List[List[int]]:
-        return [spec.dims.copy() for spec in self.leaf_specs()]
-
     def leaf_specs(self) -> List[BlockSpec]:
         return [spec for spec in self.specs.values() if spec.kind == "leaf"]
 

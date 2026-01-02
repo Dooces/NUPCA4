@@ -2,36 +2,23 @@
 
 """nupca3/memory/sig_index.py
 
-NUPCA5: scan-proof, bounded signature retrieval index.
+NUPCA5: scan-proof, bounded signature retrieval index using banded LSH
+compatible with Hamming distance on sig64.
 
-v5 requirements implemented here
-------------------------------
-1) No size-dependent loops:
-   - Query cost is strictly bounded by |block_ids| * tables * bucket_cap.
-   - Insert/remove cost is strictly bounded by tables * bucket_cap.
-
-2) Overflow/eviction is NOT usage-based and NOT arbitrary.
-   When a bucket is full, replacement is driven by outcome-vetted priority:
-     - Each node_id has an error estimate updated only by deferred validation
-       (via `update_error(...)`).
-     - Bucket overflow keeps the best bucket_cap entries by that priority.
-
-3) The optional error cache belongs here only to support (2).
-   It is never updated by query/activation; only by explicit deferred
-   validation calls.
-
-This structure is a bounded candidate generator (LSH-like); it is not an exact
-address map and does not guarantee recall for every node.
+Key constraints:
+  - Bucket keys are derived directly from sig64 band bits (no avalanche hash).
+  - Block scope is explicit: buckets are keyed by (table, block_id, bucket_id).
+  - Query/insert/remove touch a constant number of buckets:
+      O(|block_ids| * tables * bucket_cap).
+  - Overflow uses outcome-vetted error cache only (no usage-based scoring).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Set
 
 import numpy as np
-
-from .sig64 import splitmix64
 
 _I32 = np.int32
 _F32 = np.float32
@@ -39,13 +26,13 @@ _F32 = np.float32
 
 @dataclass
 class SigIndexCfg:
-    # Hash tables (independent salts)
+    # Hash tables (bands)
     tables: int = 4
     # Buckets per table: 2^bucket_bits
     bucket_bits: int = 10
     # Slots per bucket
     bucket_cap: int = 8
-    # Deterministic salt seed
+    # Deterministic seed (used only for err cache sizing symmetry; no hashing)
     seed: int = 0
 
     # Outcome-vetted priority cache.
@@ -59,7 +46,7 @@ class SigIndexCfg:
 
 
 class PackedSigIndex:
-    """Packed signature index with bounded query and priority-driven overflow."""
+    """Packed signature index with banded LSH and outcome-vetted overflow."""
 
     def __init__(self, cfg: SigIndexCfg):
         self.cfg = cfg
@@ -75,20 +62,12 @@ class PackedSigIndex:
 
         self.n_buckets = 1 << self.bucket_bits
         self.bucket_mask = self.n_buckets - 1
+        # Use fixed-width bands to preserve Hamming locality (no avalanche hash).
+        self.band_bits = max(1, 64 // self.tables)
+        self.band_mask = (1 << self.band_bits) - 1
 
-        # Buckets: [tables, n_buckets, bucket_cap] of node_id (int32), -1 empty.
-        self.buckets = np.full(
-            (self.tables, self.n_buckets, self.bucket_cap),
-            fill_value=-1,
-            dtype=_I32,
-        )
-
-        # Per-table salts (deterministic).
-        base = int(cfg.seed) & ((1 << 64) - 1)
-        self.salts = np.array(
-            [splitmix64(base ^ splitmix64(t + 1)) for t in range(self.tables)],
-            dtype=np.uint64,
-        )
+        # buckets[table][block_id] -> np.ndarray shape (n_buckets, bucket_cap)
+        self.buckets: List[Dict[int, np.ndarray]] = [dict() for _ in range(self.tables)]
 
         # Outcome-vetted error cache used to drive overflow replacement.
         self.enable_err_cache = bool(cfg.enable_err_cache)
@@ -118,15 +97,30 @@ class PackedSigIndex:
         )
         return cls(cfg)
 
-    def _bucket_index(self, table: int, sig64: int, block_id: int) -> int:
-        """Map (sig64, block_id, table) -> bucket index in [0, 2^bucket_bits)."""
-        s = int(sig64) & ((1 << 64) - 1)
-        b = int(block_id) & ((1 << 64) - 1)
-        salt = int(self.salts[table])
-        # Two-stage mix to reduce structured collisions.
-        x = splitmix64(s ^ salt)
-        y = splitmix64(b ^ salt ^ x)
-        return int(y) & self.bucket_mask
+    # ------------------------------------------------------------------ #
+    # Internal helpers
+    # ------------------------------------------------------------------ #
+
+    def _band_bucket(self, table: int, sig64: int) -> int:
+        """Return band-derived bucket index (banded LSH, no avalanche)."""
+        shift = min(63, int(table) * self.band_bits)
+        band_val = (int(sig64) >> shift) & self.band_mask
+        return int(band_val) & self.bucket_mask
+
+    def _ensure_block_row(self, table: int, block_id: int, bucket_idx: int) -> np.ndarray:
+        tbl = self.buckets[table]
+        arr = tbl.get(int(block_id))
+        if arr is None:
+            arr = np.full((self.n_buckets, self.bucket_cap), fill_value=-1, dtype=_I32)
+            tbl[int(block_id)] = arr
+        return arr[int(bucket_idx)]
+
+    def _get_block_row(self, table: int, block_id: int, bucket_idx: int) -> Optional[np.ndarray]:
+        tbl = self.buckets[table]
+        arr = tbl.get(int(block_id))
+        if arr is None:
+            return None
+        return arr[int(bucket_idx)]
 
     def _ensure_err_cache(self, node_id: int) -> None:
         n = int(node_id) + 1
@@ -153,6 +147,10 @@ class PackedSigIndex:
         # Lower error => higher priority.
         return -err
 
+    # ------------------------------------------------------------------ #
+    # Public interface
+    # ------------------------------------------------------------------ #
+
     def insert(self, sig64: int, block_id: int, node_id: int) -> None:
         """Insert node_id into each table bucket for (sig64, block_id).
 
@@ -166,8 +164,8 @@ class PackedSigIndex:
         p_new = self._priority(nid)
 
         for t in range(self.tables):
-            bi = self._bucket_index(t, sig64, block_id)
-            row = self.buckets[t, bi]  # shape (bucket_cap,)
+            bi = self._band_bucket(t, sig64)
+            row = self._ensure_block_row(t, block_id, bi)
 
             # No duplicates.
             if np.any(row == nid):
@@ -199,11 +197,11 @@ class PackedSigIndex:
         if nid < 0:
             return
         for t in range(self.tables):
-            bi = self._bucket_index(t, sig64, block_id)
-            row = self.buckets[t, bi]
-            hits = np.where(row == nid)[0]
-            if hits.size:
-                row[int(hits[0])] = -1
+            bi = self._band_bucket(t, sig64)
+            row = self._get_block_row(t, block_id, bi)
+            if row is None:
+                continue
+            row[row == nid] = -1
 
     def query(
         self,
@@ -212,44 +210,39 @@ class PackedSigIndex:
         *,
         cand_cap: int = 64,
     ) -> List[int]:
-        """Return bounded candidate node_ids for (sig64, block_ids).
-
-        Complexity: O(len(block_ids) * tables * bucket_cap) worst-case, bounded.
-
-        Dedup is done with a bounded linear check (cand_cap is small by design).
-        """
+        """Return bounded candidate node_ids for (sig64, block_ids)."""
         cap = int(cand_cap)
         if cap <= 0:
             return []
 
         out: List[int] = []
+        seen: Set[int] = set()
 
-        def _push(nid: int) -> None:
-            if nid < 0:
-                return
-            if nid in out:
-                return
-            out.append(int(nid))
-
-        for b in block_ids:
-            bid = int(b)
+        for block_id in block_ids:
+            b = int(block_id)
+            if b < 0:
+                continue
             for t in range(self.tables):
-                bi = self._bucket_index(t, sig64, bid)
-                row = self.buckets[t, bi]
-                for j in range(self.bucket_cap):
-                    _push(int(row[j]))
+                bi = self._band_bucket(t, sig64)
+                row = self._get_block_row(t, b, bi)
+                if row is None:
+                    continue
+                for nid in row:
+                    if nid < 0:
+                        continue
+                    if int(nid) in seen:
+                        continue
+                    seen.add(int(nid))
+                    out.append(int(nid))
                     if len(out) >= cap:
                         return out
+
         return out
 
     # ---- Deferred-validation hooks (priority cache) ----
 
     def update_error(self, node_id: int, h_bin: int, err_ema: float) -> None:
-        """Update the outcome-vetted error cache.
-
-        This MUST be called only from deferred validation (i.e., once an
-        outcome has been observed), not merely because a unit was activated.
-        """
+        """Update the outcome-vetted error cache."""
         nid = int(node_id)
         if nid < 0:
             return

@@ -58,7 +58,7 @@ def effective_load(lib: ExpertLibrary, A_t: WorkingSet, cfg: AgentConfig) -> flo
         node = lib.nodes[int(node_id)]
         a_j = float(getattr(A_t, "weights", {}).get(int(node_id), 0.0))
         # Node cost field is normalized by library; fall back to L.
-        L_j = float(getattr(node, "cost", getattr(node, "L", 1.0)))
+        L_j = float(getattr(node, "cost"))
         total += a_j * L_j
     return float(total)
 

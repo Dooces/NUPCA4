@@ -8,6 +8,7 @@ It performs the following checks:
      `nupca5_enabled`) are absent from Python modules.
   2. A short 30-step run using the v5 kernel emits the expected kernel and ordering markers.
   3. The scan counter stays zero during OPERATING ticks.
+  4. sig64 metadata and the packed sig_index stay within configured caps during the run.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from nupca3.agent import NUPCA3Agent
 from nupca3.config import AgentConfig
 from nupca3.sim.worlds import ToyWorld
 from nupca3.types import EnvObs
+from nupca3.memory.audit import audit_sig64_index_health
 
 EXPECTED_ORDERING_MARKERS = ("A13.transport", "A13.complete", "A13.validation")
 FORBIDDEN_PATTERNS = [
@@ -64,7 +66,7 @@ def search_forbidden(
     return hits
 
 
-def build_obs(vec: np.ndarray, *, t_w: int = 0, wall_ms: int | None = None) -> EnvObs:
+def build_obs(vec: np.ndarray, *, t_w: int = 1, wall_ms: int | None = None) -> EnvObs:
     arr = np.asarray(vec, dtype=float).reshape(-1)
     D = arr.size
     mask = range(min(4, D))
@@ -127,6 +129,9 @@ def run_kernel_check(cfg: AgentConfig, steps: int = 30) -> None:
                 raise RuntimeError(
                     f"TraceCache block count {cache.block_count} exceeds cap {block_cap}"
                 )
+        sig_issues = audit_sig64_index_health(state, cfg)
+        if sig_issues:
+            raise RuntimeError(f"Sig64/index audit failed: {sig_issues}")
         world.step(0)
         obs = build_obs(
             world.x,

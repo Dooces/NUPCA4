@@ -96,7 +96,7 @@ def normalize_margins(
     Returns:
       (tilde, delta_tilde)
     """
-    eps = float(getattr(cfg, "eps_baseline", getattr(cfg, "epsilon", 1e-6)))
+    eps = float(cfg.eps_baseline)
     x = np.array([margins.m_E, margins.m_D, margins.m_L, margins.m_C, margins.m_S], dtype=float)
     mu = np.array(baselines.mu, dtype=float)
     var_fast = np.array(baselines.var_fast, dtype=float)

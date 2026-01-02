@@ -59,9 +59,6 @@ def init_macrostate(cfg: AgentConfig) -> MacrostateVars:
     return MacrostateVars(rest=False, Q_struct=[], T_since=0, T_rest=0, P_rest=0.0)
 
 
-# Backwards-compatible alias used by some WIP call sites.
-def init_macro(cfg: AgentConfig) -> MacrostateVars:
-    return init_macrostate(cfg)
 
 
 def rest_permitted(
@@ -72,10 +69,10 @@ def rest_permitted(
     arousal: float = 0.0,
 ) -> tuple[bool, str]:
     """A14.6 rest_permitted(t) gate updated to include unsafe signals."""
-    theta_safe = float(getattr(cfg, "theta_safe_th", getattr(cfg, "P_rest_theta_safe_th", 0.2)))
-    theta_interrupt = float(getattr(cfg, "theta_interrupt_th", getattr(cfg, "P_rest_theta_interrupt_th", 0.6)))
-    theta_ar_rest = float(getattr(cfg, "theta_ar_rest", getattr(cfg, "P_rest_theta_E_rest", 0.25)))
-    debt_max = float(getattr(cfg, "coverage_debt_max", 1e6))
+    theta_safe = float(cfg.P_rest_theta_safe_th)
+    theta_interrupt = float(cfg.P_rest_theta_interrupt_th)
+    theta_ar_rest = float(cfg.theta_ar_rest)
+    debt_max = float(cfg.coverage_debt_max)
 
     s_ext_th = float(getattr(stress, "s_ext_th", 0.0))
 
@@ -96,15 +93,15 @@ def rest_permitted(
 
 def interrupt(stress: Stress, cfg: AgentConfig) -> bool:
     """A14.6 interrupt(t) = 1{s_ext^th(t) ≥ θ_interrupt^th}."""
-    theta_int = float(getattr(cfg, "theta_interrupt_th", getattr(cfg, "P_rest_theta_interrupt_th", 0.6)))
+    theta_int = float(cfg.P_rest_theta_interrupt_th)
     return bool(float(stress.s_ext_th) >= theta_int)
 
 
 def restored(margins: Margins, cfg: AgentConfig) -> bool:
     """A14.5 restored(t) predicate used for exiting REST."""
-    theta_E = float(getattr(cfg, "theta_E_rest", getattr(cfg, "P_rest_theta_E_rest", 0.25)))
-    theta_D = float(getattr(cfg, "theta_D_rest", getattr(cfg, "P_rest_theta_D_rest", 0.25)))
-    theta_S = float(getattr(cfg, "theta_S_rest", getattr(cfg, "P_rest_theta_S_rest", 0.25)))
+    theta_E = float(cfg.P_rest_theta_E_rest)
+    theta_D = float(cfg.P_rest_theta_D_rest)
+    theta_S = float(cfg.P_rest_theta_S_rest)
     return bool(
         float(margins.m_E) >= theta_E
         and float(margins.m_D) >= theta_D
@@ -120,9 +117,9 @@ def update_P_rest(
     cfg: AgentConfig,
 ) -> float:
     """Update P_rest(t) per A14.3."""
-    gamma_rest = float(getattr(cfg, "gamma_rest", getattr(cfg, "P_rest_gamma_rest", 0.96)))
-    delta_base = float(getattr(cfg, "delta_base", getattr(cfg, "P_rest_delta_base", 0.01)))
-    delta_need = float(getattr(cfg, "delta_need", getattr(cfg, "P_rest_delta_need", 0.10)))
+    gamma_rest = float(cfg.P_rest_gamma)
+    delta_base = float(cfg.P_rest_delta_base)
+    delta_need = float(cfg.P_rest_delta_need)
 
     if bool(rest_t):
         return gamma_rest * float(P_rest_prev)
@@ -131,9 +128,9 @@ def update_P_rest(
 
 def P_rest_eff(*, P_rest_t: float, stress: Stress, cfg: AgentConfig) -> float:
     """A14.3 P_rest_eff(t) = P_rest(t)+α_E s_E^need+α_D s_D^need+α_S s_S^need."""
-    alpha_E = float(getattr(cfg, "alpha_E", getattr(cfg, "P_rest_alpha_E", 0.10)))
-    alpha_D = float(getattr(cfg, "alpha_D", getattr(cfg, "P_rest_alpha_D", 0.10)))
-    alpha_S = float(getattr(cfg, "alpha_S", getattr(cfg, "P_rest_alpha_S", 0.10)))
+    alpha_E = float(cfg.P_rest_alpha_E)
+    alpha_D = float(cfg.P_rest_alpha_D)
+    alpha_S = float(cfg.P_rest_alpha_S)
     return (
         float(P_rest_t)
         + alpha_E * float(stress.s_E)
@@ -157,8 +154,8 @@ def demand(
     cfg: AgentConfig,
 ) -> bool:
     """Demand toggle per A14.4–A14.5 with action availability gating."""
-    debt_thresh = float(getattr(cfg, "coverage_debt_thresh", 1e6))
-    rest_min_cycles = max(1, int(getattr(cfg, "rest_min_cycles", 1)))
+    debt_thresh = float(cfg.coverage_debt_thresh)
+    rest_min_cycles = max(1, int(cfg.rest_min_cycles))
     if rest_cooldown > 0:
         return False
     wake_pressure = float(coverage_debt)
@@ -166,9 +163,9 @@ def demand(
     if not bool(rest_t):
         if not actionable or cycles_needed < rest_min_cycles:
             return False
-        theta_enter = float(getattr(cfg, "theta_demand_enter", getattr(cfg, "P_rest_theta_demand_enter", 0.50)))
-        Theta_Q_on = int(getattr(cfg, "Theta_Q_on", getattr(cfg, "P_rest_Theta_Q_on", 8)))
-        Tmax_wake = int(getattr(cfg, "Tmax_wake", getattr(cfg, "P_rest_Tmax_wake", 500)))
+        theta_enter = float(cfg.P_rest_theta_demand_enter)
+        Theta_Q_on = int(cfg.P_rest_Theta_Q_on)
+        Tmax_wake = int(cfg.P_rest_Tmax_wake)
         return bool(
             float(P_rest_eff_t) >= theta_enter
             or int(Q_struct_len_t) >= Theta_Q_on
@@ -176,9 +173,9 @@ def demand(
             and wake_pressure <= debt_thresh
         )
 
-    theta_exit = float(getattr(cfg, "theta_demand_exit", getattr(cfg, "P_rest_theta_demand_exit", 0.30)))
-    Theta_Q_off = int(getattr(cfg, "Theta_Q_off", getattr(cfg, "P_rest_Theta_Q_off", 3)))
-    Tmax_rest = int(getattr(cfg, "Tmax_rest", getattr(cfg, "P_rest_Tmax_rest", 200)))
+    theta_exit = float(cfg.P_rest_theta_demand_exit)
+    Theta_Q_off = int(cfg.P_rest_Theta_Q_off)
+    Tmax_rest = int(cfg.P_rest_Tmax_rest)
 
     if int(T_rest_t) >= Tmax_rest:
         return False
@@ -256,7 +253,7 @@ def evolve_macrostate(
     P_eff_t = P_rest_eff(P_rest_t=P_rest_t, stress=stress_t, cfg=cfg)
 
     restored_t = restored(margins_t, cfg)
-    max_edits = max(1, int(getattr(cfg, "max_edits_per_rest_step", 32)))
+    max_edits = max(1, int(cfg.max_edits_per_rest_step))
     queue_len = len(Q_t)
     cycles_needed = int(math.ceil(float(queue_len) / float(max_edits))) if queue_len > 0 else 0
     prev_cooldown = int(getattr(prev, "rest_cooldown", 0))
@@ -266,7 +263,7 @@ def evolve_macrostate(
         streak = streak_prev + 1
     else:
         streak = 0
-    rest_cooldown_steps = max(0, int(getattr(cfg, "rest_cooldown_steps", 0)))
+    rest_cooldown_steps = max(0, int(cfg.rest_cooldown_steps))
     if rest_t and edits_processed_t == 0 and rest_cooldown_steps > 0 and streak >= rest_cooldown_steps:
         cooldown = rest_cooldown_steps
     demand_t = demand(

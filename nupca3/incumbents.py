@@ -16,9 +16,9 @@ def _ensure_bucket_capacity(buckets: List[Set[int]], block_id: int) -> Set[int]:
 
 def _resolve_block_id(node: Node, blocks: Sequence[Sequence[int]]) -> Optional[int]:
     """Return a block id for `node`, inferring from mask if needed."""
-    raw_block_id = getattr(node, "block_id", getattr(node, "footprint", -1))
-    if raw_block_id is not None and int(raw_block_id) >= 0:
-        return int(raw_block_id)
+    raw_block_id = int(getattr(node, "footprint", -1))
+    if raw_block_id >= 0:
+        return raw_block_id
 
     mask = getattr(node, "mask", None)
     if mask is None or not blocks:
@@ -29,8 +29,8 @@ def _resolve_block_id(node: Node, blocks: Sequence[Sequence[int]]) -> Optional[i
     except Exception:
         return None
 
-    node.block_id = block_id
-    return block_id
+    node.footprint = int(block_id)
+    return int(block_id)
 
 
 def rebuild_incumbents_by_block(library: ExpertLibrary, blocks: Sequence[Sequence[int]]) -> List[Set[int]]:

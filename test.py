@@ -4,8 +4,8 @@
 Non-negotiables:
 - No legacy modes.
 - World tick is decoupled from agent compute (agent runs in a separate process).
-- Full observation (all 400 cells) is published every tick.
-- Overwrite semantics: if the agent lags, it consumes the latest observation; no backlog.
+- Observation delivery is foveated (only the agent-requested O_t is exposed).
+- Overwrite semantics: if the agent lags, it consumes the latest observation slice; no backlog.
 
 Controls:
   s : save state (NPZ)
@@ -25,6 +25,7 @@ import random
 import struct
 import sys
 import time
+import queue
 from dataclasses import asdict, dataclass, replace as dc_replace
 from multiprocessing.shared_memory import SharedMemory
 from typing import Dict, List, Optional, Tuple
@@ -43,7 +44,7 @@ from multiprocessing.shared_memory import SharedMemory
 # Harness parameters
 # ----------------------------
 
-UPDATE_DELAY_MS = 300  # world tick pacing. 0 = as fast as possible.
+UPDATE_DELAY_MS = 2000  # world tick pacing. 0 = as fast as possible.
 
 STATE_PATH = "agent_state.npz"
 VAL_MAX = 4.0
@@ -99,15 +100,22 @@ else:
 
     class KeyPoller:
         def __enter__(self):
+            if not sys.stdin.isatty():
+                self.fd = None
+                self.old = None
+                return self
             self.fd = sys.stdin.fileno()
             self.old = termios.tcgetattr(self.fd)
             tty.setcbreak(self.fd)
             return self
 
         def __exit__(self, exc_type, exc, tb):
-            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
+            if self.fd is not None and self.old is not None:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
 
         def poll(self) -> Optional[str]:
+            if self.fd is None:
+                return None
             if select.select([sys.stdin], [], [], 0)[0]:
                 return sys.stdin.read(1)
             return None
@@ -136,8 +144,8 @@ class GridWorld:
         self.spawn_p = 0.08
         self.max_shapes = 3
 
-        # None => horizontal bar
-        self.templates = [None, "vbar", "square", "L", "diag"]
+        # Four solid templates with explicit sizes.
+        self.templates = ["triangle", "square", "rectangle", "rhombus"]
 
         ow = max(1, int(occlusion_width))
         c0 = max(0, self.grid_size // 2 - ow // 2)
@@ -145,39 +153,45 @@ class GridWorld:
         self.occlusion_mask = np.zeros((self.grid_size, self.grid_size), dtype=bool)
         self.occlusion_mask[:, c0 : c1 + 1] = True
 
-    def _make_hbar(self) -> List[Tuple[int, int]]:
-        L = random.randint(2, 5)
-        return [(0, i) for i in range(L)]
-
-    def _make_vbar(self) -> List[Tuple[int, int]]:
-        L = random.randint(2, 5)
-        return [(i, 0) for i in range(L)]
+    def _make_triangle(self) -> List[Tuple[int, int]]:
+        # Solid right triangle with height/base 5 (bounding box 5x5)
+        cells: List[Tuple[int, int]] = []
+        for r in range(5):
+            for c in range(r + 1):
+                cells.append((r, c))
+        return cells
 
     def _make_square(self) -> List[Tuple[int, int]]:
-        return [(0, 0), (0, 1), (1, 0), (1, 1)]
+        # Solid 4x4 block
+        return [(r, c) for r in range(4) for c in range(4)]
 
-    def _make_L(self) -> List[Tuple[int, int]]:
-        return [(0, 0), (1, 0), (2, 0), (2, 1)]
+    def _make_rectangle(self) -> List[Tuple[int, int]]:
+        # Solid 2x6 block
+        return [(r, c) for r in range(2) for c in range(6)]
 
-    def _make_diag(self) -> List[Tuple[int, int]]:
-        L = random.randint(2, 4)
-        return [(i, i) for i in range(L)]
+    def _make_rhombus(self) -> List[Tuple[int, int]]:
+        # Solid rhombus (diamond-like), height 4, width 5
+        rows = [1, 0, 0, 1]  # starting column offsets for each row
+        widths = [3, 5, 5, 3]
+        cells: List[Tuple[int, int]] = []
+        for r, (offset, width) in enumerate(zip(rows, widths)):
+            for c in range(width):
+                cells.append((r, offset + c))
+        return cells
 
     def spawn_shape(self) -> None:
         if len(self.shapes) >= self.max_shapes:
             return
 
         typ = random.choice(self.templates)
-        if typ is None:
-            cells = self._make_hbar()
-        elif typ == "vbar":
-            cells = self._make_vbar()
+        if typ == "triangle":
+            cells = self._make_triangle()
         elif typ == "square":
             cells = self._make_square()
-        elif typ == "diag":
-            cells = self._make_diag()
+        elif typ == "rectangle":
+            cells = self._make_rectangle()
         else:
-            cells = self._make_L()
+            cells = self._make_rhombus()
 
         max_r = max(dr for dr, _ in cells)
         max_c = max(dc for _, dc in cells)
@@ -353,6 +367,43 @@ def build_periphery_permutation(side: int = 20, ring: int = 2) -> Tuple[np.ndarr
     return perm, inv
 
 
+def encode_peripheral_bins(grid: np.ndarray, *, bins: int) -> np.ndarray:
+    """Coarse peripheral channel: occupancy fraction per bin (bins x bins)."""
+    grid = np.asarray(grid, dtype=np.int32)
+    bins = max(0, int(bins))
+    if bins <= 0 or grid.ndim != 2:
+        return np.zeros(0, dtype=np.float32)
+    grid_h, grid_w = grid.shape
+    if grid_h <= 0 or grid_w <= 0:
+        return np.zeros(0, dtype=np.float32)
+
+    occ = grid != 0
+    bins_x = max(1, min(bins, grid_w))
+    bins_y = max(1, min(bins, grid_h))
+    tile_w = int(np.ceil(float(grid_w) / float(bins_x)))
+    tile_h = int(np.ceil(float(grid_h) / float(bins_y)))
+
+    pooled = np.zeros((bins_y, bins_x), dtype=np.float32)
+    for by in range(bins_y):
+        y0 = by * tile_h
+        y1 = min(grid_h, (by + 1) * tile_h)
+        if y0 >= y1:
+            continue
+        for bx in range(bins_x):
+            x0 = bx * tile_w
+            x1 = min(grid_w, (bx + 1) * tile_w)
+            if x0 >= x1:
+                continue
+            region = occ[y0:y1, x0:x1]
+            pooled[by, bx] = float(np.mean(region)) if region.size else 0.0
+
+    if bins_x != bins or bins_y != bins:
+        out = np.zeros((bins, bins), dtype=np.float32)
+        out[:bins_y, :bins_x] = pooled
+        pooled = out
+    return pooled.reshape(-1)
+
+
 # -----------------------------
 # NPZ persistence helpers (v5)
 # -----------------------------
@@ -401,6 +452,7 @@ def save_nupca5_state_npz(path: str, *, agent, cfg, perm: np.ndarray, periph_rin
     from nupca3.memory.sig_index import PackedSigIndex
 
     st = agent.state
+    buf = getattr(st, "buffer", None)
 
     cfg_json = json.dumps(asdict(cfg), sort_keys=True)
 
@@ -409,15 +461,18 @@ def save_nupca5_state_npz(path: str, *, agent, cfg, perm: np.ndarray, periph_rin
 
     sig_index = getattr(st.library, "sig_index", None)
     has_sig_index = int(isinstance(sig_index, PackedSigIndex))
-    if has_sig_index:
+    if not has_sig_index:
+        si_buckets = np.zeros((0, 0, 0), dtype=np.int32)
+        si_salts = np.zeros(0, dtype=np.uint64)
+        si_err = np.zeros((0, 0), dtype=np.float32)
+        si_cfg = np.zeros(0, dtype=np.int32)
+    else:
         si = sig_index
-        si_buckets = np.asarray(si.buckets, dtype=np.int32)
-        si_salts = np.asarray(si.salts, dtype=np.uint64)
-        si_err = (
-            np.asarray(getattr(si, "_err_cache", None), dtype=np.float32)
-            if getattr(si, "_err_cache", None) is not None
-            else np.zeros((0, 0), dtype=np.float32)
-        )
+        # Buckets are rebuilt deterministically on load; only persist config + err cache.
+        si_buckets = np.zeros((0, 0, 0), dtype=np.int32)
+        si_salts = np.zeros(0, dtype=np.uint64)
+        err_cache = getattr(si, "_err_cache", None)
+        si_err = np.asarray(err_cache, dtype=np.float32) if err_cache is not None else np.zeros((0, 0), dtype=np.float32)
         si_cfg = np.array(
             [
                 int(si.tables),
@@ -429,11 +484,6 @@ def save_nupca5_state_npz(path: str, *, agent, cfg, perm: np.ndarray, periph_rin
             ],
             dtype=np.int32,
         )
-    else:
-        si_buckets = np.zeros((0, 0, 0), dtype=np.int32)
-        si_salts = np.zeros(0, dtype=np.uint64)
-        si_err = np.zeros((0, 0), dtype=np.float32)
-        si_cfg = np.zeros(0, dtype=np.int32)
 
     node_ids = [int(x) for x in packed_lib.node_ids.tolist()]
     rows: List[Tuple[int, ...]] = []
@@ -482,6 +532,8 @@ def save_nupca5_state_npz(path: str, *, agent, cfg, perm: np.ndarray, periph_rin
         return np.asarray(x, dtype=dt).reshape(-1)
 
     t_w_val = int(getattr(st, "t_w", getattr(st, "t", 0)))
+    x_last = np.asarray(getattr(buf, "x_last", np.zeros(0, dtype=np.float32)), dtype=np.float32).reshape(-1)
+    x_prior = np.asarray(getattr(buf, "x_prior", np.zeros(0, dtype=np.float32)), dtype=np.float32).reshape(-1)
 
     np.savez_compressed(
         path,
@@ -530,6 +582,8 @@ def save_nupca5_state_npz(path: str, *, agent, cfg, perm: np.ndarray, periph_rin
         fovea_block_innovation=_arr(getattr(f, "block_innovation", np.zeros(0)), np.float32),
 
         obs_dims=obs_dims,
+        buffer_x_last=x_last,
+        buffer_x_prior=x_prior,
 
         pv_node=pv_node,
         pv_hbin=pv_hbin,
@@ -561,6 +615,8 @@ def load_nupca5_state_npz(path: str):
     from nupca3.config import AgentConfig
     from nupca3.types import PackedExpertLibrary, unpack_expert_library
     from nupca3.memory.sig_index import PackedSigIndex, SigIndexCfg
+    from nupca3.memory.library import V5ExpertLibrary, register_unit_in_sig_index
+    from nupca3.geometry.fovea import build_blocks_from_cfg
 
     npz = np.load(path, allow_pickle=False)
     if "cfg_json" not in npz:
@@ -578,11 +634,18 @@ def load_nupca5_state_npz(path: str):
         if key.startswith("lib.")
     }
     packed = PackedExpertLibrary.from_npz_dict(lib_entries)
-    lib = unpack_expert_library(packed)
+    base_lib = unpack_expert_library(packed)
+    lib = V5ExpertLibrary(
+        nodes=base_lib.nodes,
+        anchors=base_lib.anchors,
+        footprint_index=base_lib.footprint_index,
+        next_node_id=int(getattr(base_lib, "next_node_id", 0)),
+        revision=int(getattr(base_lib, "revision", 0)),
+    )
 
     # Restore per-node sig_index_blocks (aligned to packed.node_ids ordering)
-    sig_ptr = np.asarray(npz["sig_blocks_ptr"], dtype=np.int32)
-    sig_idx = np.asarray(npz["sig_blocks_idx"], dtype=np.int32)
+    sig_ptr = np.asarray(npz["sig_blocks_ptr"], dtype=np.int32) if "sig_blocks_ptr" in npz.files else np.zeros(1, dtype=np.int32)
+    sig_idx = np.asarray(npz["sig_blocks_idx"], dtype=np.int32) if "sig_blocks_idx" in npz.files else np.zeros(0, dtype=np.int32)
     node_ids = packed.node_ids
     for i in range(int(node_ids.size)):
         nid = int(node_ids[i])
@@ -591,34 +654,58 @@ def load_nupca5_state_npz(path: str):
         if n is not None:
             n.sig_index_blocks = blocks
 
-    has_sig = int(np.asarray(npz["has_sig_index"], dtype=np.int8).reshape(-1)[0])
-    if has_sig:
-        si_cfg = np.asarray(npz["si_cfg"], dtype=np.int32).reshape(-1)
-        if si_cfg.size != 6:
-            raise ValueError(f"si_cfg wrong length: {si_cfg.size}")
-        tables = int(si_cfg[0])
-        bucket_bits = int(si_cfg[1])
-        bucket_cap = int(si_cfg[2])
-        seed = int(si_cfg[3])
-        err_bins = int(si_cfg[4])
-        eviction_bin = int(si_cfg[5])
-
-        si = PackedSigIndex(
-            SigIndexCfg(
-                tables=tables,
-                bucket_bits=bucket_bits,
-                bucket_cap=bucket_cap,
-                seed=seed,
-                err_bins=err_bins,
-                eviction_bin=eviction_bin,
-            )
+    has_sig = int(np.asarray(npz["has_sig_index"], dtype=np.int8).reshape(-1)[0]) if "has_sig_index" in npz.files else 0
+    si_cfg_arr = np.asarray(npz["si_cfg"], dtype=np.int32).reshape(-1) if "si_cfg" in npz.files else np.zeros(0, dtype=np.int32)
+    if has_sig and si_cfg_arr.size >= 6:
+        si_cfg = SigIndexCfg(
+            tables=int(si_cfg_arr[0]),
+            bucket_bits=int(si_cfg_arr[1]),
+            bucket_cap=int(si_cfg_arr[2]),
+            seed=int(si_cfg_arr[3]),
+            err_bins=int(si_cfg_arr[4]),
+            eviction_bin=int(si_cfg_arr[5]),
         )
-        si.buckets[...] = np.asarray(npz["si_buckets"], dtype=np.int32)
-        si.salts[...] = np.asarray(npz["si_salts"], dtype=np.uint64)
+        si = PackedSigIndex(si_cfg)
+    else:
+        si = PackedSigIndex.from_cfg_obj(cfg)
+
+    if "si_err" in npz.files:
         err = np.asarray(npz["si_err"], dtype=np.float32)
-        if err.size:
+        if err.ndim == 2 and err.size:
             si._err_cache = err.copy()
-        lib.sig_index = si
+
+    lib.sig_index = si
+
+    blocks = build_blocks_from_cfg(cfg)
+    D0 = int(getattr(cfg, "D", 0))
+    dim2block = None
+    if D0 > 0 and blocks and blocks[0] != []:
+        dim2block = np.full(D0, -1, dtype=np.int32)
+        for bi, dims in enumerate(blocks):
+            for d in dims:
+                dd = int(d)
+                if 0 <= dd < D0:
+                    dim2block[dd] = int(bi)
+    setattr(lib, "_sig_dim2block", dim2block)
+
+    if hasattr(si, "buckets"):
+        try:
+            si.buckets = [dict() for _ in range(int(si.tables))]
+        except Exception:
+            pass
+
+    for nid in sorted(int(k) for k in lib.nodes.keys()):
+        node = lib.nodes[int(nid)]
+        addr = int(getattr(node, "unit_sig64", 0)) & ((1 << 64) - 1)
+        if addr == 0:
+            continue
+        stored_blocks = tuple(int(b) for b in getattr(node, "sig_index_blocks", ()))
+        if stored_blocks:
+            setattr(node, "sig_index_blocks", stored_blocks)
+            for b in stored_blocks:
+                si.insert(int(addr), int(b), int(nid))
+            continue
+        register_unit_in_sig_index(lib, node, dim2block=dim2block)
 
     return cfg, lib, perm, periph_ring, npz
 
@@ -878,18 +965,32 @@ def agent_worker(
     in_hdr: int,
     out_hdr: int,
     status_max: int,
+    use_queue: bool = False,
+    in_queue=None,
+    out_queue=None,
 ) -> None:
     import time as _time
     import numpy as _np
+    import queue as _queue
     from multiprocessing.shared_memory import SharedMemory as _SharedMemory
 
     from nupca3.agent import NUPCA3Agent
     from nupca3.config import AgentConfig
     from nupca3.types import EnvObs, PendingValidationRecord
+    from nupca3.geometry.fovea import make_observation_set
+    from nupca3.step_pipeline.fovea import apply_signals_and_select
+    from nupca3.geometry.streams import apply_transport
     import traceback
 
     cfg_dict = json.loads(cfg_json_str)
     cfg_w = AgentConfig(**cfg_dict)
+    fovea_budget = max(4, min(int(cfg_w.D) // 8, 64))
+    cfg_w = dc_replace(
+        cfg_w,
+        fovea_blocks_per_step=fovea_budget,
+        F_max=fovea_budget,
+        grid_base_dim=int(getattr(cfg_w, "grid_base_dim", 0) or int(cfg_w.D)),
+    )
 
     agent = NUPCA3Agent(cfg_w)
 
@@ -897,8 +998,17 @@ def agent_worker(
         try:
             cfg2, lib2, _, _, npz2 = load_nupca5_state_npz(state_path_inner)
             if int(cfg2.D) == int(cfg_w.D) and int(cfg2.B) == int(cfg_w.B):
-                agent.cfg = cfg2
-                cfg_w = cfg2
+                cfg_loaded = dc_replace(
+                    cfg2,
+                    fovea_blocks_per_step=fovea_budget,
+                    F_max=fovea_budget,
+                    grid_base_dim=int(getattr(cfg_w, "grid_base_dim", 0) or int(cfg_w.D)),
+                    grid_width=int(cfg_w.grid_width),
+                    grid_height=int(cfg_w.grid_height),
+                    grid_channels=int(cfg_w.grid_channels),
+                )
+                agent.cfg = cfg_loaded
+                cfg_w = cfg_loaded
             agent.state.library = lib2
 
             st = agent.state
@@ -948,6 +1058,12 @@ def agent_worker(
 
             obs_dims = _np.asarray(npz2.get("obs_dims", _np.zeros(0, dtype=_np.int32)), dtype=_np.int32).reshape(-1)
             st.buffer.observed_dims = set(int(x) for x in obs_dims.tolist())
+            x_last = _np.asarray(npz2.get("buffer_x_last", _np.zeros(0, dtype=_np.float32)), dtype=_np.float32).reshape(-1)
+            x_prior = _np.asarray(npz2.get("buffer_x_prior", _np.zeros(0, dtype=_np.float32)), dtype=_np.float32).reshape(-1)
+            if x_last.size:
+                st.buffer.x_last = x_last.copy()
+            if x_prior.size:
+                st.buffer.x_prior = x_prior.copy()
 
             pv_node = _np.asarray(npz2.get("pv_node", _np.zeros(0, dtype=_np.int32)), dtype=_np.int32).reshape(-1)
             pv_hbin = _np.asarray(npz2.get("pv_hbin", _np.zeros(0, dtype=_np.int32)), dtype=_np.int32).reshape(-1)
@@ -968,17 +1084,32 @@ def agent_worker(
         except Exception:
             pass
 
-    shm_in_w = _SharedMemory(name=shm_in_name)
-    shm_out_w = _SharedMemory(name=shm_out_name)
+    shm_in_w = None
+    shm_out_w = None
+    if not use_queue:
+        shm_in_w = _SharedMemory(name=shm_in_name)
+        shm_out_w = _SharedMemory(name=shm_out_name)
 
     last_in_seq = 0
     last_trace: Dict = {}
 
     try:
         while True:
+            snap = None
             while conn.poll():
                 msg = conn.recv()
                 cmd = msg.get("cmd") if isinstance(msg, dict) else None
+
+                if cmd == "obs" and use_queue:
+                    data = msg.get("data")
+                    if isinstance(data, tuple) and len(data) >= 3:
+                        seq_val, env_t_val, obs_val = data[:3]
+                        snap = (
+                            int(seq_val),
+                            int(env_t_val),
+                            _np.asarray(obs_val, dtype=_np.float32).reshape(-1),
+                        )
+                    continue
 
                 if cmd == "quit":
                     if msg.get("save", False):
@@ -1012,26 +1143,65 @@ def agent_worker(
                     except Exception as e:
                         conn.send({"cmd": "reset", "ok": False, "err": str(e)})
 
-            snap = _atomic_try_read_in(shm_in_w.buf, last_seq=last_in_seq, obs_n=obs_n, in_hdr=in_hdr)
+            if snap is None and use_queue and in_queue is not None:
+                try:
+                    snap = in_queue.get_nowait()
+                except _queue.Empty:
+                    snap = None
+
             if snap is None:
-                _time.sleep(0.001)
-                continue
+                if use_queue:
+                    _time.sleep(0.001)
+                    continue
+                snap = _atomic_try_read_in(shm_in_w.buf, last_seq=last_in_seq, obs_n=obs_n, in_hdr=in_hdr)
+                if snap is None:
+                    _time.sleep(0.001)
+                    continue
 
             in_seq, env_t, obs = snap
             last_in_seq = int(in_seq)
 
-            x_partial = {i: float(obs[i]) for i in range(int(obs.size))}
+            base_dim = int(getattr(agent.cfg, "grid_base_dim", 0) or int(obs.size))
+            base_dim = max(0, min(base_dim, int(obs.size)))
+            if base_dim <= 0:
+                base_dim = int(obs.size)
+            periph_full = None
+            if base_dim < int(obs.size):
+                periph_full = _np.zeros_like(obs, dtype=_np.float32)
+                periph_full[base_dim : int(obs.size)] = obs[base_dim : int(obs.size)]
+
+            # Plan fovea selection before revealing any observation.
+            selection = apply_signals_and_select(
+                agent.state,
+                agent.cfg,
+                periph_full=periph_full,
+                prev_observed_dims=set(getattr(agent.state.buffer, "observed_dims", set()) or set()),
+                value_of_compute=float(getattr(agent.state, "value_of_compute", 0.0)),
+            )
+            requested_blocks = selection.get("blocks", []) or []
+            obs_dims = make_observation_set(requested_blocks, agent.cfg)
+            if not obs_dims:
+                obs_dims = {0}
+            x_partial = {int(i): float(obs[int(i)]) for i in obs_dims if 0 <= int(i) < obs.size}
             env_tick = int(getattr(agent.state, "t_w", getattr(agent.state, "t", 0))) + 1
             wall_ms = int(_time.perf_counter() * 1000)
-            pos_dims = {int(i) for i, v in enumerate(obs.tolist()) if float(v) != 0.0}
+            pos_dims = {int(i) for i, v in x_partial.items() if float(v) != 0.0}
             o = EnvObs(
                 x_partial=x_partial,
-                periph_full=obs,
-                selected_blocks=tuple(range(int(cfg_w.B))),
+                periph_full=periph_full,
+                selected_blocks=tuple(requested_blocks),
                 t_w=env_tick,
                 wall_ms=wall_ms,
                 pos_dims=pos_dims,
             )
+
+            # Seed buffer on first tick so transport has overlap and beliefs.
+            if int(getattr(agent.state, "t_w", getattr(agent.state, "t", 0))) == 0 and not getattr(
+                agent.state.buffer, "observed_dims", set()
+            ):
+                agent.state.buffer.x_last = _np.zeros_like(obs)
+                agent.state.buffer.x_prior = _np.zeros_like(obs)
+                agent.state.buffer.observed_dims = set()
 
             _action, trace = agent.step(o)
             last_trace = trace if isinstance(trace, dict) else {}
@@ -1051,14 +1221,25 @@ def agent_worker(
             ).reshape(-1)
             if forecast.size != obs_n:
                 forecast = _np.resize(forecast, (obs_n,)).astype(_np.float32, copy=False)
+            forecast_t2 = forecast.copy()
+            try:
+                shift = getattr(st, "transport_last_delta", (0, 0)) or (0, 0)
+                shift = (int(shift[0]), int(shift[1]))
+                if shift != (0, 0) and forecast.size:
+                    forecast_t2 = apply_transport(forecast, shift, agent.cfg)
+            except Exception:
+                forecast_t2 = forecast.copy()
 
             try:
-                prior_mae_full = float(_np.mean(_np.abs(x_prior - obs)))
-                post_mae_full = float(_np.mean(_np.abs(x_post - obs)))
+                obs_eval = obs[:base_dim]
+                x_prior_eval = x_prior[:base_dim]
+                x_post_eval = x_post[:base_dim]
+                prior_mae_full = float(_np.mean(_np.abs(x_prior_eval - obs_eval)))
+                post_mae_full = float(_np.mean(_np.abs(x_post_eval - obs_eval)))
 
-                pred_i = _np.rint(_np.clip(x_prior, 0.0, 4.0)).astype(_np.int32, copy=False)
-                post_i = _np.rint(_np.clip(x_post, 0.0, 4.0)).astype(_np.int32, copy=False)
-                obs_i = _np.rint(_np.clip(obs, 0.0, 4.0)).astype(_np.int32, copy=False)
+                pred_i = _np.rint(_np.clip(x_prior_eval, 0.0, 4.0)).astype(_np.int32, copy=False)
+                post_i = _np.rint(_np.clip(x_post_eval, 0.0, 4.0)).astype(_np.int32, copy=False)
+                obs_i = _np.rint(_np.clip(obs_eval, 0.0, 4.0)).astype(_np.int32, copy=False)
 
                 prior_eq = float(_np.mean(pred_i == obs_i))
                 post_eq = float(_np.mean(post_i == obs_i))
@@ -1072,7 +1253,7 @@ def agent_worker(
 
                 if U_n > 0:
                     prior_eq_U = float(_np.mean((pred_i[U] == obs_i[U])))
-                    prior_mae_U = float(_np.mean(_np.abs(x_prior[U] - obs[U])))
+                    prior_mae_U = float(_np.mean(_np.abs(x_prior_eval[U] - obs_eval[U])))
                 else:
                     prior_eq_U = 1.0
                     prior_mae_U = 0.0
@@ -1095,7 +1276,7 @@ def agent_worker(
                 # Weighted MAE that down-weights empty/empty matches.
                 # Empty weight fixed to 0.01 here (move to cfg later if desired).
                 w = _np.where(U, 1.0, 0.01).astype(_np.float32, copy=False)
-                w_mae = float(_np.sum(w * _np.abs(x_prior - obs)) / max(1e-12, float(_np.sum(w))))
+                w_mae = float(_np.sum(w * _np.abs(x_prior_eval - obs_eval)) / max(1e-12, float(_np.sum(w))))
 
                 last_trace["prior_obs_mae"] = prior_mae_full
                 last_trace["posterior_obs_mae"] = post_mae_full
@@ -1129,19 +1310,48 @@ def agent_worker(
 
             status_bytes = status_plain.encode("utf-8")[:status_max]
 
-            _atomic_write_out(
-                shm_out_w.buf,
-                seq=int(in_seq),
-                agent_t=int(getattr(st, "t_w", getattr(st, "t", 0))),
-                env_t=int(env_tick),
-                last_sig64=int(getattr(st, "last_sig64", 0) or 0),
-                x_prior_f32=x_prior,
-                x_post_f32=x_post,
-                x_forecast_f32=forecast,
-                status_bytes=status_bytes,
-                out_hdr=out_hdr,
-                status_max=status_max,
-            )
+            if use_queue:
+                payload = (
+                    int(in_seq),
+                    int(getattr(st, "t_w", getattr(st, "t", 0))),
+                    int(env_tick),
+                    int(getattr(st, "last_sig64", 0) or 0),
+                    x_prior.copy(),
+                    x_post.copy(),
+                    forecast_t2.copy(),
+                    status_plain,
+                )
+                if out_queue is not None:
+                    try:
+                        out_queue.put_nowait(payload)
+                    except Exception:
+                        try:
+                            out_queue.get_nowait()
+                        except Exception:
+                            pass
+                        try:
+                            out_queue.put_nowait(payload)
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        conn.send({"cmd": "out", "data": payload})
+                    except Exception:
+                        pass
+            else:
+                _atomic_write_out(
+                    shm_out_w.buf,
+                    seq=int(in_seq),
+                    agent_t=int(getattr(st, "t_w", getattr(st, "t", 0))),
+                    env_t=int(env_tick),
+                    last_sig64=int(getattr(st, "last_sig64", 0) or 0),
+                    x_prior_f32=x_prior,
+                    x_post_f32=x_post,
+                    x_forecast_f32=forecast_t2,
+                    status_bytes=status_bytes,
+                    out_hdr=out_hdr,
+                    status_max=status_max,
+                )
 
             _time.sleep(0.001)
 
@@ -1171,6 +1381,8 @@ def main() -> None:
     parser.add_argument("--state-path", type=str, default=STATE_PATH)
     parser.add_argument("--autosave-every-s", type=float, default=30.0)
     parser.add_argument("--periph-ring", type=int, default=4)
+    parser.add_argument("--periph-bins", type=int, default=2)
+    parser.add_argument("--periph-routing-weight", type=float, default=0.5)
     parser.add_argument("--grid-size", type=int, default=20)
     args = parser.parse_args()
 
@@ -1179,7 +1391,11 @@ def main() -> None:
     from nupca3.config import default_config
 
     side = int(args.grid_size)
-    D = side * side
+    base_dim = side * side
+    periph_bins = max(0, int(args.periph_bins))
+    periph_channels = 1
+    periph_blocks = (periph_bins * periph_bins * periph_channels) if periph_bins > 0 else 0
+    D = base_dim + periph_blocks
 
     state_path = str(args.state_path)
     periph_ring = int(args.periph_ring)
@@ -1187,11 +1403,28 @@ def main() -> None:
     # Clear out any leaked shared memory segments from prior runs.
     _cleanup_stale_shm()
 
-    perm, inv_perm = build_periphery_permutation(side=side, ring=periph_ring)
+    perm = np.arange(D, dtype=np.int32)
 
     loaded = False
     cfg = default_config()
-    cfg = dc_replace(cfg, D=D, B=D, grid_width=side, grid_height=side, grid_channels=1, fovea_blocks_per_step=D)
+    fovea_budget = max(4, min(D // 8, 64))
+    periph_routing_weight = float(args.periph_routing_weight) if periph_blocks > 0 else 0.0
+    cfg = dc_replace(
+        cfg,
+        D=D,
+        B=D,
+        grid_width=side,
+        grid_height=side,
+        grid_channels=1,
+        grid_base_dim=base_dim,
+        periph_bins=periph_bins,
+        periph_blocks=periph_blocks,
+        periph_channels=periph_channels,
+        fovea_routing_weight=periph_routing_weight,
+        tau_E_edit=-1e-6,
+        fovea_blocks_per_step=fovea_budget,
+        F_max=fovea_budget,
+    )
     cfg.validate()
 
     state_t_w_loaded = 0
@@ -1199,12 +1432,29 @@ def main() -> None:
         try:
             cfg_loaded, _lib_loaded, perm_loaded, ring_loaded, npz_loaded = load_nupca5_state_npz(state_path)
             if int(cfg_loaded.D) == D and int(cfg_loaded.B) == D:
-                cfg = cfg_loaded
-                perm = perm_loaded.astype(np.int32, copy=False)
-                inv_perm = np.argsort(perm)
-                periph_ring = int(ring_loaded)
-                loaded = True
-                state_t_w_loaded = int(np.asarray(npz_loaded.get("t_w", npz_loaded.get("t", np.array([0], dtype=np.int64)))).reshape(-1)[0])
+                perm_loaded = np.asarray(perm_loaded, dtype=np.int32).reshape(-1)
+                expected = np.arange(D, dtype=np.int32)
+                if perm_loaded.size == expected.size and np.array_equal(perm_loaded, expected):
+                    cfg = dc_replace(
+                        cfg_loaded,
+                        grid_width=side,
+                        grid_height=side,
+                        grid_channels=1,
+                        grid_base_dim=base_dim,
+                        periph_bins=periph_bins,
+                        periph_blocks=periph_blocks,
+                        periph_channels=periph_channels,
+                        fovea_routing_weight=periph_routing_weight,
+                        tau_E_edit=-1e-6,
+                        fovea_blocks_per_step=fovea_budget,
+                        F_max=fovea_budget,
+                    )
+                    perm = expected
+                    periph_ring = int(ring_loaded)
+                    loaded = True
+                    state_t_w_loaded = int(np.asarray(npz_loaded.get("t_w", npz_loaded.get("t", np.array([0], dtype=np.int64)))).reshape(-1)[0])
+                else:
+                    print(f"State load skipped ({state_path}): stored permutation mismatches identity (len={perm_loaded.size}, expected={expected.size})")
         except Exception as e:
             print(f"State load failed ({state_path}): {e}")
     world = GridWorld(grid_size=side, occlusion_width=max(1, side // 5))
@@ -1218,29 +1468,77 @@ def main() -> None:
     STATUS_MAX = 4096
     OUT_ARRAY_BYTES = OBS_BYTES * 3
 
-    shm_in = SharedMemory(create=True, size=IN_HDR + OBS_BYTES, name=None)
-    shm_out = SharedMemory(create=True, size=OUT_HDR + OUT_ARRAY_BYTES + 4 + STATUS_MAX, name=None)
-    shm_in.buf[:] = b"\x00" * (IN_HDR + OBS_BYTES)
-    shm_out.buf[:] = b"\x00" * (OUT_HDR + OUT_ARRAY_BYTES + 4 + STATUS_MAX)
+    use_shm = True
+    shm_in = None
+    shm_out = None
+    try:
+        shm_in = SharedMemory(create=True, size=IN_HDR + OBS_BYTES, name=None)
+        shm_out = SharedMemory(create=True, size=OUT_HDR + OUT_ARRAY_BYTES + 4 + STATUS_MAX, name=None)
+        shm_in.buf[:] = b"\x00" * (IN_HDR + OBS_BYTES)
+        shm_out.buf[:] = b"\x00" * (OUT_HDR + OUT_ARRAY_BYTES + 4 + STATUS_MAX)
+    except PermissionError:
+        use_shm = False
+        shm_in = None
+        shm_out = None
 
+    proc = None
+    parent_conn = None
+    child_conn = None
+    obs_queue = None
+    out_queue = None
     ctx = mp.get_context("spawn")
     parent_conn, child_conn = ctx.Pipe(duplex=True)
 
     cfg_json = json.dumps(asdict(cfg), sort_keys=True)
 
-    proc = ctx.Process(
-        target=agent_worker,
-        args=(shm_in.name, shm_out.name, child_conn, cfg_json, state_path, perm.copy(), periph_ring, loaded),
-        kwargs=dict(obs_n=OBS_N, in_hdr=IN_HDR, out_hdr=OUT_HDR, status_max=STATUS_MAX),
-        daemon=True,
-    )
+    if use_shm:
+        proc = ctx.Process(
+            target=agent_worker,
+            args=(shm_in.name, shm_out.name, child_conn, cfg_json, state_path, perm.copy(), periph_ring, loaded),
+            kwargs=dict(obs_n=OBS_N, in_hdr=IN_HDR, out_hdr=OUT_HDR, status_max=STATUS_MAX, use_queue=False, in_queue=None, out_queue=None),
+            daemon=True,
+        )
+    else:
+        proc = ctx.Process(
+            target=agent_worker,
+            args=(None, None, child_conn, cfg_json, state_path, perm.copy(), periph_ring, loaded),
+            kwargs=dict(obs_n=OBS_N, in_hdr=IN_HDR, out_hdr=OUT_HDR, status_max=STATUS_MAX, use_queue=True, in_queue=None, out_queue=None),
+            daemon=True,
+        )
     proc.start()
+
+    def _send_obs(seq: int, env_t: int, obs_flat: np.ndarray) -> None:
+        if use_shm:
+            _atomic_write_in(shm_in.buf, seq=seq, env_t=env_t, obs_f32=obs_flat, in_hdr=IN_HDR)
+            return
+        if parent_conn is None:
+            return
+        try:
+            parent_conn.send(
+                {
+                    "cmd": "obs",
+                    "data": (int(seq), int(env_t), np.asarray(obs_flat, dtype=np.float32).copy()),
+                }
+            )
+        except Exception:
+            pass
+
+    def _try_read_out(last_seq: int):
+        if use_shm:
+            return _atomic_try_read_out(
+                shm_out.buf,
+                last_seq=last_seq,
+                obs_n=OBS_N,
+                out_hdr=OUT_HDR,
+                status_max=STATUS_MAX,
+            )
+        return None
 
     env_seq = world.t
     last_out_seq = 0
-    x_prior_perm = np.zeros(D, dtype=np.float32)
-    x_post_perm = np.zeros(D, dtype=np.float32)
-    x_forecast_perm = np.zeros(D, dtype=np.float32)
+    x_prior = np.zeros(D, dtype=np.float32)
+    x_post = np.zeros(D, dtype=np.float32)
+    x_forecast = np.zeros(D, dtype=np.float32)
     status_plain = ""
     env_history: Dict[int, np.ndarray] = {}
     env_history_order: List[int] = []
@@ -1249,6 +1547,7 @@ def main() -> None:
     last_proc_env_t = 0
     last_sig64 = 0
     worker_err: Optional[str] = None
+    pending_out = None
 
     autosave_every_s = float(args.autosave_every_s)
     last_autosave_wall = time.time()
@@ -1266,50 +1565,60 @@ def main() -> None:
     try:
         with KeyPoller() as kp, Live(layout, console=console, refresh_per_second=30, screen=True):
             while True:
+                while parent_conn.poll():
+                    msg = parent_conn.recv()
+                    if isinstance(msg, dict):
+                        cmd = msg.get("cmd")
+                        if cmd == "error":
+                            worker_err = str(msg.get("err", "agent worker error"))
+                            trace_s = msg.get("trace", "")
+                            raise RuntimeError(f"agent worker error: {worker_err}\n{trace_s}")
+                        if cmd == "out":
+                            pending_out = msg.get("data")
+                            continue
+                    # ignore other control replies (save/reset/quit)
+
                 if not proc.is_alive():
                     err_msg = "agent worker died"
                     if worker_err:
                         err_msg += f" (last error: {worker_err})"
+                    exit_code = proc.exitcode
+                    if exit_code is not None:
+                        err_msg += f" (exitcode={exit_code})"
                     raise RuntimeError(err_msg)
 
                 world.update()
                 env_grid = world.get_current_grid()
                 env_flat = env_grid.reshape(-1).astype(np.float32, copy=False)
-                env_flat_perm = env_flat[perm]
+                if periph_blocks > 0:
+                    periph_vec = encode_peripheral_bins(env_grid, bins=periph_bins).astype(np.float32, copy=False)
+                    if periph_vec.size != periph_blocks:
+                        periph_vec = np.resize(periph_vec, (periph_blocks,)).astype(np.float32, copy=False)
+                    obs_flat = np.concatenate([env_flat, periph_vec]).astype(np.float32, copy=False)
+                else:
+                    obs_flat = env_flat
 
                 env_seq += 1
-                env_show = env_flat_perm[inv_perm].reshape(side, side).astype(np.int32, copy=False)
+                env_show = env_grid.astype(np.int32, copy=False)
                 env_history[env_seq] = env_show.copy()
                 env_history_order.append(env_seq)
                 if len(env_history_order) > ENV_HISTORY_LIMIT:
                     old_seq = env_history_order.pop(0)
                     env_history.pop(old_seq, None)
 
-                _atomic_write_in(shm_in.buf, seq=env_seq, env_t=env_seq, obs_f32=env_flat_perm, in_hdr=IN_HDR)
+                _send_obs(seq=env_seq, env_t=env_seq, obs_flat=obs_flat)
 
-                while parent_conn.poll():
-                    msg = parent_conn.recv()
-                    if isinstance(msg, dict) and msg.get("cmd") == "error":
-                        worker_err = str(msg.get("err", "agent worker error"))
-                        trace_s = msg.get("trace", "")
-                        raise RuntimeError(f"agent worker error: {worker_err}\n{trace_s}")
-                    # ignore other control replies (save/reset/quit)
-
-                out = _atomic_try_read_out(
-                    shm_out.buf,
-                    last_seq=last_out_seq,
-                    obs_n=OBS_N,
-                    out_hdr=OUT_HDR,
-                    status_max=STATUS_MAX,
-                )
+                out = _try_read_out(last_out_seq) if use_shm else pending_out
+                if not use_shm:
+                    pending_out = None
                 if out is not None:
-                    out_seq, _agent_t, _proc_env_t, _last_sig, x_prior_perm, x_post_perm, x_forecast_perm, status_plain = out
+                    out_seq, _agent_t, _proc_env_t, _last_sig, x_prior, x_post, x_forecast, status_plain = out
                     last_out_seq = int(out_seq)
                     last_agent_t = int(_agent_t)
                     last_proc_env_t = int(_proc_env_t)
                     last_sig64 = int(_last_sig)
-                    target_env_t = int(_proc_env_t) + 1
-                    forecast_cache[target_env_t] = (int(_proc_env_t), x_forecast_perm.copy())
+                    target_env_t = int(_proc_env_t) + 2
+                    forecast_cache[target_env_t] = (int(_proc_env_t), x_forecast.copy())
                     # Keep cache bounded roughly with env history.
                     while len(forecast_cache) > ENV_HISTORY_LIMIT:
                         oldest_key = min(forecast_cache.keys())
@@ -1317,12 +1626,12 @@ def main() -> None:
 
                 display_env_t = last_proc_env_t if last_proc_env_t > 0 else env_seq
                 display_env = env_history.get(display_env_t, env_show)
-                pred_show = x_prior_perm[inv_perm].reshape(side, side)
-                forecast_entry = forecast_cache.get(display_env_t)
+                pred_show = x_prior[:base_dim].reshape(side, side)
+                forecast_entry = forecast_cache.get(display_env_t + 2)
                 if forecast_entry is None:
-                    forecast_entry = (-1, np.zeros_like(x_forecast_perm))
-                predicted_from_t, forecast_perm = forecast_entry
-                forecast_show = forecast_perm[inv_perm].reshape(side, side)
+                    forecast_entry = (-1, np.zeros_like(x_forecast))
+                predicted_from_t, forecast_arr = forecast_entry
+                forecast_show = forecast_arr[:base_dim].reshape(side, side)
                 pred_int = np.rint(np.clip(pred_show, 0, 4)).astype(np.int32)
                 forecast_int = np.rint(np.clip(forecast_show, 0, 4)).astype(np.int32)
 
@@ -1351,9 +1660,9 @@ def main() -> None:
                 env_title = f"ENV t={display_env_t} (world {world.t})"
                 pred_title = f"PRIOR t={last_agent_t or '?'} env={last_proc_env_t or '?'}"
                 if predicted_from_t >= 0:
-                    predf_title = f"FORECAST for t={display_env_t} (made at t={predicted_from_t})"
+                    predf_title = f"FORECAST for t={display_env_t + 2} (made at t={predicted_from_t})"
                 else:
-                    predf_title = f"FORECAST for t={display_env_t}"
+                    predf_title = f"FORECAST for t={display_env_t + 2}"
                 diff_title = f"DIFF env t={display_env_t}"
 
                 layout["top"]["env"].update(Panel(env_text, title=env_title, padding=(0, 0), box=box.SQUARE))

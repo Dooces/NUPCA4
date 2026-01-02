@@ -18,7 +18,8 @@ def make_cfg() -> AgentConfig:
         periph_bins=2,
         periph_blocks=1,
         periph_channels=1,
-        grid_side=8,
+        grid_width=8,
+        grid_height=8,
         grid_channels=1,
         grid_base_dim=64,
     )
@@ -29,11 +30,11 @@ def test_up_down_project_match_bins() -> None:
     base_dim = int(cfg.D) - (cfg.periph_blocks * (cfg.D // cfg.B))
     state_vec = np.zeros(cfg.D, dtype=float)
     bins = cfg.periph_bins
-    tile_w = max(1, cfg.grid_side // bins)
-    tile_h = max(1, cfg.grid_side // bins)
-    for cell in range(cfg.grid_side * cfg.grid_side):
-        y = cell // cfg.grid_side
-        x = cell % cfg.grid_side
+    tile_w = max(1, cfg.grid_width // bins)
+    tile_h = max(1, cfg.grid_height // bins)
+    for cell in range(cfg.grid_width * cfg.grid_height):
+        y = cell // cfg.grid_width
+        x = cell % cfg.grid_width
         bin_x = min(bins - 1, x // tile_w)
         bin_y = min(bins - 1, y // tile_h)
         state_vec[cell] = float(bin_y * bins + bin_x + 1)
@@ -45,9 +46,9 @@ def test_up_down_project_match_bins() -> None:
 
     fine_replica = down_project(coarse, cfg)
     assert fine_replica.size == base_dim
-    for cell in range(cfg.grid_side * cfg.grid_side):
-        y = cell // cfg.grid_side
-        x = cell % cfg.grid_side
+    for cell in range(cfg.grid_width * cfg.grid_height):
+        y = cell // cfg.grid_width
+        x = cell % cfg.grid_width
         bin_x = min(bins - 1, x // tile_w)
         bin_y = min(bins - 1, y // tile_h)
         expected = float(bin_y * bins + bin_x + 1)
@@ -65,15 +66,15 @@ def test_transport_shift_and_apply() -> None:
     assert shift[0] != 0 or shift[1] != 0
 
     transported = apply_transport(vec, shift, cfg)
-    assert not np.allclose(transported[: cfg.grid_side * cfg.grid_channels], vec[: cfg.grid_side * cfg.grid_channels])
+    assert not np.allclose(transported[: cfg.grid_width * cfg.grid_height * cfg.grid_channels], vec[: cfg.grid_width * cfg.grid_height * cfg.grid_channels])
 
 
 def test_apply_transport_rotation() -> None:
     cfg = make_cfg()
     vec = np.arange(cfg.D, dtype=float)
     rotated = apply_transport(vec, (0, 0), cfg, rotation=1)
-    base_size = cfg.grid_side * cfg.grid_side * cfg.grid_channels
-    grid = vec[:base_size].reshape(cfg.grid_side, cfg.grid_side, cfg.grid_channels)
+    base_size = cfg.grid_width * cfg.grid_height * cfg.grid_channels
+    grid = vec[:base_size].reshape(cfg.grid_height, cfg.grid_width, cfg.grid_channels)
     expected = np.rot90(grid, k=1, axes=(0, 1)).reshape(-1)
     assert np.allclose(rotated[: base_size], expected)
     assert np.allclose(rotated[base_size:], vec[base_size:])

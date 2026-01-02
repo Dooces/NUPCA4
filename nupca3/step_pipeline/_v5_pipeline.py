@@ -32,7 +32,7 @@ from ..memory.completion import complete
 from ..memory.expert import sgd_update
 from ..memory.fusion import fuse_predictions
 from ..memory.rollout import rollout_and_confidence
-from ..memory.sig64 import Sig64Meta, compute_sig64_from_obs
+from ..memory.sig64 import compute_sig64_from_blocks
 from ..memory.salience import (
     SalienceResult,
     compute_activations,
@@ -336,8 +336,7 @@ def _update_coverage_debts_bounded(state: AgentState, cfg: AgentConfig, tracked_
         return
 
     # Bound the amount of bookkeeping we maintain.
-    cap = int(getattr(cfg, "coverage_debt_cap", getattr(cfg, "salience_max_candidates", getattr(cfg, "max_candidates", 256))))
-    cap = max(32, cap)
+    cap = max(32, int(cfg.coverage_debt_cap))
 
     active_set = {int(n) for n in getattr(state, "active_set", set()) or set()}
     tracked = {int(n) for n in (tracked_ids or set())}
@@ -371,7 +370,7 @@ def _update_coverage_debts_bounded(state: AgentState, cfg: AgentConfig, tracked_
             node_levels[nid] = int(infer_node_band_level(node, cfg))
 
     # Expert debts: increment for tracked-but-inactive, reset for active.
-    debt_max = int(getattr(cfg, "coverage_debt_max", 10_000))
+    debt_max = int(cfg.coverage_debt_max)
     debt_max = max(1, debt_max)
     for nid in tracked:
         if nid in active_set:
@@ -383,10 +382,7 @@ def _update_coverage_debts_bounded(state: AgentState, cfg: AgentConfig, tracked_
     # Optional innovation discount, applied only to tracked nodes (fixed cost).
     innovation_weight = float(getattr(cfg, "fovea_innovation_weight", 0.0))
     if innovation_weight > 0.0:
-        innovation = np.asarray(
-            getattr(state.fovea, "block_innovation", np.zeros(int(getattr(cfg, "B", 0)) or 0)),
-            dtype=float,
-        ).reshape(-1)
+        innovation = np.asarray(state.fovea.block_innovation, dtype=float).reshape(-1)
         if innovation.size:
             for nid in tracked:
                 if nid in active_set:
@@ -394,7 +390,7 @@ def _update_coverage_debts_bounded(state: AgentState, cfg: AgentConfig, tracked_
                 node = nodes.get(nid)
                 if node is None:
                     continue
-                phi = int(getattr(node, "footprint", getattr(node, "block_id", -1)))
+                phi = int(getattr(node, "footprint", -1))
                 if 0 <= phi < innovation.size and float(innovation[phi]) > 0.0:
                     expert_debt[nid] = max(0, int(expert_debt.get(nid, 0)) - 1)
 
@@ -645,10 +641,14 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             vals = full_arr[periph_idx]
             occ = (vals > 0.0).astype(np.uint8)
             if O_req:
-                # Zero any periphery dims that are currently in the requested observation set.
-                # (Avoids fovea leakage into the periphery gist.)
+                # Avoid fovea leakage into the periphery gist: if the periphery region
+                # overlaps the fine grid (misconfigured base_dim/periph sizing), exclude
+                # any *fine* dims that are currently requested.
+                base_dim = int(getattr(cfg, "grid_base_dim", 0) or D)
+                base_dim = max(0, min(base_dim, D))
                 for k, dim in enumerate(periph_idx):
-                    if int(dim) in O_req:
+                    dd = int(dim)
+                    if dd in O_req and dd < base_dim:
                         occ[k] = 0
             P = int(occ.size)
             bins = min(gist_bins, P)
@@ -657,25 +657,39 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
             padded[:P] = occ
             pooled = padded.reshape(bins, chunk).max(axis=1)
             gist_u8 = (pooled * np.uint8(255)).astype(np.uint8)
-    prev_counts = getattr(state, "sig_prev_counts", None)
-    prev_hist = getattr(state, "sig_prev_hist", None)
-    prev_meta = None
-    if prev_counts is not None and prev_hist is not None:
-        pc = np.asarray(prev_counts, dtype=np.int16).reshape(-1)
-        ph = np.asarray(prev_hist, dtype=np.uint16).reshape(-1)
-        if pc.size and ph.size:
-            prev_meta = Sig64Meta(counts=pc, hist=ph)
-    sig64_t, meta_t = compute_sig64_from_obs(
-        obs_vals,
-        gist_u8,
-        prev_meta=prev_meta,
-        value_bins=int(cfg.sig_value_bins),
-        vmax=float(cfg.sig_vmax),
-        seed=int(cfg.sig_seed),
+    # Block-masked metadata per A4.3′.1 (closed schema).
+    block_counts: dict[int, int] = {}
+    blocks_def = getattr(state, "blocks", []) or []
+    if obs_idx.size and blocks_def:
+        dim_to_block: dict[int, int] = {}
+        for b, dims in enumerate(blocks_def):
+            for d in dims:
+                dim_to_block[int(d)] = int(b)
+        for dim in obs_idx.tolist():
+            b = dim_to_block.get(int(dim))
+            if b is None or b < 0:
+                continue
+            block_counts[b] = int(block_counts.get(b, 0)) + 1
+
+    B_blocks = max(0, int(getattr(cfg, "B_max", 0)) or int(getattr(cfg, "B", 0)))
+    F_max = max(
+        1,
+        int(getattr(cfg, "F_max", 0))
+        or int(getattr(cfg, "fovea_blocks_per_step", 1)),
+    )
+    anchor_blocks = getattr(cfg, "contemplate_anchor_blocks", ())
+
+    sig64_t, meta_t = compute_sig64_from_blocks(
+        block_counts,
+        B=B_blocks,
+        F_max=F_max,
+        anchor_blocks=anchor_blocks,
+        gist_u8_t=gist_u8,
+        seed=int(getattr(cfg, "sig_seed", 0)),
     )
     state.last_sig64 = int(sig64_t)
-    state.sig_prev_counts = np.asarray(meta_t.counts, dtype=np.int16).copy()
-    state.sig_prev_hist = np.asarray(meta_t.hist, dtype=np.uint16).copy()
+    state.sig_prev_counts = np.asarray(meta_t.block_counts, dtype=np.int16).copy()
+    state.sig_prev_hist = np.asarray(meta_t.block_mask_bytes, dtype=np.uint16).copy()
 
 
     (
@@ -1077,43 +1091,48 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
 
     # Optional binding/equivariance: select a transform per active node.
     if bool(getattr(cfg, "binding_enabled", False)):
-        side = int(getattr(cfg, "grid_side", 0))
+        grid_w = int(getattr(cfg, "grid_width", 0))
+        grid_h = int(getattr(cfg, "grid_height", 0))
         channels = int(getattr(cfg, "grid_channels", 0))
         base_dim = int(getattr(cfg, "grid_base_dim", 0) or D)
-        if side > 0 and channels > 0:
-            cache = getattr(state, "_binding_cache", {})
-            cache_key = (side, channels, base_dim, int(getattr(cfg, "binding_shift_radius", 1)), bool(getattr(cfg, "binding_rotations", True)))
-            maps = cache.get(cache_key)
-            if maps is None:
-                rots = [0, 90, 180, 270] if bool(getattr(cfg, "binding_rotations", True)) else [0]
-                maps = build_binding_maps(
-                    D=D,
-                    side=side,
-                    channels=channels,
-                    base_dim=base_dim,
-                    shift_radius=int(getattr(cfg, "binding_shift_radius", 1)),
-                    rotations=rots,
-                )
-                cache[cache_key] = maps
-                state._binding_cache = cache
-            observed_dims = set(state.buffer.observed_dims)
-            for nid in state.active_set:
-                node = state.library.nodes.get(int(nid))
-                if node is None:
-                    continue
-                binding = select_best_binding_by_fit(
-                    mask=getattr(node, "mask", None),
-                    W=getattr(node, "W", np.zeros((D, D))),
-                    b=getattr(node, "b", np.zeros(D)),
-                    input_mask=getattr(node, "input_mask", None),
-                    x_prev=x_prev,
-                    cue_t=cue_t,
-                    maps=maps,
-                )
-                if binding is None:
-                    binding = select_best_binding(mask=getattr(node, "mask", None), observed_dims=observed_dims, maps=maps)
-                if binding is not None:
-                    setattr(node, "binding_map", binding)
+        if grid_w <= 0 or grid_h <= 0 or channels <= 0:
+            raise RuntimeError("binding_enabled requires grid_width/grid_height/grid_channels metadata")
+        if grid_w != grid_h:
+            raise RuntimeError("binding_enabled requires a square grid (grid_width == grid_height)")
+        side = grid_w
+        cache = getattr(state, "_binding_cache", {})
+        cache_key = (side, channels, base_dim, int(getattr(cfg, "binding_shift_radius", 1)), bool(getattr(cfg, "binding_rotations", True)))
+        maps = cache.get(cache_key)
+        if maps is None:
+            rots = [0, 90, 180, 270] if bool(getattr(cfg, "binding_rotations", True)) else [0]
+            maps = build_binding_maps(
+                D=D,
+                side=side,
+                channels=channels,
+                base_dim=base_dim,
+                shift_radius=int(getattr(cfg, "binding_shift_radius", 1)),
+                rotations=rots,
+            )
+            cache[cache_key] = maps
+            state._binding_cache = cache
+        observed_dims = set(state.buffer.observed_dims)
+        for nid in state.active_set:
+            node = state.library.nodes.get(int(nid))
+            if node is None:
+                continue
+            binding = select_best_binding_by_fit(
+                mask=getattr(node, "mask", None),
+                W=getattr(node, "W", np.zeros((D, D))),
+                b=getattr(node, "b", np.zeros(D)),
+                input_mask=getattr(node, "input_mask", None),
+                x_prev=x_prev,
+                cue_t=cue_t,
+                maps=maps,
+            )
+            if binding is None:
+                binding = select_best_binding(mask=getattr(node, "mask", None), observed_dims=observed_dims, maps=maps)
+            if binding is not None:
+                setattr(node, "binding_map", binding)
 
     # -------------------------------------------------------------------------
     # A5/A12 activity logging for structural proposals
@@ -1447,12 +1466,12 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         sigma_global_diag=sigma_prior_diag,
         L_eff=L_eff,
         H_d=H_d,
-        sigma_floor=float(getattr(cfg, "sigma_floor_diag", 1e-2)),
+        sigma_floor=float(cfg.sigma_floor_diag),
     )
     _dbg('A17 compute_feel_proxy', state=state)
 
     # Arousal uses pred_error magnitude proxy; use q_res (A17.1) as a scalar proxy.
-    arousal_prev = float(getattr(state, "arousal_prev", getattr(state, "arousal", 0.0)))
+    arousal_prev = float(getattr(state, "arousal_prev"))
     s_inst, s_ar = compute_arousal(
         arousal_prev=arousal_prev,
         margins=margins_t,
@@ -1467,11 +1486,11 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     baselines_t = commit_tilde_prev(baselines_t, tilde=tilde)
     mE, mD, mL, mC, mS = [float(x) for x in tilde]
     dE, dD, dL, dC, dS = [float(x) for x in delta_tilde]
-    w_L = float(getattr(cfg, "w_L", getattr(cfg, "w_L_ar", 1.0)))
-    w_C = float(getattr(cfg, "w_C", getattr(cfg, "w_C_ar", 1.0)))
-    w_S = float(getattr(cfg, "w_S", getattr(cfg, "w_S_ar", 1.0)))
-    w_delta = float(getattr(cfg, "w_delta", getattr(cfg, "w_delta_ar", 1.0)))
-    w_E = float(getattr(cfg, "w_E", getattr(cfg, "w_E_ar", 0.0)))
+    w_L = float(cfg.w_L)
+    w_C = float(cfg.w_C)
+    w_S = float(cfg.w_S)
+    w_delta = float(cfg.w_delta)
+    w_E = float(cfg.w_E)
     term_L = w_L * abs(mL)
     term_C = w_C * abs(mC)
     term_S = w_S * abs(mS)
@@ -1909,7 +1928,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     trace_cache_blocks = int(cache.block_count if cache is not None else 0)
     trace_cache_mass = int(cache.cue_mass if cache is not None else 0)
 
-    library_nodes = getattr(getattr(state, "library", None), "nodes", {})
+    library_nodes = state.library.nodes
     library_size = int(len(library_nodes))
     trace_dict = asdict(trace)
     # Extra diagnostics (dict-only; does not affect StepTrace typing)

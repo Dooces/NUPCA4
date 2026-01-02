@@ -330,7 +330,7 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
         )
 
         state = AgentState(
-            t_w=int(st.get("t_w", int(st.get("t", 0)))),
+            t_w=int(st["t_w"]),
             k_op=int(st.get("k_op", 0)),
             wall_ms=int(st.get("wall_ms", 0)),
             E=float(st["E"]),

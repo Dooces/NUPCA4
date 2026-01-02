@@ -160,24 +160,25 @@ def _logsumexp(values: Iterable[float]) -> float:
 
 def _grid_occupancy_mask(vec: np.ndarray, cfg: AgentConfig) -> np.ndarray:
     """Return boolean occupancy mask per cell derived from a fine-grained state vector."""
-    side = max(0, int(getattr(cfg, "grid_side", 0)))
-    if side <= 0:
+    grid_w = int(getattr(cfg, "grid_width", 0))
+    grid_h = int(getattr(cfg, "grid_height", 0))
+    if grid_w <= 0 or grid_h <= 0:
         return np.zeros(0, dtype=bool)
-    cell_count = side * side
+    cell_count = grid_w * grid_h
     if cell_count <= 0:
         return np.zeros(0, dtype=bool)
-    channels = max(1, int(getattr(cfg, "grid_channels", 1)))
+    channels = max(1, int(cfg.grid_channels))
     arr = np.asarray(vec, dtype=float).reshape(-1)
-    base_dim = max(0, int(getattr(cfg, "grid_base_dim", 0)))
+    base_dim = max(0, int(cfg.grid_base_dim))
     if base_dim <= 0:
-        base_dim = int(getattr(cfg, "D", 0))
+        base_dim = int(cfg.D)
     needed = cell_count * channels
     data = np.zeros(needed, dtype=float)
     copy_len = min(needed, arr.size, base_dim)
     if copy_len > 0:
         data[:copy_len] = arr[:copy_len]
-    data = data.reshape(cell_count, channels)
-    return np.any(np.abs(data) > 1e-6, axis=1)
+    data = data.reshape(grid_h, grid_w, channels)
+    return np.any(np.abs(data) > 1e-6, axis=2).reshape(-1)
 
 
 def _select_transport_delta(
@@ -325,39 +326,23 @@ def _select_transport_delta(
     null_evidence = (not best_informative) or (score_margin < evidence_margin)
 
     if null_evidence:
-        updated_beliefs = {delta: 0.0 for delta in updated_beliefs}
+        # Keep a deterministic placeholder belief on the zero shift to avoid empty belief errors.
+        updated_beliefs = {(0, 0): 0.0}
     state.transport_beliefs = updated_beliefs
 
     if not updated_beliefs:
-        default = TransportCandidate(delta=(0, 0), shifted=x_prev.copy(), mae=float("inf"), overlap=0, score=_TRANSPORT_UNINFORMATIVE_SCORE)
-        return (
-            (0, 0),
-            x_prev.copy(),
-            default,
-            None,
-            float("inf"),
-            0.0,
-            0.0,
-            "fallback",
-            [default],
-            bool(null_evidence),
-            0.0,
-            float(score_spread),
-            bool(tie_flag),
-            int(default.overlap),
-        )
+        updated_beliefs = {(0, 0): 0.0}
+        state.transport_beliefs = updated_beliefs
 
     log_z = _logsumexp(updated_beliefs.values())
     probs: Dict[Tuple[int, int], float] = {}
     if math.isinf(log_z):
-        uniform = 1.0 / float(len(updated_beliefs))
-        probs = {delta: uniform for delta in updated_beliefs}
-    else:
-        for delta, score in updated_beliefs.items():
-            probs[delta] = math.exp(score - log_z)
+        raise RuntimeError("invalid transport belief normalization")
+    for delta, score in updated_beliefs.items():
+        probs[delta] = math.exp(score - log_z)
 
     if not probs:
-        probs = {(0, 0): 1.0}
+        raise RuntimeError("empty transport probabilities")
 
     posterior_entropy = 0.0
     for p in probs.values():
@@ -465,7 +450,7 @@ def _apply_pending_transport_disagreement(
         state.transport_disagreement_scores = {}
         state.transport_disagreement_margin = float("inf")
         return np.asarray(
-            getattr(state.fovea, "routing_scores", np.zeros(int(getattr(cfg, "B", 0)))),
+            state.fovea.routing_scores,
             dtype=float,
         )
 
@@ -476,7 +461,7 @@ def _apply_pending_transport_disagreement(
         state.transport_disagreement_scores = {}
         state.transport_disagreement_margin = float("inf")
         return np.asarray(
-            getattr(state.fovea, "routing_scores", np.zeros(int(getattr(cfg, "B", 0)))),
+            state.fovea.routing_scores,
             dtype=float,
         )
 

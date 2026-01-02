@@ -180,7 +180,7 @@ def compute_temperature(
         (τ^eff, s^play) tuple
     """
     # Base temperature
-    tau_a = float(getattr(cfg, "tau_a", getattr(cfg, "tau_base", 1.0)))
+    tau_a = float(cfg.tau_a)
     
     # Sharpening gain (focus under need)
     beta_sharp = float(cfg.beta_sharp)
@@ -203,8 +203,8 @@ def compute_temperature(
     tau_eff = (tau_a / max(sharpening, 1e-6)) * opening
     
     # Clamp to configured bounds
-    tau_min = float(getattr(cfg, "tau_min", 0.1))
-    tau_max = float(getattr(cfg, "tau_max", 10.0))
+    tau_min = float(cfg.tau_min)
+    tau_max = float(cfg.tau_max)
     tau_eff = max(tau_min, min(tau_max, tau_eff))
     
     return tau_eff, s_play
@@ -281,12 +281,12 @@ def _gather_salience_block_candidates(
             node = nodes.get(int(nid))
             if node is None:
                 continue
-            block_id = getattr(node, "block_id", getattr(node, "footprint", -1))
+            block_id = getattr(node, "footprint", -1)
             if block_id is None or int(block_id) < 0:
                 continue
             candidate_blocks.add(int(block_id))
 
-    B = int(getattr(cfg, "B", 0))
+    B = int(cfg.B)
     if B > 0:
         valid_blocks = {int(b) for b in candidate_blocks if isinstance(b, (int, np.integer)) and 0 <= int(b) < B}
     else:
@@ -344,7 +344,7 @@ def _prune_salience_history(
     if linger_steps <= 0:
         return set()
     history = getattr(state, "salience_recent_candidates", {}) or {}
-    t_now = int(getattr(state, "t", 0))
+    t_now = int(getattr(state, "t_w", 0))
     valid_ids: Set[int] = set()
     stale: List[int] = []
     for nid, last_seen in history.items():
@@ -371,7 +371,7 @@ def _refresh_salience_history(
     if linger_steps <= 0:
         return
     history = getattr(state, "salience_recent_candidates", {}) or {}
-    t_now = int(getattr(state, "t", 0))
+    t_now = int(getattr(state, "t_w", 0))
     for nid in candidate_ids.union(active_set):
         if nid in nodes:
             history[int(nid)] = t_now
@@ -393,7 +393,7 @@ def _collect_salience_candidate_ids(
             if nid in nodes:
                 candidate_ids.add(int(nid))
 
-    anchors = getattr(getattr(state, "library", None), "anchors", set()) or set()
+    anchors = getattr(state, "library").anchors
     for anchor_id in anchors:
         if anchor_id in nodes:
             candidate_ids.add(int(anchor_id))
@@ -480,7 +480,7 @@ def compute_scores(
     candidate_ids = {nid for nid in candidate_ids if nid in nodes}
     raw_candidate_count = len(candidate_ids)
 
-    max_candidates = int(getattr(cfg, "salience_max_candidates", getattr(cfg, "max_candidates", 256)))
+    max_candidates = int(cfg.salience_max_candidates)
     max_candidates = max(1, max_candidates)
     state.salience_candidate_limit = max_candidates
     state.salience_candidate_count_raw = raw_candidate_count
@@ -518,7 +518,7 @@ def compute_scores(
             max_out_degree = deg
 
     # Current latent estimate
-    x_current = getattr(getattr(state, "buffer", None), "x_last", None)
+    x_current = state.buffer.x_last
 
     # Contextual resources
     context_reg = np.asarray(getattr(state, "context_register", np.zeros(0, dtype=float)), dtype=float).reshape(-1)
@@ -590,7 +590,7 @@ def compute_activations(
         Dict mapping node_id → a_j(t)
     """
     # Activation threshold
-    theta_a = float(getattr(cfg, "theta_a", getattr(cfg, "salience_threshold", 0.5)))
+    theta_a = float(cfg.theta_a)
     
     # Ensure temperature is positive
     tau = max(temperature, 1e-6)
@@ -669,13 +669,12 @@ def get_stress_signals(state: AgentState) -> StressSignals:
     These should be the (t-1) lagged values stored in state.
     """
     return StressSignals(
-        arousal=float(getattr(state, "arousal_prev", getattr(state, "arousal", 0.0))),
-        s_int_need=float(getattr(state, "s_int_need_prev", getattr(state, "s_int_need", 0.0))),
-        s_ext_th=float(getattr(state, "s_ext_th_prev", getattr(state, "s_ext_th", 0.0))),
+        arousal=float(getattr(state, "arousal_prev")),
+        s_int_need=float(getattr(state, "s_int_need_prev")),
+        s_ext_th=float(getattr(state, "s_ext_th_prev")),
     )
 
 
 def bootstrap_scores(state: AgentState, cfg: AgentConfig) -> Dict[int, float]:
     """Compute initial scores for bootstrap on first timestep."""
     return compute_scores(state, cfg, observed_dims=None)
-

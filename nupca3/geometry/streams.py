@@ -9,6 +9,13 @@ import numpy as np
 from ..config import AgentConfig
 
 
+def _grid_dims(cfg: AgentConfig) -> Tuple[int, int, int]:
+    grid_w = int(getattr(cfg, "grid_width", 0))
+    grid_h = int(getattr(cfg, "grid_height", 0))
+    channels = int(getattr(cfg, "grid_channels", 0))
+    return grid_w, grid_h, channels
+
+
 def periph_block_size(cfg: AgentConfig) -> int:
     D = int(getattr(cfg, "D", 0))
     B = max(1, int(getattr(cfg, "B", 0)))
@@ -53,9 +60,10 @@ def up_project(state_vec: np.ndarray, cfg: AgentConfig) -> np.ndarray:
     if bins <= 0 or base_dim <= 0:
         return np.zeros(0, dtype=float)
 
-    grid_side = max(1, int(getattr(cfg, "grid_side", 0)))
-    channels = max(1, int(getattr(cfg, "grid_channels", 1)))
-    cell_count = grid_side * grid_side
+    grid_w, grid_h, channels = _grid_dims(cfg)
+    if grid_w <= 0 or grid_h <= 0 or channels <= 0:
+        return np.zeros(0, dtype=float)
+    cell_count = grid_w * grid_h
     max_cells = min(cell_count, base_dim // channels) if channels > 0 else 0
     if max_cells <= 0:
         return np.zeros(0, dtype=float)
@@ -66,11 +74,11 @@ def up_project(state_vec: np.ndarray, cfg: AgentConfig) -> np.ndarray:
 
     bin_counts = np.zeros(bins * bins, dtype=int)
     bin_mass = np.zeros(bins * bins, dtype=float)
-    tile_w = max(1, grid_side // bins)
-    tile_h = max(1, grid_side // bins)
+    tile_w = max(1, grid_w // bins)
+    tile_h = max(1, grid_h // bins)
     for cell_idx in range(max_cells):
-        y = cell_idx // grid_side
-        x = cell_idx % grid_side
+        y = cell_idx // grid_w
+        x = cell_idx % grid_w
         bin_x = min(bins - 1, x // tile_w)
         bin_y = min(bins - 1, y // tile_h)
         idx = bin_y * bins + bin_x
@@ -89,24 +97,25 @@ def down_project(coarse: np.ndarray, cfg: AgentConfig) -> np.ndarray:
     if bins <= 0 or coarse.size <= 0:
         return np.zeros(0, dtype=float)
 
-    grid_side = max(1, int(getattr(cfg, "grid_side", 0)))
-    channels = max(1, int(getattr(cfg, "grid_channels", 1)))
+    grid_w, grid_h, channels = _grid_dims(cfg)
+    if grid_w <= 0 or grid_h <= 0 or channels <= 0:
+        return np.zeros(0, dtype=float)
     periph_len = bins * bins
     values = coarse.reshape(min(periph_len, coarse.size))
     base_dim = int(getattr(cfg, "D", 0)) - periph_block_size(cfg)
     if base_dim <= 0:
         return np.zeros(0, dtype=float)
 
-    cell_count = grid_side * grid_side
+    cell_count = grid_w * grid_h
     data = np.zeros(cell_count * channels, dtype=float)
-    tile_w = max(1, grid_side // bins)
-    tile_h = max(1, grid_side // bins)
+    tile_w = max(1, grid_w // bins)
+    tile_h = max(1, grid_h // bins)
     value_map = np.zeros(periph_len, dtype=float)
     value_map[: values.size] = values
 
     for cell_idx in range(cell_count):
-        y = cell_idx // grid_side
-        x = cell_idx % grid_side
+        y = cell_idx // grid_w
+        x = cell_idx % grid_w
         bin_x = min(bins - 1, x // tile_w)
         bin_y = min(bins - 1, y // tile_h)
         idx = bin_y * bins + bin_x
@@ -180,16 +189,16 @@ def _rotate_grid_segment(fine_vec: np.ndarray, rotation: int, cfg: AgentConfig) 
     if rotation == 0:
         return fine_vec.copy()
 
-    grid_side = max(0, int(getattr(cfg, "grid_side", 0)))
-    channels = max(1, int(getattr(cfg, "grid_channels", 1)))
+    grid_w, grid_h, channels = _grid_dims(cfg)
     base_dim = int(getattr(cfg, "D", 0)) - periph_block_size(cfg)
-    if grid_side <= 0 or channels <= 0 or base_dim <= 0:
+    if grid_w <= 0 or grid_h <= 0 or channels <= 0 or base_dim <= 0:
         return fine_vec.copy()
 
-    data = np.zeros(grid_side * grid_side * channels, dtype=float)
+    cell_count = grid_w * grid_h
+    data = np.zeros(cell_count * channels, dtype=float)
     length = min(base_dim, data.size)
     data[:length] = fine_vec[:length]
-    grid = data.reshape(grid_side, grid_side, channels)
+    grid = data.reshape(grid_h, grid_w, channels)
     rotated = np.rot90(grid, k=rotation, axes=(0, 1))
     flat = rotated.reshape(-1)
 
@@ -215,17 +224,16 @@ def apply_transport(
     if dx == 0 and dy == 0:
         # Only rotation was applied, no translation required after rotation.
         return rotated_vec
-    grid_side = max(1, int(getattr(cfg, "grid_side", 0)))
-    channels = max(1, int(getattr(cfg, "grid_channels", 1)))
+    grid_w, grid_h, channels = _grid_dims(cfg)
     base_dim = int(getattr(cfg, "D", 0)) - periph_block_size(cfg)
-    if base_dim <= 0:
+    if grid_w <= 0 or grid_h <= 0 or channels <= 0 or base_dim <= 0:
         return fine_vec.copy()
-    cell_count = grid_side * grid_side
+    cell_count = grid_w * grid_h
     data_size = min(cell_count * channels, base_dim)
     data = np.zeros(cell_count * channels, dtype=float)
     data[:data_size] = rotated_vec[:data_size]
     data = data.reshape(cell_count, channels)
-    data = data.reshape(grid_side, grid_side, channels)
+    data = data.reshape(grid_h, grid_w, channels)
     dx_cells = int(dx)
     dy_cells = int(dy)
     if dy_cells != 0:
@@ -241,15 +249,15 @@ def apply_transport(
 
 def grid_cell_mass(state_vec: np.ndarray, cfg: AgentConfig) -> np.ndarray:
     """Compute per-cell aggregate mass from the fine part of the state vector."""
-    grid_side = max(0, int(getattr(cfg, "grid_side", 0)))
-    if grid_side <= 0:
+    grid_w, grid_h, channels = _grid_dims(cfg)
+    if grid_w <= 0 or grid_h <= 0:
         return np.zeros(0, dtype=float)
     base_dim = int(getattr(cfg, "D", 0)) - periph_block_size(cfg)
     base_dim = max(0, base_dim)
     if base_dim <= 0:
-        return np.zeros(grid_side * grid_side, dtype=float)
+        return np.zeros(grid_w * grid_h, dtype=float)
 
-    cell_count = grid_side * grid_side
+    cell_count = grid_w * grid_h
     vec = np.asarray(state_vec, dtype=float).reshape(-1)
 
     def _slice_chunk(data: np.ndarray, start: int, length: int) -> np.ndarray:
@@ -283,7 +291,7 @@ def grid_cell_mass(state_vec: np.ndarray, cfg: AgentConfig) -> np.ndarray:
     if color_channels + shape_channels > 0:
         return mass
 
-    channels = max(1, int(getattr(cfg, "grid_channels", 1)))
+    channels = max(1, channels)
     max_cells = min(cell_count, base_dim // channels if channels > 0 else 0)
     if max_cells <= 0:
         return np.zeros(cell_count, dtype=float)
@@ -358,15 +366,15 @@ def compute_grid_shift(
     """Align two grid mass vectors using bounded translation search."""
     if prev.size == 0 or curr.size == 0:
         return (0, 0)
-    grid_side = max(0, int(getattr(cfg, "grid_side", 0)))
-    if grid_side <= 0:
+    grid_w, grid_h, _channels = _grid_dims(cfg)
+    if grid_w <= 0 or grid_h <= 0:
         return (0, 0)
-    expected_size = grid_side * grid_side
+    expected_size = grid_w * grid_h
     if prev.size != expected_size or curr.size != expected_size:
         prev = np.resize(prev, (expected_size,))
         curr = np.resize(curr, (expected_size,))
-    grid_prev = prev.reshape(grid_side, grid_side)
-    grid_curr = curr.reshape(grid_side, grid_side)
+    grid_prev = prev.reshape(grid_h, grid_w)
+    grid_curr = curr.reshape(grid_h, grid_w)
     max_radius = radius if radius is not None else int(getattr(cfg, "transport_search_radius", 1))
     max_radius = max(0, max_radius)
     shift, overlap = _mask_shift(grid_prev, grid_curr, max_radius)

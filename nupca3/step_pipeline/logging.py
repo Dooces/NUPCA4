@@ -24,7 +24,7 @@ def _dbg(msg: str, *, state: object | None = None) -> None:
         return
     global _LAST_LOG_TIME, _LOG_START_TIME
     try:
-        t = getattr(state, "t", None) if state is not None else None
+        t = getattr(state, "t_w", None) if state is not None else None
     except Exception:
         t = None
     now = time.monotonic()
@@ -37,7 +37,7 @@ def _dbg(msg: str, *, state: object | None = None) -> None:
     _LAST_LOG_TIME = now
     elapsed = now - _LOG_START_TIME
     prefix = (
-        f"[step_pipeline t={int(t):6d} dt={delta:7.3f}s elapsed={elapsed:7.3f}s] "
+        f"[step_pipeline t_w={int(t):6d} dt={delta:7.3f}s elapsed={elapsed:7.3f}s] "
         if t is not None
         else f"[step_pipeline dt={delta:7.3f}s elapsed={elapsed:7.3f}s] "
     )

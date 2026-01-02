@@ -195,19 +195,9 @@ def _build_blocks(state_dim: int, n_blocks: int) -> List[List[int]]:
 
 
 def init_library(cfg: AgentConfig) -> ExpertLibrary:
-    """Initialize a minimal library of per-footprint experts.
-
-    Fixes:
-      - Removes the dense global anchor (D×D) initialization.
-        A7.2 already provides the persistence fallback for uncovered dims.
-        A dense, all-dims anchor is both budget-violating (O(D^2)) and
-        destructive under the current fusion rule (it "covers" everything and
-        overwrites stale persistence, even when untrained).
-    """
+    """Initialize a v5 library without legacy seed experts."""
     lib: ExpertLibrary = V5ExpertLibrary(nodes={}, anchors=set(), footprint_index={})
-    # NUPCA5: create packed signature index for scan-proof retrieval.
     lib.sig_index = PackedSigIndex.from_cfg_obj(cfg)
-    node_id = 0
     D = int(cfg.D)
     B = int(cfg.B)
     blocks = _build_blocks(D, B)
@@ -222,119 +212,10 @@ def init_library(cfg: AgentConfig) -> ExpertLibrary:
                     dim2block[int(d)] = int(bi)
     else:
         dim2block = None
-    # Stash for bounded sig_index lifecycle registration (creation/eviction).
     setattr(lib, "_sig_dim2block", dim2block)
-    span = int(cfg.transport_span_blocks)
-    base_cost = float(cfg.expert_base_cost)
-    dim_cost = float(cfg.expert_dim_cost)
-    # dtype: keep params lightweight; step_pipeline casts to float as needed.
-    f_dtype = np.float32
-    sigma_init_untrained = float(cfg.sigma_init_untrained)
 
-    for b, block_dims in enumerate(blocks):
-        out_idx = np.array(block_dims, dtype=int) if block_dims else np.zeros(0, dtype=int)
-        mask = np.zeros(D, dtype=f_dtype)
-        if out_idx.size:
-            mask[out_idx] = 1.0
-
-        # Default: local node reads and writes only its footprint.
-        in_mask = mask.copy()
-        in_idx = out_idx.copy()
-
-        # Cost proportional to output dims (legacy behavior); optionally include
-        # input dims if the config enables it.
-        cost_include_inputs = bool(cfg.expert_cost_include_inputs)
-        if cost_include_inputs:
-            eff_dims = float(out_idx.size + in_idx.size)
-        else:
-            eff_dims = float(out_idx.size)
-        block_cost = base_cost + dim_cost * eff_dims
-
-        W = np.zeros((int(out_idx.size), int(in_idx.size)), dtype=f_dtype)
-        # Bias and uncertainty are full-length for compatibility with existing
-        # expert.py routines. (A future refactor may store these compactly.)
-        b_full = np.zeros(D, dtype=f_dtype)
-        Sigma_full = np.full(D, sigma_init_untrained, dtype=f_dtype)
-        block_anchor = bool(cfg.force_block_anchors)
-        local_node = ExpertNode(
-            node_id=node_id,
-            mask=mask,
-            input_mask=in_mask,
-            W=W,
-            b=b_full,
-            Sigma=Sigma_full,
-            reliability=1.0,
-            cost=float(block_cost),
-            is_anchor=block_anchor,
-            footprint=int(b),
-            out_idx=out_idx,
-            in_idx=in_idx,
-        )
-        # v5: `unit_sig64` is the unit's stored 64-bit retrieval address.
-        # Seed units created at init have no observation context; assign a
-        # deterministic template-derived address (no node_id dependence).
-        local_node.unit_sig64 = _template_unit_addr(
-            seed=int(cfg.sig_seed),
-            block_id=int(b),
-            is_anchor=bool(block_anchor),
-            is_transport=False,
-        )
-        # Register in scan-proof retrieval index at unit lifecycle time.
-        register_unit_in_sig_index(lib, local_node, dim2block=dim2block)
-        lib.nodes[node_id] = local_node
-        lib.footprint_index.setdefault(b, []).append(node_id)
-        if block_anchor:
-            lib.anchors.add(node_id)
-        node_id += 1
-
-        if span > 0:
-            input_mask = np.zeros(D, dtype=f_dtype)
-            lo = max(0, b - span)
-            hi = min(len(blocks) - 1, b + span)
-            for bb in range(lo, hi + 1):
-                dims = blocks[bb]
-                if dims:
-                    input_mask[np.array(dims, dtype=int)] = 1.0
-            in_idx = np.where(input_mask > 0.5)[0].astype(int)
-            if cost_include_inputs:
-                eff_dims = float(out_idx.size + in_idx.size)
-            else:
-                eff_dims = float(out_idx.size)
-            t_cost = base_cost + dim_cost * eff_dims
-            transport_node = ExpertNode(
-                node_id=node_id,
-                mask=mask,
-                input_mask=input_mask,
-                W=np.zeros((int(out_idx.size), int(in_idx.size)), dtype=f_dtype),
-                b=np.zeros(D, dtype=f_dtype),
-                Sigma=np.full(D, sigma_init_untrained, dtype=f_dtype),
-                reliability=1.0,
-                cost=float(t_cost),
-                is_anchor=False,
-                footprint=int(b),
-                out_idx=out_idx,
-                in_idx=in_idx,
-            )
-            setattr(transport_node, "transport", True)
-            transport_node.unit_sig64 = _template_unit_addr(
-                seed=int(cfg.sig_seed),
-                block_id=int(b),
-                is_anchor=False,
-                is_transport=True,
-            )
-            register_unit_in_sig_index(lib, transport_node, dim2block=dim2block)
-            lib.nodes[node_id] = transport_node
-            lib.footprint_index.setdefault(b, []).append(node_id)
-            node_id += 1
-
-    # IMPORTANT: init_library populates lib.nodes directly (not via lib.add_node),
-    # so we must advance next_node_id to avoid id collisions that overwrite incumbents.
-    if getattr(lib, "nodes", None):
-        lib.next_node_id = max(int(k) for k in lib.nodes.keys()) + 1
-    else:
-        lib.next_node_id = 0
-
-    _initialize_dag_neighbors(lib)
+    # v5 strict: start empty. Units must be spawned online; no per-dim placeholders.
+    lib.next_node_id = 0
     return lib
 
 

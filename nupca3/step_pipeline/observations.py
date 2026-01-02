@@ -27,11 +27,7 @@ def _cfg_D(state: AgentState, cfg: AgentConfig) -> int:
     Output:
       D: int dimensionality used in this step
     """
-    try:
-        return int(getattr(cfg, "D"))
-    except Exception:
-        x = getattr(getattr(state, "buffer", None), "x_last", None)
-        return int(len(x)) if x is not None else 0
+    return int(cfg.D)
 
 
 def _filter_cue_to_Oreq(
@@ -73,14 +69,7 @@ def _tracked_node_ids(state: AgentState, cfg: AgentConfig) -> Set[int]:
     tracked.update(int(n) for n in (getattr(state, "salience_candidate_ids", set()) or set()))
     tracked.update(int(n) for n in (getattr(state, "coverage_tracked_ids", set()) or set()))
 
-    cap = int(
-        getattr(
-            cfg,
-            "coverage_debt_cap",
-            getattr(cfg, "salience_max_candidates", getattr(cfg, "max_candidates", 256)),
-        )
-    )
-    cap = max(32, cap)
+    cap = max(32, int(cfg.coverage_debt_cap))
     if not nodes:
         return tracked
 
@@ -156,14 +145,7 @@ def _ensure_node_band_levels(state: AgentState, cfg: AgentConfig) -> None:
 
     # Prune cache to bounded size (LRU by last_seen). This loop is safe because
     # node_levels/last_seen are bounded by cap.
-    cap = int(
-        getattr(
-            cfg,
-            "coverage_debt_cap",
-            getattr(cfg, "salience_max_candidates", getattr(cfg, "max_candidates", 256)),
-        )
-    )
-    cap = max(32, cap)
+    cap = max(32, int(cfg.coverage_debt_cap))
     if len(last_seen) > cap:
         overflow = len(last_seen) - cap
         for nid, _ts in sorted(last_seen.items(), key=lambda kv: kv[1])[:overflow]:
@@ -181,85 +163,45 @@ def _ensure_node_band_levels(state: AgentState, cfg: AgentConfig) -> None:
 
 
 def _compute_peripheral_gist(x_vec: np.ndarray, cfg: AgentConfig) -> np.ndarray:
-    """Compute a cheap, bounded peripheral gist.
+    """Compute a peripheral gist; strict grid metadata required."""
+    grid_w = int(cfg.grid_width)
+    grid_h = int(cfg.grid_height)
+    grid_c = int(cfg.grid_channels)
+    base_dim = int(cfg.grid_base_dim)
+    if grid_w <= 0 or grid_h <= 0 or grid_c <= 0 or base_dim <= 0:
+        raise RuntimeError("peripheral gist requires grid metadata")
 
-    Priority order:
-      1) If the environment already provides a peripheral coarse channel (cfg.periph_bins/blocks),
-         extract it (legacy behavior).
-      2) Otherwise, for grid-aware harnesses (cfg.grid_{width,height,channels}), compute an
-         occupancy-based pooled gist (max-pool over bins). This avoids mean-pooling blind spots
-         that can collapse distinct regimes into identical summaries.
-      3) Fallback to tiny global stats when no grid metadata is available.
-    """
+    arr = np.asarray(x_vec, dtype=float).reshape(-1)
+    if arr.size < base_dim:
+        raise RuntimeError("peripheral gist input shorter than base_dim")
+    arr = arr[:base_dim]
 
-    # 1) Legacy: use an existing peripheral coarse channel when configured.
-    gist = extract_coarse(x_vec, cfg)
-    if gist.size > 0:
-        return gist
+    grid = arr.reshape(grid_h, grid_w, grid_c)
+    occ = (grid > 0).any(axis=2).astype(np.uint8)  # [H,W] in {0,1}
 
-    # 2) Grid-aware: pooled occupancy gist (small, cheap, and more discriminative than stats).
-    try:
-        grid_w = int(getattr(cfg, "grid_width", 0) or getattr(cfg, "grid_side", 0) or 0)
-        grid_h = int(getattr(cfg, "grid_height", 0) or getattr(cfg, "grid_side", 0) or 0)
-        grid_c = int(getattr(cfg, "grid_channels", 1) or 1)
-        base_dim = int(getattr(cfg, "grid_base_dim", 0) or 0)
-        if base_dim <= 0 and grid_w > 0 and grid_h > 0 and grid_c > 0:
-            base_dim = int(grid_w * grid_h * grid_c)
-    except Exception:
-        grid_w, grid_h, grid_c, base_dim = 0, 0, 1, 0
+    bins = int(getattr(cfg, "periph_bins", 0) or 0)
+    if bins <= 0:
+        raise RuntimeError("peripheral gist requires periph_bins > 0")
+    bins_x = max(1, min(int(bins), int(grid_w)))
+    bins_y = max(1, min(int(bins), int(grid_h)))
+    tile_w = int(np.ceil(float(grid_w) / float(bins_x)))
+    tile_h = int(np.ceil(float(grid_h) / float(bins_y)))
+    if tile_w <= 0 or tile_h <= 0:
+        raise RuntimeError("invalid tile geometry for gist")
 
-    if grid_w > 0 and grid_h > 0 and grid_c > 0 and base_dim > 0:
-        arr = np.asarray(x_vec, dtype=float).reshape(-1)
-        if arr.size < base_dim:
-            arr = np.resize(arr, (base_dim,))
-        else:
-            arr = arr[:base_dim]
-
-        # Occupancy: 1 if any channel is non-zero.
-        try:
-            grid = arr.reshape(grid_h, grid_w, grid_c)
-        except Exception:
-            grid = None
-
-        if grid is not None:
-            occ = (grid > 0).any(axis=2).astype(np.uint8)  # [H,W] in {0,1}
-
-            bins = int(getattr(cfg, "periph_bins", 0) or 0)
-            if bins <= 0:
-                bins = 8
-            bins_x = max(1, min(int(bins), int(grid_w)))
-            bins_y = max(1, min(int(bins), int(grid_h)))
-            tile_w = int(np.ceil(float(grid_w) / float(bins_x)))
-            tile_h = int(np.ceil(float(grid_h) / float(bins_y)))
-
-            pooled = np.zeros((bins_y, bins_x), dtype=float)
-            for by in range(bins_y):
-                y0 = by * tile_h
-                y1 = min(grid_h, (by + 1) * tile_h)
-                if y0 >= y1:
-                    continue
-                for bx in range(bins_x):
-                    x0 = bx * tile_w
-                    x1 = min(grid_w, (bx + 1) * tile_w)
-                    if x0 >= x1:
-                        continue
-                    pooled[by, bx] = float(np.max(occ[y0:y1, x0:x1]))
-            return pooled.reshape(-1)
-
-    # 3) Fallback: tiny global stats.
-    data = np.asarray(x_vec, dtype=float).reshape(-1)
-    if data.size == 0:
-        return np.zeros(0, dtype=float)
-    stats = np.array(
-        [
-            float(np.mean(data)),
-            float(np.std(data)),
-            float(np.min(data)),
-            float(np.max(data)),
-        ],
-        dtype=float,
-    )
-    return np.nan_to_num(stats)
+    pooled = np.zeros((bins_y, bins_x), dtype=float)
+    for by in range(bins_y):
+        y0 = by * tile_h
+        y1 = min(grid_h, (by + 1) * tile_h)
+        if y0 >= y1:
+            raise RuntimeError("empty row bin in gist")
+        for bx in range(bins_x):
+            x0 = bx * tile_w
+            x1 = min(grid_w, (bx + 1) * tile_w)
+            if x0 >= x1:
+                raise RuntimeError("empty col bin in gist")
+            pooled[by, bx] = float(np.max(occ[y0:y1, x0:x1]))
+    return pooled.reshape(-1)
 
 
 
@@ -310,13 +252,13 @@ def compute_sig_gist_u8(
 
     # Determine a 2D grid layout if available (blocks correspond to cells).
     try:
-        grid_w = int(getattr(cfg, "grid_width", 0) or getattr(cfg, "grid_side", 0) or 0)
-        grid_h = int(getattr(cfg, "grid_height", 0) or getattr(cfg, "grid_side", 0) or 0)
+        grid_w = int(cfg.grid_width)
+        grid_h = int(cfg.grid_height)
     except Exception:
         grid_w, grid_h = 0, 0
 
     # Number of gist bins (prefer NUPCA5 sig_gist_bins, else fall back).
-    bins = int(getattr(cfg, "sig_gist_bins", 0) or getattr(cfg, "periph_bins", 0) or 8)
+    bins = int(cfg.sig_gist_bins)
     bins = max(1, bins)
 
     if grid_w > 0 and grid_h > 0 and (grid_w * grid_h == B):
@@ -425,7 +367,7 @@ def _update_coverage_debts(state: AgentState, cfg: AgentConfig) -> None:
     last_seen: Dict[int, int] = dict(getattr(state, "coverage_debt_last_seen", {}) or {})
 
     t_now = int(getattr(state, "t_w", 0))
-    debt_max = int(getattr(cfg, "coverage_debt_max", 10_000))
+    debt_max = int(cfg.coverage_debt_max)
     debt_max = max(1, debt_max)
 
     # Update expert debts over tracked set only.
@@ -444,10 +386,7 @@ def _update_coverage_debts(state: AgentState, cfg: AgentConfig) -> None:
     # looking up the tracked node's footprint block directly.
     innovation_weight = float(getattr(cfg, "fovea_innovation_weight", 0.0))
     if innovation_weight > 0.0:
-        innovation = np.asarray(
-            getattr(state.fovea, "block_innovation", np.zeros(int(getattr(cfg, "B", 0)) or 0)),
-            dtype=float,
-        ).reshape(-1)
+        innovation = np.asarray(state.fovea.block_innovation, dtype=float).reshape(-1)
         if innovation.size:
             for nid in tracked:
                 if nid in active_set:
@@ -456,7 +395,7 @@ def _update_coverage_debts(state: AgentState, cfg: AgentConfig) -> None:
                 if node is None:
                     continue
                 # Footprint block id (preferred) or explicit block id.
-                block_id = int(getattr(node, "footprint", getattr(node, "block_id", -1)))
+                block_id = int(getattr(node, "footprint", -1))
                 if 0 <= block_id < innovation.size and float(innovation[block_id]) > 0.0:
                     expert_debt[nid] = max(0, int(expert_debt.get(nid, 0)) - 1)
 
@@ -474,14 +413,7 @@ def _update_coverage_debts(state: AgentState, cfg: AgentConfig) -> None:
             band_debt.pop(level, None)
 
     # Prune dictionaries to bounded size (LRU by last_seen).
-    cap = int(
-        getattr(
-            cfg,
-            "coverage_debt_cap",
-            getattr(cfg, "salience_max_candidates", getattr(cfg, "max_candidates", 256)),
-        )
-    )
-    cap = max(32, cap)
+    cap = max(32, int(cfg.coverage_debt_cap))
     if len(last_seen) > cap:
         overflow = len(last_seen) - cap
         for nid, _ts in sorted(last_seen.items(), key=lambda kv: kv[1])[:overflow]:

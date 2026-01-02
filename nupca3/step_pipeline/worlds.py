@@ -21,20 +21,14 @@ from .transport import TransportCandidate
 def _normalize_world_weights(raw_weights: List[float]) -> List[float]:
     """Normalize a list of raw world scores into a probability simplex."""
     if not raw_weights:
-        return []
+        raise RuntimeError("world weights empty")
     arr = np.asarray(raw_weights, dtype=float)
-    finite_mask = np.isfinite(arr)
-    total = float(np.sum(arr[finite_mask])) if finite_mask.any() else 0.0
-    if not np.isfinite(total) or total <= 0.0:
-        fallback = 1.0 / float(len(arr))
-        return [fallback] * len(arr)
-    normalized: List[float] = []
-    for val in arr:
-        if not np.isfinite(val):
-            normalized.append(0.0)
-        else:
-            normalized.append(float(val / total))
-    return normalized
+    if not np.all(np.isfinite(arr)):
+        raise RuntimeError("non-finite world weights")
+    total = float(np.sum(arr))
+    if total <= 0.0:
+        raise RuntimeError("world weights non-positive")
+    return [float(val / total) for val in arr]
 
 
 def _support_window_mae(prior_a: np.ndarray, prior_b: np.ndarray, support_dims: Set[int]) -> float:
@@ -59,10 +53,16 @@ def _support_window_mae(prior_a: np.ndarray, prior_b: np.ndarray, support_dims: 
 
 
 def _merge_world_group(group: List[WorldHypothesis], D: int) -> WorldHypothesis:
-    weights = [max(0.0, float(w.weight)) for w in group]
+    # Keep merge stable even if upstream likelihood underflows.
+    weights = []
+    for w in group:
+        val = float(getattr(w, "weight", 0.0))
+        if not math.isfinite(val) or val < 0.0:
+            val = 0.0
+        weights.append(val)
     total = float(sum(weights))
     if total <= 0.0:
-        weights = [1.0] * len(weights)
+        weights = [1.0 for _ in group]
         total = float(len(weights))
     normalized = [float(w) / total for w in weights]
     prior_accum = np.zeros(D, dtype=float)
@@ -317,6 +317,8 @@ def _build_world_hypotheses(
             likelihood = math.exp(-lambda_param * prior_mae)
         prev_weight = prev_weights.get(delta, 1.0)
         raw_weight = prev_weight * likelihood
+        if not math.isfinite(raw_weight) or raw_weight <= 0.0:
+            raw_weight = 1.0
         metadata = {
             "score": float(getattr(cand, "score", 0.0)),
             "prev_weight": prev_weight,

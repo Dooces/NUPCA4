@@ -15,8 +15,7 @@ Design constraints (axiom-faithful)
    The only differences are the cue source and whether the cue is empty.
 
 2) **Sparse cue is canonical.**
-   The canonical cue format is Dict[int, float] (EnvObs.x_partial). A legacy dense-with-NaN
-   representation is accepted for backwards compatibility, but the clamp semantics are the same.
+   The canonical cue format is Dict[int, float] (EnvObs.x_partial). No dense/legacy cues accepted.
 
 3) **No new hidden authorities.**
    Completion does not decide attention, working sets, or storage. It only:
@@ -54,40 +53,24 @@ Cue = Union[SparseCue, DenseCue]
 
 
 def _D_from_state(state: AgentState, cfg: AgentConfig) -> int:
-    """Best-effort dimensionality."""
-    try:
-        return int(getattr(cfg, "D"))
-    except Exception:
-        x = getattr(getattr(state, "buffer", None), "x_last", None)
-        return int(len(x)) if x is not None else 0
+    """Strict dimensionality (cfg.D required)."""
+    D = int(getattr(cfg, "D", 0))
+    if D <= 0:
+        raise RuntimeError("cfg.D must be set for completion")
+    return D
 
 
 def _coerce_sparse_cue(cue: Optional[Cue], D: int) -> SparseCue:
     """Coerce cue into canonical sparse Dict[int, float] bounded to [0, D)."""
     if cue is None:
         return {}
-
-    if isinstance(cue, dict):
-        out: SparseCue = {}
-        for k, v in cue.items():
-            try:
-                kk = int(k)
-            except Exception:
-                continue
-            if 0 <= kk < D:
-                out[kk] = float(v)
-        return out
-
-    # legacy: dense with NaNs for unobserved dims
-    arr = np.asarray(cue, dtype=float).reshape(-1)
-    if arr.size == 0:
-        return {}
-    n = min(int(arr.size), int(D))
-    out = {}
-    for i in range(n):
-        val = float(arr[i])
-        if not np.isnan(val):
-            out[i] = val
+    if not isinstance(cue, dict):
+        raise RuntimeError("cue must be sparse dict")
+    out: SparseCue = {}
+    for k, v in cue.items():
+        kk = int(k)
+        if 0 <= kk < D:
+            out[kk] = float(v)
     return out
 
 
@@ -299,7 +282,7 @@ def a7_completion_and_prediction_step(
     Returns:
       (x_completed_t, yhat_tp1, Sigma_tp1_diag, prior_t, O_t)
     """
-    D = int(getattr(cfg, "D", len(getattr(buf_prev, "x_last", []))))
+    D = int(cfg.D)
 
     # 1) Prior for time t: x̂(t|t-1)
     if predicted_prior_t is None:

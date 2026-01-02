@@ -17,10 +17,6 @@ This module computes and updates fovea statistics; the environment/harness is
 responsible for honoring the selected blocks when generating the next EnvObs.
 Implementation note
 -------------------
-`sticky_k` is retained in config as a legacy/debug knob, but it is **not** part of v1.5b A16 and is not used by the greedy_cov selector in this module.
-
-
-
 [AXIOM_CLARIFICATION_ADDENDUM — Representation & Naming]
 
 - Terminology: identifiers like "Expert" in this codebase refer to NUPCA3 **abstraction/resonance nodes** (a "constellation"), not conventional Mixture-of-Experts "experts" or router-based MoE.
@@ -63,7 +59,8 @@ def _log_geom_event(event: str, details: dict[str, object]) -> None:
 
 def _grid_block_dims(
     *,
-    side: int,
+    grid_w: int,
+    grid_h: int,
     color_channels: int,
     shape_channels: int,
     block_cells_y: int,
@@ -71,7 +68,7 @@ def _grid_block_dims(
     block_y: int,
     block_x: int,
 ) -> List[int]:
-    grid_cells = side * side
+    grid_cells = grid_w * grid_h
     color_offset = 0
     shape_offset = grid_cells * color_channels
     dims: List[int] = []
@@ -79,7 +76,7 @@ def _grid_block_dims(
     x_start = block_x * block_cells_x
     for y in range(y_start, y_start + block_cells_y):
         for x in range(x_start, x_start + block_cells_x):
-            cell = y * side + x
+            cell = y * grid_w + x
             if color_channels > 0:
                 base = color_offset + cell * color_channels
                 dims.extend(range(base, base + color_channels))
@@ -89,17 +86,38 @@ def _grid_block_dims(
     return dims
 
 
+def _select_block_grid_dims(spatial_blocks: int, grid_w: int, grid_h: int) -> Optional[Tuple[int, int]]:
+    if spatial_blocks <= 0 or grid_w <= 0 or grid_h <= 0:
+        return None
+    best: Optional[Tuple[int, int]] = None
+    best_score: float = float("inf")
+    for blocks_w in range(1, spatial_blocks + 1):
+        if spatial_blocks % blocks_w != 0:
+            continue
+        blocks_h = spatial_blocks // blocks_w
+        if grid_w % blocks_w != 0 or grid_h % blocks_h != 0:
+            continue
+        cell_w = grid_w // blocks_w
+        cell_h = grid_h // blocks_h
+        score = abs(cell_w - cell_h)
+        if best is None or score < best_score:
+            best = (blocks_w, blocks_h)
+            best_score = score
+    return best
+
+
 def build_blocks_from_cfg(cfg: AgentConfig) -> List[List[int]]:
     """Build block partition aligned to grid when metadata is available."""
     D = int(getattr(cfg, "D", 0))
-    B = max(1, int(getattr(cfg, "B", getattr(cfg, "n_blocks", 1))))
-    side = int(getattr(cfg, "grid_side", 0))
+    B = max(1, int(cfg.B))
+    grid_w = int(getattr(cfg, "grid_width", 0))
+    grid_h = int(getattr(cfg, "grid_height", 0))
     grid_channels = int(getattr(cfg, "grid_channels", 0))
     color_channels = int(getattr(cfg, "grid_color_channels", 0))
     shape_channels = int(getattr(cfg, "grid_shape_channels", 0))
     base_dim = int(getattr(cfg, "grid_base_dim", 0))
     periph_blocks = max(0, min(int(getattr(cfg, "periph_blocks", 0)), B))
-    key = (D, B, side, grid_channels, color_channels, shape_channels, base_dim, periph_blocks)
+    key = (D, B, grid_w, grid_h, grid_channels, color_channels, shape_channels, base_dim, periph_blocks)
     cached = _BLOCK_CACHE.get(key)
     if cached is not None:
         return [dims.copy() for dims in cached]
@@ -111,37 +129,38 @@ def build_blocks_from_cfg(cfg: AgentConfig) -> List[List[int]]:
         base_dim = D
 
     spatial_blocks = B - periph_blocks
-    grid_cells = side * side
+    grid_cells = grid_w * grid_h
     can_use_grid = (
-        side > 0
+        grid_w > 0
+        and grid_h > 0
         and grid_channels > 0
         and base_dim == grid_cells * grid_channels
         and spatial_blocks > 0
     )
-    if can_use_grid:
-        if color_channels <= 0 and shape_channels <= 0:
-            color_channels = grid_channels
-            shape_channels = 0
-        if color_channels + shape_channels != grid_channels:
-            can_use_grid = False
+    if can_use_grid and (color_channels + shape_channels) == 0:
+        color_channels = grid_channels
+        shape_channels = 0
+    if can_use_grid and (color_channels + shape_channels) != grid_channels:
+        can_use_grid = False
 
     blocks: List[List[int]] = []
     if can_use_grid:
-        block_grid_side = int(round(math.sqrt(spatial_blocks)))
-        if block_grid_side * block_grid_side != spatial_blocks:
-            can_use_grid = False
-        elif side % block_grid_side != 0:
+        block_grid = _select_block_grid_dims(spatial_blocks, grid_w, grid_h)
+        if block_grid is None:
             can_use_grid = False
         else:
-            block_cells = side // block_grid_side
-            for by in range(block_grid_side):
-                for bx in range(block_grid_side):
+            block_grid_w, block_grid_h = block_grid
+            block_cells_x = grid_w // block_grid_w
+            block_cells_y = grid_h // block_grid_h
+            for by in range(block_grid_h):
+                for bx in range(block_grid_w):
                     dims = _grid_block_dims(
-                        side=side,
+                        grid_w=grid_w,
+                        grid_h=grid_h,
                         color_channels=color_channels,
                         shape_channels=shape_channels,
-                        block_cells_y=block_cells,
-                        block_cells_x=block_cells,
+                        block_cells_y=block_cells_y,
+                        block_cells_x=block_cells_x,
                         block_y=by,
                         block_x=bx,
                     )
@@ -232,14 +251,25 @@ def block_slices(cfg: AgentConfig) -> List[Tuple[int, int]]:
 def block_of_dim(k: int, cfg: AgentConfig) -> int:
     """Map dimension index k to its block id under the A16.1 partition."""
     D = int(getattr(cfg, "D", 0))
-    B = max(1, int(getattr(cfg, "B", getattr(cfg, "n_blocks", 1))))
-    side = int(getattr(cfg, "grid_side", 0))
+    B = max(1, int(cfg.B))
+    grid_w = int(getattr(cfg, "grid_width", 0))
+    grid_h = int(getattr(cfg, "grid_height", 0))
     grid_channels = int(getattr(cfg, "grid_channels", 0))
     color_channels = int(getattr(cfg, "grid_color_channels", 0))
     shape_channels = int(getattr(cfg, "grid_shape_channels", 0))
     base_dim = int(getattr(cfg, "grid_base_dim", 0))
     periph_blocks = max(0, min(int(getattr(cfg, "periph_blocks", 0)), B))
-    key = (D, B, side, grid_channels, color_channels, shape_channels, base_dim, periph_blocks)
+    key = (
+        D,
+        B,
+        grid_w,
+        grid_h,
+        grid_channels,
+        color_channels,
+        shape_channels,
+        base_dim,
+        periph_blocks,
+    )
     lookup = _BLOCK_LOOKUP_CACHE.get(key)
     if lookup is None:
         lookup = {}
@@ -454,49 +484,37 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
     #   explicitly above; the circle constraint applies to spatial blocks only.
     # - Coverage emergencies (A16.4) still override geometry: mandatory blocks
     #   are included first.
-    # - If the block partition is not grid-aligned, we fall back to the legacy
-    #   ratio-based selection for the remaining budget.
     #
     fovea_shape = str(getattr(cfg, "fovea_shape", "circle")).strip().lower()
 
     def _grid_block_shape() -> tuple[int, int]:
         """Return (w, h) of the spatial block grid for geometry-aware selection.
 
-        Prefer the square-grid metadata path (cfg.grid_side/cfg.grid_channels) when
-        present. Fall back to an explicit rectangle metadata path (cfg.grid_width /
-        cfg.grid_height) when provided AND when spatial blocks are one-per-cell.
+        Requires explicit rectangular grid metadata; no legacy aliases accepted.
         """
         spatial_blocks = int(B - periph_blocks)
         if spatial_blocks <= 0:
             return (0, 0)
 
-        # Path 1: square grid metadata
-        side = int(getattr(cfg, "grid_side", 0))
+        grid_w = int(getattr(cfg, "grid_width", 0))
+        grid_h = int(getattr(cfg, "grid_height", 0))
         grid_channels = int(getattr(cfg, "grid_channels", 0))
         base_dim = int(getattr(cfg, "grid_base_dim", 0))
         if base_dim <= 0:
             base_dim = int(getattr(cfg, "D", 0))
-        if side > 0 and grid_channels > 0 and base_dim == side * side * grid_channels:
-            s = int(round(math.sqrt(spatial_blocks)))
-            if s * s == spatial_blocks and side % s == 0:
-                return (s, s)
+        if grid_w <= 0 or grid_h <= 0 or grid_channels <= 0:
+            return (0, 0)
+        if base_dim != grid_w * grid_h * grid_channels:
+            return (0, 0)
 
-        # Path 2: explicit rectangle metadata (one block per cell, 1-channel grids)
-        grid_w = int(getattr(cfg, "grid_width", 0))
-        grid_h = int(getattr(cfg, "grid_height", 0))
-        grid_channels = max(0, int(getattr(cfg, "grid_channels", 0)))
-        if grid_channels == 0:
-            grid_channels = 1
-        if grid_w > 0 and grid_h > 0:
-            if base_dim == grid_w * grid_h * grid_channels and spatial_blocks == grid_w * grid_h:
-                # We only guarantee correct block-to-cell mapping when each block
-                # corresponds to exactly one cell (common harness case: B == D).
-                if grid_channels == 1:
-                    return (grid_w, grid_h)
-
-        return (0, 0)
+        block_grid = _select_block_grid_dims(spatial_blocks, grid_w, grid_h)
+        if block_grid is None:
+            return (0, 0)
+        return block_grid
 
     block_grid_w, block_grid_h = _grid_block_shape()
+    if block_grid_w <= 0 or block_grid_h <= 0:
+        raise RuntimeError("v5 fovea selection requires grid-aligned block metadata")
 
     def _block_xy(b: int) -> tuple[int, int]:
         # Only valid when block_grid_w > 0
@@ -658,20 +676,7 @@ def select_fovea(fovea: FoveaState, cfg: AgentConfig) -> list[int]:
             fovea.coverage_cursor = int((center + coverage_step) % spatial_blocks)
             return selection, budget_remain
 
-        # Legacy sweep (fallback): linear cursor walk.
-        idx = cursor % B if B > 0 else 0
-        attempts = 0
-        while remaining_set and budget_remain > 0.0 and attempts < 2 * B:
-            if idx in remaining_set:
-                cost_unit = float(norm_costs[idx])
-                if cost_unit <= budget_remain:
-                    selection.append(int(idx))
-                    remaining_set.remove(idx)
-                    budget_remain = max(0.0, budget_remain - cost_unit)
-            idx = (idx + coverage_step) % B
-            attempts += 1
-        fovea.coverage_cursor = idx
-        return selection, budget_remain
+        raise RuntimeError("v5 coverage sweep requires circular block geometry")
 
     coverage_trigger = False
     if remaining and budget_remaining > 0.0:
@@ -788,8 +793,7 @@ def update_fovea_routing_scores(
     if x_prev.shape[0] < base_dim + periph_dim:
         return
 
-    periph_channels = int(getattr(cfg, "periph_channels", getattr(cfg, "grid_channels", 1)))
-    periph_channels = max(1, periph_channels)
+    periph_channels = max(1, int(cfg.periph_channels))
     n_bins = periph_bins * periph_bins
     needed = n_bins * periph_channels
     if needed <= 0:
@@ -807,18 +811,19 @@ def update_fovea_routing_scores(
         return
 
     bin_idx = int(np.argmax(bin_scores))
-    side = int(getattr(cfg, "grid_side", 0))
-    if side <= 0:
+    grid_w = int(getattr(cfg, "grid_width", 0))
+    grid_h = int(getattr(cfg, "grid_height", 0))
+    if grid_w <= 0 or grid_h <= 0:
         return
     bin_x = bin_idx % periph_bins
     bin_y = bin_idx // periph_bins
-    cell_x = int((bin_x + 0.5) * side / periph_bins)
-    cell_y = int((bin_y + 0.5) * side / periph_bins)
-    cell_x = max(0, min(side - 1, cell_x))
-    cell_y = max(0, min(side - 1, cell_y))
+    cell_x = int((bin_x + 0.5) * grid_w / periph_bins)
+    cell_y = int((bin_y + 0.5) * grid_h / periph_bins)
+    cell_x = max(0, min(grid_w - 1, cell_x))
+    cell_y = max(0, min(grid_h - 1, cell_y))
     base_channels = int(getattr(cfg, "grid_channels", 1))
     base_channels = max(1, base_channels)
-    cell_index = cell_y * side + cell_x
+    cell_index = cell_y * grid_w + cell_x
     dim_idx = cell_index * base_channels
     if dim_idx < 0 or dim_idx >= base_dim:
         return
