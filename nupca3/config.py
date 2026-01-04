@@ -62,6 +62,9 @@ class AgentConfig:
     # Starting age for each block; use < G so the coverage emergency path waits for real data.
     initial_block_age: int = 0
 
+    # Stale persistence TTL in steps for unobserved blocks; 0 disables expiry.
+    stale_block_ttl: int = 20
+
     # Removed legacy sticky retention; not allowed in v5.
 
     # Coverage regularizer for greedy_cov fovea selection (A16).
@@ -168,6 +171,8 @@ class AgentConfig:
     transport_overlap_bonus: float = 0.0
     # Evidence margin τ below which we default to zero transport.
     transport_evidence_margin: float = 0.02
+    # Minimum absolute signal on observed dims to treat as usable evidence.
+    transport_signal_floor: float = 1e-5
     # Penalty applied per ASCII occupancy mismatch during transport scoring.
     transport_ascii_penalty: float = 0.1
     # Probability threshold for treating multiple candidates as tied (for zero-bias ordering).
@@ -246,6 +251,9 @@ class AgentConfig:
     sig_vmax: float = 4.0
 
     # Packed signature index parameters (sig_index).
+    sig_min_evidence: int = 2
+    sig_df_stop_frac: float = 0.2
+    sig_sketch_K: int = 0
     sig_tables: int = 4
     sig_bucket_bits: int = 10
     sig_bucket_cap: int = 8
@@ -381,6 +389,11 @@ class AgentConfig:
     # Learn gate threshold (A10/A11).
     theta_learn: float = 0.15
 
+    # Baseline normalization safety (A3.2).
+    baseline_var_floor: float = 0.0
+    baseline_var_floor_C: float = 0.01
+    baseline_z_clip: float = 6.0
+
     # ---------------------------------------------------------------------
     # A10 — Edit control thresholds (v1.5b symbols)
     # ---------------------------------------------------------------------
@@ -413,7 +426,7 @@ class AgentConfig:
     # =========================================================================
     mdl_beta: float = 0.10
     epsilon_merge: float = 1e-3
-    eps_baseline: float = 1e-6
+    eps_baseline: float = 0.1
 
     # A12 MDL deltas used as rough complexity penalties for different edits.
     delta_L_MDL_merge: float = 0.50
@@ -484,6 +497,9 @@ class AgentConfig:
     # =========================================================================
     # A15 — Margins, stress, arousal dynamics
     # =========================================================================
+    # Initial hard observables (E, D) for A15 dynamics.
+    E_init: float = 1.0
+    D_init: float = 0.0
     tau_E: float = 2000.0
     tau_D: float = 2000.0
     tau_S: float = 2000.0
@@ -599,12 +615,18 @@ class AgentConfig:
             raise ValueError("coverage_cap_G must be > 0")
         if self.initial_block_age < 0:
             raise ValueError("initial_block_age must be >= 0")
+        if self.stale_block_ttl < 0:
+            raise ValueError("stale_block_ttl must be >= 0")
 
         # Uncertainty / EMA
         if not (self.sigma_floor > 0.0):
             raise ValueError("sigma_floor must be > 0")
         if not (0.0 < self.sigma_ema <= 1.0):
             raise ValueError("sigma_ema must be in (0, 1]")
+        if self.baseline_var_floor < 0.0 or self.baseline_var_floor_C < 0.0:
+            raise ValueError("baseline_var_floor/baseline_var_floor_C must be >= 0")
+        if self.baseline_z_clip <= 0.0:
+            raise ValueError("baseline_z_clip must be > 0")
 
         # Budgets
         if self.B_rt < 0.0:
@@ -667,6 +689,8 @@ class AgentConfig:
             raise ValueError("transport_confidence_margin must be in [0, 1]")
         if self.transport_disambiguation_weight < 0.0:
             raise ValueError("transport_disambiguation_weight must be >= 0")
+        if self.transport_signal_floor < 0.0:
+            raise ValueError("transport_signal_floor must be >= 0")
 
         # Context tracking
         if not (0.0 <= self.beta_context <= 1.0):

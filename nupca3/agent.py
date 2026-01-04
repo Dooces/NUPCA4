@@ -80,7 +80,14 @@ def _init_primary_state(cfg: AgentConfig) -> AgentState:
     # Dense belief buffer (allowed to persist per v1.5b; v5 only bans persisting
     # ephemeral gist vectors, not the belief state itself).
     x0 = np.zeros(D, dtype=float) if D > 0 else np.zeros(0, dtype=float)
-    buf = ObservationBuffer(x_last=x0.copy(), x_prior=x0.copy(), observed_dims=set())
+    B = int(getattr(cfg, "B", 0))
+    block_age = np.zeros(max(0, B), dtype=np.int32)
+    buf = ObservationBuffer(
+        x_last=x0.copy(),
+        x_prior=x0.copy(),
+        observed_dims=set(),
+        block_age=block_age,
+    )
 
     margins = Margins(0.0, 0.0, 0.0, 0.0, 0.0)
     stress = Stress(0.0, 0.0, 0.0, 0.0, 0.0)
@@ -89,12 +96,14 @@ def _init_primary_state(cfg: AgentConfig) -> AgentState:
 
     library = init_library(cfg)
 
+    E_init = float(getattr(cfg, "E_init", 0.0))
+    D_init = float(getattr(cfg, "D_init", 0.0))
     state = AgentState(
         t_w=0,
         k_op=0,
         wall_ms=0,
-        E=0.0,
-        D=0.0,
+        E=float(E_init),
+        D=float(D_init),
         drift_P=0.0,
         margins=margins,
         stress=stress,
@@ -120,6 +129,7 @@ def _init_primary_state(cfg: AgentConfig) -> AgentState:
     B = int(getattr(cfg, "B", 0))
     state.P_nov_state = np.zeros(B, dtype=float)
     state.U_prev_state = np.zeros(B, dtype=float)
+    state.q_block_mean = np.zeros(B, dtype=float)
     state.value_of_compute = 0.0
     state.hazard_pressure = 0.0
     state.novelty_pressure = 0.0
@@ -195,7 +205,14 @@ class NUPCA3Agent:
         self.state.baselines = Baselines(mu=np.zeros(5, dtype=float), var_fast=np.zeros(5, dtype=float), var_slow=np.zeros(5, dtype=float))
         self.state.macro = MacrostateVars(rest=False)
         self.state.fovea = init_fovea_state(self.cfg, block_costs=getattr(self.state.fovea, "block_costs", None))
-        self.state.buffer = ObservationBuffer(x_last=x0.copy(), x_prior=x0.copy(), observed_dims=set())
+        B = int(getattr(self.cfg, "B", 0))
+        block_age = np.zeros(max(0, B), dtype=np.int32)
+        self.state.buffer = ObservationBuffer(
+            x_last=x0.copy(),
+            x_prior=x0.copy(),
+            observed_dims=set(),
+            block_age=block_age,
+        )
         self.state.active_set = set()
         self.state.pending_validation.clear()
         self.state.last_sig64 = None

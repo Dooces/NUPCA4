@@ -1,95 +1,23 @@
-- v5.02(3) compliance audit assumes target = NUPCA5 v5.02 + Amendments (A4.3′.1, A16.5.1′, A16.5.6, A9.4). __pycache__/*.pyc and other build artifacts are ignored; agent_state.npz must be regenerated once code is compliant.
+TODO:
 
-Top-level
-- pyproject.toml: version is 5.0.1 with minimal deps; bump to v5.02(3), add required deps for banded sig64/SimHash + audit tooling, and align metadata/entrypoints with v5 modules.
-- DISTILLATION_SINGLE_OPERATOR_AND_DAG.md: documents v1.5 single-operator flow without A13 commit barrier, A0.5 contemplation gates, A4.5 deferred-validation ordering, or new sig64 metadata schema; rewrite or archive to avoid non-compliant guidance.
-- axioms/NUPCA5_axioms_v5.0.2.md: canonical spec; keep referenced as the compliance source (no code changes needed).
-- axioms/NUPCA5_axioms_v5.0.md: outdated v5.01 text; replace with v5.02(3) or remove to prevent drift.
-- axioms/NUPCA3_axioms_v1.6.3.md: legacy spec; archive or clearly mark superseded by v5.02(3).
-- agent_state.npz: serialized from pre-compliance code and likely includes transient buffers/pred store; drop or regenerate after a compliant pipeline exists.
+Enforce Commit Barriers and Ordering: Implement A13 commit barriers to separate ingestion from commitment, ensuring micro-steps are fenced and no mutations occur during contemplation. Add explicit markers for budget ladders and trace cache limits.
+Budget and Capacity Caps: Introduce hard caps (e.g., N_MAX, K_MAX, PENDING_MAX) with deterministic eviction policies, preventing silent growth and aligning with A0.BUDGET. Incorporate problem-bound modes for fovea selection under compute pressure.
+Scan-Proof Index Maintenance: Replace full rebuilds in incumbents with O(1) deletes via per-unit bucket lists, and limit maintenance to BUCKET_MAINT_MAX operations per tick.
+Deferred Validation and Stats Updates: Restructure the prediction store as a ring with footprint-local constraints, deferring stats updates to validation steps only, per A4.5.
+Diagnostic Enhancements: Update logging to include v5.02/3 markers (e.g., block stats per A16.5.6, purge/index health), ensuring diagnostics have no control influence (A17.3).
+Remove Legacy Elements: Eliminate full-state modes, replays, and wallclock-based relaxations, converting to online, outcome-vetted updates and physics-only environments.
+Determinism and Lag Discipline: Use lagged predicates for gates (A0.5, A14.1) and ensure no cross-tick smuggling in signatures.
 
-Tools, harnesses, and tests
-- test.py: harness publishes full frames and lets env override selected blocks; violates A1 (harness non-decisional) and A16 (full-field exposure/persistence). Rework to deliver only agent-requested O_t, no shared-memory full-frame buffers, and purge raw frames every tick.
-- test2.py: ChamberWorld exposes full grids/occluder masks and keeps histories; lacks A13 ingest/commit separation and budget caps. Convert to physics-only env with agent-driven fovea and bounded logging.
-- tests/test_axiom_faithful_pipeline.py: asserts legacy behaviors, no checks for A13 step 5.25, sig64 metadata schema, block stats, or staging; update to enforce v5.02(3) invariants.
-- tests/test_fromgpt.py / tests/test_fromgpt2.py: rely on earlier pipeline without commit barrier, staged planning, or deferred validation; rewrite to cover v5.02 retrieval, budget ladder, pending pred store, and trace cache limits.
-- tests/test_nextsteps_features.py: assumes legacy coverage signals and no contemplation gate; update for A0.5 safe/urgent gating, T_MAX thread staging, and new sig64 metadata/gist rules.
-- tests/test_streams.py: uses full-state streams and no budget caps; adjust to foveated inputs, bounded per-block summaries, and deterministic degradation.
-- tools/arc_solver_eval.py: uses legacy ARC runner with full-grid buffers and no sig64 LSH; replace with v5.02-compliant eval (banded sig64, O_t-only ingest, bounded budget).
-- tools/arc_agent_runner.py: runner allows full observations/legacy pipeline and lacks A13 ordering markers; refactor to call compliant kernel with commit barrier and forbid full-state leaks.
-- tools/env_screen_capture.py: captures/renders full frames and stores video buffers; violates A16.7 purge requirements. Restrict to foveated cues per tick and purge before REST exit.
-- tools/env_capture/io.py / render.py / worlds.py / __init__.py: capture/replay stack stores raw frames; must operate on committed cues only, enforce TRACE_M/TRACE_B_MAX, and purge raw pixel data.
-- tools/log_analysis.py: parses legacy traces; update to read v5.02 markers (ordering, budget ladder, trace cache stats, block stats) and flag scans/non-determinism.
-- tools/train_movement_pretrain.py: trains from stored episodes/replay; violates A4.5 no-replay rule. Remove or convert to online outcome-vetted updates only.
-- tools/audit_types_contract.py: audits legacy type fields; extend to include v5.02 additions (block stats, problem_bound, pred store footprint caps, staged planning/thread state) and determinism checks.
-- tools/v5_contract_check.py: only checks forbidden tokens/simple ordering; add enforcement for sig64 metadata schema, banded bucket keys, scan-free recognized(), pending pred store structure, and micro-step write fence.
 
-Axioms/docs in repo
-- (no additional files; see top-level notes)
+For consideration only:
 
-nupca3 package (general: code targets v1.5/v5.0.1 and lacks v5.02(3) staging, metadata schema, and budget ladder)
-- nupca3/__init__.py: exports legacy symbols; update version markers and exports to the v5.02(3) interfaces.
-- nupca3/agent.py: state init/persistence lacks A0.4 commit barrier and staged planning threads, stores pred_store/trace_cache inside serialized state, and doesn’t cap pending/pred stores per A0.BUDGET. Redesign state schema with staged buffers, T_MAX cap, non-serialized PendingPredStore/TraceCache, and lagged gating fields.
-- nupca3/incumbents.py: rebuilds incumbents_by_block by scanning the library and has no stored bucket membership for O(1) delete (A4.3′ index maintenance). Add per-unit bucket lists and bounded maintenance instead of full rebuilds.
-- nupca3/types.py: dataclasses miss v5.02 fields (problem_bound, BlockStats per A16.5.6, staged planning/thread artifacts, pred_ref/footprint slices, sig64 metadata schema). Update types to include A0.4 indices, pending pred store refs with FOOT_MAX, and non-authoritative trace cache fields.
-- nupca3/config.py: parameters are v1.5-centric; missing hard caps (N_MAX, K_MAX, C_CAND_MAX, PENDING_MAX, WM_MAX, TRACE_B_MAX, T_MAX) and new sig64 metadata/banding settings. Add deterministic degradation ladder thresholds, problem_bound controls, and drop debug full-state toggles.
-- nupca3/compat/stdlib.py: legacy shims; align/remove once config/constants are updated for v5.02(3).
-- nupca3/diagnostics/__init__.py: placeholder; ensure exports keep diagnostics separate from decision path per A17.3 with new audit fields.
-- nupca3/diagnostics/metrics.py: uses same-step cues/full-state errors and no lag discipline; must switch to committed dims only, lagged signals, and log purge/index health/budget ladder per A17.
-- nupca3/harness/__init__.py: exports legacy harness; update to v5.02(3) kernel-only API without full-state modes.
-- nupca3/harness/runner.py: builds env_obs with periph_full and selected_blocks override, violating A1/A16; refactor to physics-only harness that reveals only O_t and never routes attention.
-- nupca3/harness/steps.py: mixes REST/OPERATING logic without A13 commit barrier or staged planning writes; implement canonical ordering (incl. step 5.25), enforce B_rem, and fence micro-steps.
-- nupca3/harness/utils.py: utilities allow unbounded scans/logging; add budgeted, deterministic diagnostics only.
-- nupca3/harness/worlds.py: simulated worlds expose full state and allow attention overrides; rewrite as physics-only with foveated outputs and no routing hints.
-- nupca3/harness/render.py: renders/caches full frames; restrict to committed cues, purge raw pixels per tick/REST, and bound buffers.
-- nupca3/harness/logging.py: logs wallclock/unbounded histories; must log decision inputs/outputs only, with deterministic ordering and no control influence per A17.3.
-- nupca3/state/__init__.py: update exports to new state structures (block stats, staged buffers, problem_bound).
-- nupca3/state/stability.py: uses current-step values and may mutate during micro-steps; enforce lag discipline and freeze during contemplation/REST.
-- nupca3/state/baselines.py: updates baselines from full buffers; gate to committed dims, tick boundary only, and include explicit Δτ diagnostics.
-- nupca3/state/margins.py: margin computations ignore A2.5 compute slack and bounds; add B_rt-based slack and clamp margins per spec with lagged inputs.
-- nupca3/state/macrostate.py: rest gating uses ad-hoc flags and lacks explicit REST-only write fence; implement A14.1 lag rule, interrupt handling, and purge of raw buffers at REST exit.
-- nupca3/dynamics/__init__.py: adjust exports once dynamics are rewritten for v5.02(3).
-- nupca3/dynamics/margin_dynamics.py: dynamics ignore budget limits and deterministic decay; implement explicit A15 equations with bounded updates and REST recovery.
-- nupca3/geometry/__init__.py: update exports when geometry is brought to the new schema.
-- nupca3/geometry/streams.py: uses periph_full/true transport and stores coarse snapshots across ticks; violates A16.5.1′ (no dense Δy) and A1 harness neutrality. Rework to use q_b summaries/gist only and drop cross-tick coarse caches.
-- nupca3/geometry/buffer.py: buffers dense histories without caps; enforce F_MAX and purge per A13 step 12.
-- nupca3/geometry/binding.py: binding maps are mutable/unbounded; cap state, make deterministic, and ensure no scans or cross-tick hidden state.
-- nupca3/geometry/block_spec.py: block construction ignores A4.3′.1 metadata schema/anchor handling; align block masks/IDs with fixed block_mask/F_MAX and expose geom(O_t) for trace cache.
-- nupca3/geometry/fovea.py: selection allows env override/value_of_compute scaling and lacks deterministic greedy_cov tie-breakers and problem_bound handling; rewrite with A16.4 scoring, F_MAX/B_enc caps, and contemplate BOUND/FREE modes.
-- nupca3/memory/__init__.py: update exports to new sig64/index/pred store implementations.
-- nupca3/memory/completion.py: recomputes priors mid-step and can mutate state during contemplation; violates A0.4 commit barrier and lacks h conditioning per A7.3. Refactor to clamp committed cue only, freeze micro-steps, and accept explicit h.
-- nupca3/memory/fusion.py: fuses over full vectors with possible scans and no streaming Top-K; enforce precision-weighted fusion over retrieved units only with bounded heap and clamp committed dims.
-- nupca3/memory/expert.py: lacks A9.4 update hooks (clipping/arousal-modulated lr) and footprint-local constraints; add bounded per-footprint predict/update semantics and reliability/variance clamps.
-- nupca3/memory/rollout.py: performs multi-step rollouts without B_rem accounting and may reuse full-state history; bound cost to B_rt with early exits and avoid cross-tick accumulation.
-- nupca3/memory/library.py: stores nodes in dict without stable UnitId indirection/tombstones or caps; violates A4.ID and N_MAX cap. Add stable IDs, free list, revisioned buckets, and enforce caps.
-- nupca3/memory/pred_store.py: pending predictions stored as arbitrary dims without FOOT_MAX cap/pred_ref ids; updates err_ema/val_count directly. Replace with A4.5 PendingPredStore ring (pred_ref, footprint_dims_sorted, two-pointer intersection) and defer stats updates to validation step only.
-- nupca3/memory/sig64.py: uses SplitMix64 avalanche hash over counts/hist/delta; violates A4.3′.2 (must be SimHash-style LSH) and A4.3′.1 closed metadata schema. Rewrite to fixed metadata bitfields + p(t) bands with Hamming-preserving sketch; drop cross-tick delta smuggling.
-- nupca3/memory/sig_index.py: bucket_id = hash(sig64, block) (avalanche) not banded LSH; removal rescans buckets and no per-unit membership; maintenance unbounded. Implement banded bucket keys, store memberships for O(1) delete, and limit maintenance to BUCKET_MAINT_MAX.
-- nupca3/memory/working_set.py: candidate scoring sorts full query result, no streaming Top-K or deterministic tie-breakers, and recognized(b) requires scans. Add C_CAND_MAX cap with heap, deterministic ordering, block stats per A16.5.6, and strict K_MAX enforcement.
-- nupca3/memory/salience.py: can compute salience over entire library (salience_debug_exhaustive) and uses context registers; violates scan-proof + no persistent gist. Restrict to retrieved candidates, remove exhaustive mode, and ensure salience uses only bounded per-block scalars.
-- nupca3/memory/trace_cache.py: append allowed without macrostate check; needs OPERATING-only gating, TRACE_B_MAX incremental enforcement, and purge at commit barrier; ensure non-serialization and deterministic drop policy instead of rejection.
-- nupca3/control/__init__.py: update exports after control rewrites.
-- nupca3/control/intake.py: g_rest/g_contemplate derived from current signals and periph metrics; must implement A0.5 safe/urgent gates with lagged predicates and no env-driven overrides.
-- nupca3/control/edit_control.py: edit gates use current arousal/residual and no typed EditQ caps; implement A10 lag, A12 typed edits/evidence, and bound EVAL_MAX.
-- nupca3/control/governor.py: budget meter uses wallclock to relax budget and doesn’t enforce min(B_rt,B_max) with deterministic ladder; implement B_rem counter and ladder from A0.BUDGET.10.
-- nupca3/control/budget.py: estimate-based horizon without incremental spend; rewrite to decrement B_rem per operator with immediate degradation (no borrowing from next tick).
-- nupca3/control/commitment.py: commit gate ignores latency floor d and safety predicates; add A8 gating and π_safe fallback when gate fails.
-- nupca3/step_pipeline/__init__.py: legacy exports; align with rewritten kernel/ordering markers.
-- nupca3/step_pipeline/_v5_pipeline.py: mutates state throughout tick (no staging), allows env-selected blocks, uses periph_full for routing/transport with cross-tick caches, omits step 5.25 ordering, and runs planning micro-steps on live state. Rewrite to canonical A13 order with staging, problem_bound handling, deterministic budget ladder, and purge of ephemeral fields.
-- nupca3/step_pipeline/v5_kernel.py: wrapper lacks B_max enforcement/diagnostic separation; ensure kernel enforces t_w monotonicity, B_rt cap, and emits decision vs diagnostics disjointly.
-- nupca3/step_pipeline/worlds.py: world hypotheses/transport use full-state heuristics and may scan; refactor to bounded, foveated summaries only with deterministic ordering.
-- nupca3/step_pipeline/transport.py: uses periph_full/coarse snapshots across ticks and scans grids; violates A0.4 staging and A16.5.1′. Replace with summary-based transport limited to F_MAX dims, staged outputs only.
-- nupca3/step_pipeline/learning.py: batches gradients from cached cues and reuses obs history (replay-like); violates A4.5 and lacks A9.4 clipping/arousal modulation. Limit to current e_obs on footprint with budgeted updates only.
-- nupca3/step_pipeline/observations.py: persists context_register/observed_history and uses periph_full beyond commit; violates purge rule and A16.5.1′ gist schema. Use q_b summaries only, purge context per tick, and forbid access to uncommitted y_full after commit.
-- nupca3/step_pipeline/logging.py: logging interleaved with computation and may influence ordering markers; move to post-commit diagnostics, add new audit fields (B_rem, degrade ladder, trace cache stats).
-- nupca3/step_pipeline/fovea.py: selection uses lingering prev selection/value_of_compute scaling and lacks deterministic greedy_cov ties/problem_bound handling; implement A16.4 with F_MAX/B_enc caps and contemplate FREE/BOUND behavior.
-- nupca3/edits/__init__.py: update exports after edit pipeline rewrite.
-- nupca3/edits/edit_types.py: proposal structures lack typed evidence refs/block_ids and caps; add EditQ with EDITQ_MAX/EVAL_MAX, evidence-only sources per A12.0.2.
-- nupca3/edits/proposals.py: generates edits from observed_history scans/trace cache; violates anti-replay and typed evidence rules. Restrict to err_ema/val_count/debt stats and bounded per-block aggregates.
-- nupca3/edits/rest_processor.py: REST processing scans library and applies edits without BUCKET_MAINT_MAX cap or typed acceptance criteria; enforce bounded evaluation order, deterministic acceptance, and staging (no same-tick action dependence).
-- nupca3/edits/acceptance.py: uses usage counts/unvalidated stats; must switch to outcome-vetted err_ema/val_count, discriminability gate, and REST-only execution.
-- nupca3/persist.py: serialization includes transient fields (pred_store, trace_cache, context); adjust to exclude ephemeral state, maintain stable IDs, and version to v5.02 schema.
-- nupca3/probes/__init__.py: ensure probes remain diagnostics-only and cannot influence control path per A17.3.
-- nupca3/sim/__init__.py: update exports when sim runner/worlds are rewritten for physics-only delivery.
-- nupca3/sim/runner.py: couples env and agent via periph_full/selected_blocks and lacks purge; refactor to agent-driven O_t delivery, physics-only tick advance, and purge of raw buffers.
-- nupca3/sim/worlds.py: world helpers expose full state/occlusion and use unlogged RNG; ensure physics-only transitions, logged RNG seeds, no attention hints, and foveated outputs only.
+Several components can be substituted with existing libraries or tools, provided replacements preserve sublinear access, no scans, determinism, and budget bounds as per the v5.02/3 axioms (e.g., A4.3′, A16.6′). No modifications to axioms are required, as these focus on interfaces and contracts:
+
+Locality-Sensitive Hashing (LSH) for Retrieval: The SimHash-based banded index can be replicated using datasketch (MinHashLSH), which supports fixed-capacity buckets and Hamming distance queries. This maintains scan-proof retrieval by probing only relevant bands, with candidates capped via heap operations. Integration: Replace MultiSimHashBands with datasketch.MinHashLSH while keeping 64-bit signatures and block-scoping.
+State Estimation and Completion: The unified completion operator (clamping sparse cues into priors) can use scipy.sparse for efficient sparse matrix operations or pandas for imputation-like handling of missing values. For Gaussian experts, scipy.stats provides diagonal covariance computations without violating persistence rules.
+Prediction with Experts: The DAG-organized experts can leverage networkx for graph management (parents/children edges) and torch (available in the environment) for masked linear modules, ensuring fusion remains precision-weighted and bounded by K_MAX.
+Grid World Simulation: The environment in test.py (20x20 grid with moving shapes) can be simulated using pygame for rendering or numpy for array-based updates, preserving occlusion masks and tick decoupling.
+Visualization and UI: The rich terminal display can be replicated with matplotlib for grid plotting (e.g., imshow for env/pred/diff) or rich itself if integrated, without affecting decision paths.
+Persistence and Serialization: NPZ state saving uses numpy.savez; this can be augmented with joblib for efficient dumping of dataclasses, ensuring no serialization of trace caches (A16.8.4).
+
+

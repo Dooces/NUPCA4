@@ -26,6 +26,7 @@ from ..config import AgentConfig
 from ..control.governor import BudgetMeter
 from ..types import AgentState, ExpertLibrary, Node, WorkingSet
 from ..geometry.fovea import select_fovea
+from .primitives import compute_primitive_tokens
 from ..incumbents import get_incumbent_bucket
 
 
@@ -106,15 +107,6 @@ def _greedy_select(
     return selected
 
 
-# =============================================================================
-# Cold Storage Retrieval (A4.3 / NUPCA5 A4.3′)
-# =============================================================================
-
-
-def _popcount64(x: int) -> int:
-    return int((x & ((1 << 64) - 1)).bit_count())
-
-
 def get_retrieval_candidates(
     state: AgentState,
     cfg: AgentConfig,
@@ -131,9 +123,7 @@ def get_retrieval_candidates(
     if sig_index is None:
         raise RuntimeError("v5 retrieval requires library.sig_index")
 
-    sig64_t = getattr(state, "last_sig64", None)
-    if sig64_t is None:
-        raise RuntimeError("v5 retrieval requires state.last_sig64")
+    _sig64_t = getattr(state, "last_sig64", None)
 
     fovea_blocks = set(getattr(state, "current_fovea", set()))
     if not fovea_blocks:
@@ -166,10 +156,10 @@ def get_retrieval_candidates(
     if degrade_level > 0:
         K_cap = max(1, K_cap // cap_divisor)
 
-    raw = list(
-        sig_index.query(int(sig64_t), list(sorted(int(b) for b in fovea_blocks)), cand_cap=cand_cap)
-    )
-    raw = sorted(set(raw))[:C_cand_max]
+    query_tokens = compute_primitive_tokens(state, cfg)
+    raw = list(sig_index.query(query_tokens, cand_cap=cand_cap))
+    # raw: List[(node_id, evidence)]
+    raw = sorted(raw, key=lambda x: (x[1], -int(x[0])), reverse=True)[:C_cand_max]
 
     alpha_err = float(cfg.sig_stage2_alpha_err)
     stage2_limit = max(1, int(len(raw) * stage2_boost))
@@ -178,7 +168,7 @@ def get_retrieval_candidates(
     stage2_limit = min(stage2_limit, C_cand_max)
     top_heap: List[tuple[float, int]] = []
     processed_stage2 = 0
-    for node_id in raw:
+    for node_id, evidence in raw:
         if processed_stage2 >= stage2_limit:
             break
         processed_stage2 += 1
@@ -189,17 +179,11 @@ def get_retrieval_candidates(
         if node is None:
             continue
 
-        if not hasattr(node, "unit_sig64"):
-            raise RuntimeError(
-                "NUPCA5 retrieval stage-2 requires node.unit_sig64 (immutable 64-bit address)"
-            )
-        u_addr = int(getattr(node, "unit_sig64")) & ((1 << 64) - 1)
-        dist = _popcount64(int(sig64_t) ^ u_addr)
         if not hasattr(sig_index, "get_error"):
             raise RuntimeError("PackedSigIndex must expose get_error() under v5")
         err = float(sig_index.get_error(int(nid), 2))
 
-        score = -float(dist) - alpha_err * float(err)
+        score = float(evidence) - alpha_err * float(err)
         entry = (score, -nid)
         if len(top_heap) < K_cap:
             heapq.heappush(top_heap, entry)

@@ -301,3 +301,49 @@ def log_transport_summary(
         f"diff0_match={diff_zero_match} diff0_mismatch={diff_zero_mismatch} "
         f"diffnz_match={diff_nonzero_match} diffnz_mismatch={diff_nonzero_mismatch}"
     )
+
+
+def log_v5023_diagnostics(
+    *,
+    D_agent: int,
+    seed: int,
+    block_stats: Dict[str, float | int],
+    purge_health: Dict[str, float | int],
+    index_health: Dict[str, float | int | bool | Tuple[int, ...]],
+) -> None:
+    """Diagnostics-only markers (A17.3) for v5.02/3 audit."""
+    print(
+        f"[D{D_agent} seed{seed}] v5.02/3 block_stats "
+        f"count={block_stats.get('count', 0)} "
+        f"resid_mean={block_stats.get('resid_mean', 0.0):.6f} "
+        f"resid_max={block_stats.get('resid_max', 0.0):.6f} "
+        f"age_mean={block_stats.get('age_mean', 0.0):.6f} "
+        f"age_max={block_stats.get('age_max', 0.0):.6f} "
+        f"periph_demand_mean={block_stats.get('periph_demand_mean', 0.0):.6f}"
+    )
+    print(
+        f"[D{D_agent} seed{seed}] v5.02/3 purge_trace "
+        f"ctx_register={purge_health.get('context_register', 0)} "
+        f"observed_history={purge_health.get('observed_history', 0)} "
+        f"trace_cache_entries={purge_health.get('trace_cache_entries', 0)} "
+        f"trace_cache_blocks={purge_health.get('trace_cache_blocks', 0)} "
+        f"trace_cache_cue_mass={purge_health.get('trace_cache_cue_mass', 0)} "
+        f"support_window={purge_health.get('support_window', 0)} "
+        f"support_union={purge_health.get('support_union', 0)}"
+    )
+    err_shape = index_health.get("err_cache_shape", (0, 0))
+    populated_blocks = index_health.get("populated_blocks", ())
+    try:
+        populated_blocks_repr = tuple(populated_blocks)
+    except TypeError:
+        populated_blocks_repr = tuple()
+    print(
+        f"[D{D_agent} seed{seed}] v5.02/3 index_health "
+        f"tables={index_health.get('tables', 0)} "
+        f"bucket_bits={index_health.get('bucket_bits', 0)} "
+        f"bucket_cap={index_health.get('bucket_cap', 0)} "
+        f"populated_blocks={populated_blocks_repr} "
+        f"err_cache_shape={err_shape} "
+        f"err_cache_nan={index_health.get('err_cache_nan', False)} "
+        f"err_cache_present={index_health.get('err_cache_present', False)}"
+    )

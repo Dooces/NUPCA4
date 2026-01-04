@@ -100,7 +100,7 @@ def compute_margins(
       x_S(t)  = rawS(t)
 
       x_L(t)  = opp(t)
-      x_C(t)  = compute slack from A2.4 (passed in by caller)
+      x_C(t)  = compute deficit fraction (0 when on/under plan)
 
     We embed x_L and x_C directly as the L and C components of v(t), because
     A0.1 defines v(t) = (m_E, m_D, m_L, m_C, m_S) and A2 specifies x_L, x_C.
@@ -108,7 +108,7 @@ def compute_margins(
     Args:
       E, D, drift_P: underlying observables.
       opp: world-supplied learning opportunity proxy (A2.3).
-      x_C: compute slack value already computed from A2.4.
+      x_C: compute deficit fraction (0 when on/under plan).
       cfg: configuration parameters.
 
     Returns:
@@ -238,7 +238,7 @@ def compute_arousal(
 
     A = (
         w_L * abs(mL)
-        + w_C * abs(mC)
+        + w_C * max(0.0, mC)
         + w_S * abs(mS)
         + w_delta * (abs(dE) + abs(dD) + abs(dL) + abs(dC) + abs(dS))
         + w_E * abs(float(pred_error))

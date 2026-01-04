@@ -1,553 +1,770 @@
+#!/usr/bin/env python3
+"""
+drive_dir_audit.py
+
+Parse Windows `dir` text dumps (the classic "Directory of X:\\...") and generate
+cleanup + organization reports.
+
+Inputs supported:
+  - a .zip containing one or more .txt dumps
+  - one or more .txt files
+  - a folder containing .txt dumps
+
+Outputs (written to --out):
+  - audit.sqlite (portable database you can query later)
+  - summary.txt (human-readable)
+  - drive_totals.csv
+  - top_root_folders.csv
+  - extensions.csv
+  - largest_files.csv
+  - old_large_files.csv
+  - dup_name_size_groups.csv + dup_name_size_paths.csv
+  - dup_relpath_size_groups.csv + dup_relpath_size_paths.csv
+  - delete_candidates.csv (REVIEW LIST; does not delete anything)
+
+Typical usage:
+  python drive_dir_audit.py --input drives.zip --out out
+
+Notes:
+  - Duplicate detection is heuristic because the dump has no hashes. It groups by:
+      (file name + size) and (relative path + size).
+  - Deletion candidates are conservative (system paths excluded by default).
+"""
+
 from __future__ import annotations
-import random, math, time
-from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
 
-# -----------------------------
-# World and shapes
-# -----------------------------
-H, W = 12, 32
-N = H * W
-HORIZONS = [1, 2, 4, 8, 16, 32, 64]
+import argparse
+import csv
+import datetime as dt
+import io
+import re
+import sqlite3
+import time
+import zipfile
+from pathlib import Path
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-OCC_X0, OCC_X1 = 12, 19  # occluder band
-OCC_MASK = [0]*N
-for y in range(H):
-    for x in range(OCC_X0, OCC_X1+1):
-        OCC_MASK[y*W + x] = 1
-OCC_IDXS = [i for i,v in enumerate(OCC_MASK) if v==1]
+DIR_HEADER_RE = re.compile(r"^\s*Directory of\s+(?P<path>.+?)\s*$", re.IGNORECASE)
 
-SHAPES = {
-    "square": [(-1,-1),(-1,0),(-1,1),(0,-1),(0,0),(0,1),(1,-1),(1,0),(1,1)],
-    "cross":  [(0,0),(-1,0),(1,0),(0,-1),(0,1)],
-    "ell":    [(0,0),(0,1),(0,2),(1,2),(2,2)],
-    "line_h": [(-2,0),(-1,0),(0,0),(1,0),(2,0)],
-    "line_v": [(0,-2),(0,-1),(0,0),(0,1),(0,2)],
-}
+# Example lines:
+# 10/19/2022  06:52 PM           112,104 appverifUI.dll
+# 07/06/2025  04:20 PM    <DIR>          ESD
+ENTRY_RE = re.compile(
+    r"^\s*(?P<date>\d{2}/\d{2}/\d{4})\s+"
+    r"(?P<time>\d{1,2}:\d{2})\s+"
+    r"(?P<ampm>AM|PM)\s+"
+    r"(?P<size_or_tag><[^>]+>|[\d,]+)\s+"
+    r"(?P<name>.+?)\s*$"
+)
 
-def idx(x:int,y:int)->int: return y*W + x
+SKIP_PREFIXES = (
+    "Volume in drive",
+    "Volume Serial Number",
+    "Total Files Listed",
+)
 
-def render_shape(name:str, cx:int, cy:int)->List[int]:
-    g = [0]*N
-    for dx,dy in SHAPES[name]:
-        x,y = cx+dx, cy+dy
-        if 0<=x<W and 0<=y<H:
-            g[idx(x,y)] = 1
-    return g
+SKIP_LINE_RE = re.compile(
+    r"^\s*(?:\d+\s+File\(s\)|\d+\s+Dir\(s\)|File\(s\)|Dir\(s\))\b|^\s*$",
+    re.IGNORECASE
+)
 
-def mean(xs: List[float])->float: return sum(xs)/max(1,len(xs))
-def std(xs: List[float])->float:
-    if len(xs)<=1: return 0.0
-    m=mean(xs); return math.sqrt(mean([(x-m)**2 for x in xs]))
+DEFAULT_SYSTEM_EXCLUDES = [
+    r"^C:\\Windows\\",
+    r"^C:\\Program Files\\",
+    r"^C:\\Program Files \(x86\)\\",
+    r"^C:\\ProgramData\\",
+    r"^C:\\Users\\[^\\]+\\AppData\\",
+    r"^C:\\$",
+]
 
-def truth_in_occluder(truth: List[int]) -> bool:
-    return any(truth[i]==1 for i in OCC_IDXS)
+TRASHY_PATH_HINTS = [
+    r"\\downloads\\",
+    r"\\download\\",
+    r"\\temp\\",
+    r"\\tmp\\",
+    r"\\cache\\",
+    r"\\recycle\.bin\\",
+    r"\\\$recycle\.bin\\",
+    r"\\crashdumps\\",
+    r"\\logs\\",
+]
 
-def iou_occ(pred_occ: List[float], truth: List[int], thr: float=0.5)->float:
-    inter=0; union=0
-    for j,i in enumerate(OCC_IDXS):
-        p = 1 if pred_occ[j]>=thr else 0
-        g = truth[i]
-        if p==1 and g==1: inter += 1
-        if p==1 or g==1: union += 1
-    return 1.0 if union==0 else inter/union
+TRASHY_EXTS = {"tmp", "log", "dmp", "bak", "old", "etl", "chk"}
+ARCHIVE_EXTS = {"zip", "7z", "rar", "iso", "img", "gz", "bz2", "xz", "tar", "tgz", "zst"}
+INSTALLER_EXTS = {"exe", "msi", "msp", "cab", "appx", "msix", "dmg", "pkg"}
 
-def centroid(truth: List[int], idxs: List[int]) -> Optional[Tuple[float,float]]:
-    pts=[]
-    for i in idxs:
-        if truth[i]==1:
-            y=i//W; x=i%W
-            pts.append((x,y))
-    if not pts: return None
-    return (mean([p[0] for p in pts]), mean([p[1] for p in pts]))
 
-def centroid_pred(pred_occ: List[float], thr: float=0.5) -> Optional[Tuple[float,float]]:
-    pts=[]
-    for j,i in enumerate(OCC_IDXS):
-        if pred_occ[j]>=thr:
-            y=i//W; x=i%W
-            pts.append((x,y))
-    if not pts: return None
-    return (mean([p[0] for p in pts]), mean([p[1] for p in pts]))
+def _safe_join_dir(dir_path: str, name: str) -> str:
+    return f"{dir_path}{name}" if dir_path.endswith("\\") else f"{dir_path}\\{name}"
 
-def l2(a: Tuple[float,float], b: Tuple[float,float]) -> float:
-    return math.hypot(a[0]-b[0], a[1]-b[1])
 
-@dataclass
-class Episode:
-    h: int
-    shape: str
-    cx: int
-    cy: int
-    vx: int
-    vy: int
-    t_start: int
-    t_occl: int
-    t_reveal: int
-    t_end: int
+def _drive_letter(path: str) -> str:
+    if len(path) >= 2 and path[1] == ":":
+        return path[0].upper()
+    return "?"
 
-class ChamberWorld:
+
+def _relpath_from_drive(full_path: str) -> str:
+    # "E:\\backup\\foo" -> "backup\\foo"
+    if len(full_path) >= 3 and full_path[1:3] == ":\\":
+        return full_path[3:]
+    return full_path
+
+
+def _root1(relpath: str) -> str:
+    if not relpath:
+        return ""
+    parts = relpath.split("\\")
+    return parts[0] if parts else ""
+
+
+def _ext_of(name: str) -> str:
+    i = name.rfind(".")
+    if i <= 0 or i == len(name) - 1:
+        return ""
+    return name[i + 1 :].lower()
+
+
+def iter_text_sources(input_path: Path) -> Iterator[Tuple[str, io.TextIOBase]]:
     """
-    Non-degenerate: when occluded, object bounces INSIDE the occluder columns.
-    At reveal tick, occluder turns off but object is still inside the band.
+    Yield (source_name, text_stream) pairs.
+    Supports zip, directory, or single file.
     """
-    def __init__(self, seed:int=0, pre:int=6, post:int=2):
-        self.rng=random.Random(seed)
-        self.t=0
-        self.pre=pre
-        self.post=post
-        self.ep: Optional[Episode]=None
-        self._new_ep()
+    if input_path.is_dir():
+        for p in sorted(input_path.glob("*.txt")):
+            yield p.name, p.open("r", encoding="utf-8", errors="replace", newline="")
+        return
 
-    def _new_ep(self):
-        h=self.rng.choice(HORIZONS)
-        shape=self.rng.choice(list(SHAPES.keys()))
-        cy=self.rng.randint(3, H-4)
-        cx=OCC_X0-3
-        vx=1
-        vy=self.rng.choice([-1,0,1])
-        t0=self.t
-        t_occl=t0+self.pre
-        t_reveal=t_occl+h
-        t_end=t_reveal+self.post
-        self.ep=Episode(h,shape,cx,cy,vx,vy,t0,t_occl,t_reveal,t_end)
+    if input_path.is_file():
+        yield input_path.name, input_path.open("r", encoding="utf-8", errors="replace", newline="")
+        return
 
-    def step(self)->Tuple[List[int],List[int],bool,bool,bool,int]:
-        assert self.ep is not None
-        ep=self.ep
-        is_occ=(ep.t_occl<=self.t<ep.t_reveal)
-        is_start=(self.t==ep.t_occl)
-        is_reveal=(self.t==ep.t_reveal)
+    raise FileNotFoundError(str(input_path))
 
-        # move
-        ep.cx += ep.vx
-        ep.cy += ep.vy
-        if is_occ:
-            if ep.cx < OCC_X0+1 or ep.cx > OCC_X1-1:
-                ep.vx *= -1
-                ep.cx = max(OCC_X0+1, min(OCC_X1-1, ep.cx))
-        if ep.cy < 2 or ep.cy > H-3:
-            ep.vy *= -1
-            ep.cy = max(2, min(H-3, ep.cy))
 
-        truth = render_shape(ep.shape, ep.cx, ep.cy)
-        occ = OCC_MASK[:] if is_occ else [0]*N
+def parse_dir_dump(
+    source_name: str,
+    stream: io.TextIOBase,
+    *,
+    emit_dirs: bool = False,
+) -> Iterator[Tuple[bool, str, str, str, int, int, str, str, str]]:
+    """
+    Yields tuples:
+      (is_dir, drive, dir_path, name, size_bytes, mtime_ts, full_path, relpath, root1)
 
-        self.t += 1
-        if self.t >= ep.t_end:
-            self._new_ep()
+    For directories: size_bytes = 0
+    """
+    current_dir: Optional[str] = None
 
-        return truth, occ, is_occ, is_start, is_reveal, ep.h
+    for line in stream:
+        line = line.rstrip("\r\n")
 
-    def observe(self, truth: List[int], occ: List[int]) -> Tuple[List[int],List[int]]:
-        # FULL FIELD except occluded cells are UNOBSERVED (missing)
-        vals=[]; idxs=[]
-        for i in range(N):
-            if occ[i]==1: continue
-            idxs.append(i); vals.append(truth[i])
-        return vals, idxs
-
-# -----------------------------
-# Multi-table SimHash + banded buckets
-# Key fix: use 8-bit bands to avoid “no candidates” at small library sizes.
-# 64 bits => 8 bands => 8-bit per band.
-# -----------------------------
-
-class MultiSimHashBands:
-    def __init__(self, feat_len:int, n_tables:int=5, bands_per_table:int=8, seed:int=12345):
-        assert 64 % bands_per_table == 0
-        self.n_tables=n_tables
-        self.bands=bands_per_table
-        self.band_bits=64//bands_per_table  # here = 8
-        self.weights=[]
-        for t in range(n_tables):
-            rng=random.Random(seed+100000*t)
-            self.weights.append([[1 if rng.getrandbits(1) else -1 for _ in range(feat_len)] for _ in range(64)])
-
-    def sig(self, v: List[int]) -> Tuple[int,...]:
-        out=[]
-        for t in range(self.n_tables):
-            bits=0
-            wt=self.weights[t]
-            for i in range(64):
-                s=0
-                wi=wt[i]
-                for k,x in enumerate(v):
-                    s += wi[k]*x
-                if s>=0: bits |= (1<<i)
-            out.append(bits)
-        return tuple(out)
-
-    def bucket_keys(self, sig: Tuple[int,...]) -> List[Tuple[int,int,int]]:
-        keys=[]
-        mask=(1<<self.band_bits)-1  # 0..255
-        for t in range(self.n_tables):
-            s=sig[t]
-            for b in range(self.bands):
-                val=(s>>(b*self.band_bits)) & mask
-                keys.append((t,b,val))
-        return keys
-
-def sig_dist(a: Tuple[int,...], b: Tuple[int,...]) -> int:
-    return sum((a[i]^b[i]).bit_count() for i in range(len(a)))
-
-class BandIndex:
-    def __init__(self, scheme: MultiSimHashBands, bucket_cap:int=16, cand_max:int=256):
-        self.scheme=scheme
-        self.bucket_cap=bucket_cap
-        self.cand_max=cand_max
-        self.buckets: Dict[Tuple[int,int,int,int], List[int]] = {}
-
-    def insert(self, h:int, uid:int, sig:Tuple[int,...]) -> None:
-        for (t,b,val) in self.scheme.bucket_keys(sig):
-            k=(h,t,b,val)
-            arr=self.buckets.get(k)
-            if arr is None:
-                arr=[]; self.buckets[k]=arr
-            if len(arr)>=self.bucket_cap:
-                arr.pop(0)
-            arr.append(uid)
-
-    def candidates(self, h:int, sig_q:Tuple[int,...]) -> List[int]:
-        cand=[]
-        seen={}
-        for (t,b,val) in self.scheme.bucket_keys(sig_q):
-            arr=self.buckets.get((h,t,b,val), [])
-            for uid in arr:
-                if uid in seen: continue
-                seen[uid]=True
-                cand.append(uid)
-                if len(cand)>=self.cand_max:
-                    return cand
-        return cand
-
-# -----------------------------
-# NUPCA-like memory agent + FullScan oracle variant
-# -----------------------------
-
-@dataclass
-class Unit:
-    uid: int
-    h: int
-    sig: Tuple[int,...]
-    pred_occ: List[float]
-    err_ema: float = 1.0
-    val_count: int = 0
-
-@dataclass
-class Pending:
-    t_due: int
-    h: int
-    uid: int
-    pred_snapshot: List[float]
-
-class LegacyBandAgent:
-    def __init__(self, full_scan: bool, seed:int=0):
-        self.full_scan=full_scan
-        self.rng=random.Random(seed)
-        self.prev_row=[0]*H
-        self.prev_col=[0]*W
-        self.feat_len=(H+W)*2 + len(HORIZONS) + 3
-        self.scheme=MultiSimHashBands(self.feat_len, n_tables=5, bands_per_table=8, seed=seed+123)
-        self.index=BandIndex(self.scheme, bucket_cap=16, cand_max=256)
-
-        self.mem={h: [] for h in HORIZONS}
-        self.pending: Dict[int,List[Pending]] = {}
-        self.belief_occ=[0.0]*len(OCC_IDXS)
-        self.t=0
-
-        # creation gates
-        self.min_new_dist=100
-        self.persist_needed=1
-        self.novelty_ctr={h:0 for h in HORIZONS}
-
-        # retrieval params
-        self.K=7
-        self.alpha_err=2.0
-
-        # logs
-        self.stage1_hits=0
-        self.stage1_queries=0
-        self.stage1_cand_sum=0
-        self.stage2_scored_sum=0
-        self.created={h:0 for h in HORIZONS}
-        self.validated={h:0 for h in HORIZONS}
-
-    def _shape_bits(self, obs_vals:List[int], obs_idx:List[int]) -> List[int]:
-        left=mid=right=0
-        for v,i in zip(obs_vals, obs_idx):
-            if v==0: continue
-            x=i%W
-            if x < OCC_X0: left += 1
-            elif x > OCC_X1: right += 1
-            else: mid += 1
-        return [1 if left>0 else 0, 1 if right>0 else 0, 1 if mid>0 else 0]
-
-    def _features(self, obs_vals:List[int], obs_idx:List[int], h:int) -> List[int]:
-        row=[0]*H
-        col=[0]*W
-        for v,i in zip(obs_vals, obs_idx):
-            if v==0: continue
-            y=i//W; x=i%W
-            row[y]+=1; col[x]+=1
-        drow=[row[i]-self.prev_row[i] for i in range(H)]
-        dcol=[col[i]-self.prev_col[i] for i in range(W)]
-        self.prev_row=row; self.prev_col=col
-        feats=row+col+drow+dcol
-        for hh in HORIZONS: feats.append(1 if hh==h else 0)
-        feats += self._shape_bits(obs_vals, obs_idx)
-        return feats
-
-    def _retrieve(self, h:int, sig_q:Tuple[int,...]) -> List[Unit]:
-        units=self.mem[h]
-        self.stage1_queries += 1
-        if not units:
-            return []
-        if self.full_scan:
-            cand = list(range(len(units)))
-        else:
-            cand = self.index.candidates(h, sig_q)
-
-        if cand:
-            self.stage1_hits += 1
-        self.stage1_cand_sum += len(cand)
-
-        scored=[]
-        for uid in cand:
-            self.stage2_scored_sum += 1
-            u=units[uid]
-            d=sig_dist(sig_q, u.sig)
-            score=float(d) + self.alpha_err*u.err_ema
-            scored.append((score, uid))
-        scored.sort(key=lambda x:(x[0], x[1]))
-        return [units[uid] for _,uid in scored[:self.K]]
-
-    def on_occlusion_start(self, obs_vals:List[int], obs_idx:List[int], h_occ:int) -> None:
-        feats=self._features(obs_vals, obs_idx, h_occ)
-        sig_q=self.scheme.sig(feats)
-        retrieved=self._retrieve(h_occ, sig_q)
-
-        pred=self.belief_occ[:]
-        if retrieved:
-            num=[0.0]*len(OCC_IDXS)
-            den=[0.0]*len(OCC_IDXS)
-            for u in retrieved:
-                w=0.2 if u.val_count==0 else 1.0/max(0.05,u.err_ema)
-                for j in range(len(OCC_IDXS)):
-                    num[j]+=w*u.pred_occ[j]; den[j]+=w
-            for j in range(len(OCC_IDXS)):
-                if den[j]>0: pred[j]=num[j]/den[j]
-
-        # compare-first creation (scan distance is ok because mem is bounded in this toy)
-        best_d=10**9
-        for u in self.mem[h_occ]:
-            best_d=min(best_d, sig_dist(sig_q, u.sig))
-        if best_d>self.min_new_dist:
-            self.novelty_ctr[h_occ]+=1
-        else:
-            self.novelty_ctr[h_occ]=0
-        if (best_d>self.min_new_dist) and (self.novelty_ctr[h_occ]>=self.persist_needed):
-            uid=len(self.mem[h_occ])
-            self.mem[h_occ].append(Unit(uid,h_occ,sig_q,pred[:],1.0,0))
-            if not self.full_scan:
-                self.index.insert(h_occ, uid, sig_q)
-            self.created[h_occ]+=1
-
-        # validate best matching unit if exists else skip
-        use_uid = len(self.mem[h_occ])-1 if self.mem[h_occ] else -1
-        self.pending.setdefault(self.t+h_occ, []).append(Pending(self.t+h_occ, h_occ, use_uid, pred[:]))
-        self.belief_occ = pred[:]
-
-    def tick(self, obs_vals:List[int], obs_idx:List[int], is_occluded:bool, is_reveal_tick:bool) -> None:
-        # validate due
-        due=self.pending.pop(self.t, [])
-        if due and is_reveal_tick:
-            obs_map={i:float(v) for i,v in zip(obs_idx, obs_vals)}
-            idx_to_j={OCC_IDXS[j]:j for j in range(len(OCC_IDXS))}
-            for p in due:
-                if p.uid<0 or p.uid>=len(self.mem[p.h]): continue
-                u=self.mem[p.h][p.uid]
-                err=mean([abs(p.pred_snapshot[idx_to_j[i]] - obs_map[i]) for i in OCC_IDXS])
-                u.err_ema=0.7*u.err_ema+0.3*err
-                u.val_count += 1
-                self.validated[p.h]+=1
-                lr=0.2
-                for i in OCC_IDXS:
-                    j=idx_to_j[i]
-                    u.pred_occ[j]=(1-lr)*u.pred_occ[j]+lr*obs_map[i]
-
-        if not is_occluded:
-            # clamp belief from observation
-            obs_map={i:v for i,v in zip(obs_idx, obs_vals)}
-            self.belief_occ=[float(obs_map[i]) for i in OCC_IDXS]
-        self.t += 1
-
-# -----------------------------
-# Standard kNN scan baseline (cosine, replay)
-# -----------------------------
-
-class KNNScan:
-    def __init__(self, k:int=7):
-        self.k=k
-        self.prev_row=[0]*H
-        self.prev_col=[0]*W
-        self.feat_len=(H+W)*2 + len(HORIZONS) + 3
-        self.data={h: [] for h in HORIZONS}  # (feat, label_occ)
-        self.pending: Dict[int, Tuple[int, List[float]]] = {}
-        self.t=0
-
-    def _shape_bits(self, obs_vals, obs_idx):
-        left=mid=right=0
-        for v,i in zip(obs_vals, obs_idx):
-            if v==0: continue
-            x=i%W
-            if x < OCC_X0: left += 1
-            elif x > OCC_X1: right += 1
-            else: mid += 1
-        return [1.0 if left>0 else 0.0, 1.0 if right>0 else 0.0, 1.0 if mid>0 else 0.0]
-
-    def _features(self, obs_vals, obs_idx, h):
-        row=[0]*H
-        col=[0]*W
-        for v,i in zip(obs_vals, obs_idx):
-            if v==0: continue
-            y=i//W; x=i%W
-            row[y]+=1; col[x]+=1
-        drow=[row[i]-self.prev_row[i] for i in range(H)]
-        dcol=[col[i]-self.prev_col[i] for i in range(W)]
-        self.prev_row=row; self.prev_col=col
-        feats=[float(x) for x in (row+col+drow+dcol)]
-        for hh in HORIZONS: feats.append(1.0 if hh==h else 0.0)
-        feats += self._shape_bits(obs_vals, obs_idx)
-        return feats
-
-    def _cos(self,a,b):
-        dot=na=nb=0.0
-        for i in range(len(a)):
-            dot += a[i]*b[i]
-            na += a[i]*a[i]
-            nb += b[i]*b[i]
-        if na<=1e-12 or nb<=1e-12: return 0.0
-        return dot/math.sqrt(na*nb)
-
-    def predict(self, h, feat):
-        buf=self.data[h]
-        if not buf:
-            return [0.0]*len(OCC_IDXS)
-        sims=[]
-        for f,y in buf:
-            sims.append((self._cos(feat,f), y))
-        sims.sort(key=lambda x:-x[0])
-        top=sims[:self.k]
-        out=[0.0]*len(OCC_IDXS)
-        wsum=0.0
-        for s,y in top:
-            w=max(0.0,s)
-            wsum += w
-            for j in range(len(OCC_IDXS)):
-                out[j]+=w*y[j]
-        if wsum>1e-9:
-            for j in range(len(OCC_IDXS)): out[j]/=wsum
-        return out
-
-    def on_occlusion_start(self, obs_vals, obs_idx, h_occ):
-        feat=self._features(obs_vals, obs_idx, h_occ)
-        self.pending[self.t+h_occ]=(h_occ, feat)
-        return self.predict(h_occ, feat)
-
-    def tick(self, obs_vals, obs_idx, is_reveal_tick: bool):
-        if is_reveal_tick and self.t in self.pending:
-            h, feat = self.pending.pop(self.t)
-            obs_map={i:float(v) for i,v in zip(obs_idx, obs_vals)}
-            label=[obs_map[i] for i in OCC_IDXS]
-            self.data[h].append((feat, label))
-        self.t += 1
-
-# -----------------------------
-# Run benchmark
-# -----------------------------
-
-def run(seed:int=0, T:int=5000):
-    w=ChamberWorld(seed=seed, pre=6, post=2)
-
-    nupca_b = LegacyBandAgent(full_scan=False, seed=seed+1)
-    nupca_s = LegacyBandAgent(full_scan=True,  seed=seed+1)
-    knn = KNNScan(k=7)
-
-    iou_b={h:[] for h in HORIZONS}
-    iou_s={h:[] for h in HORIZONS}
-    iou_k={h:[] for h in HORIZONS}
-    dist_b=[]; dist_s=[]; dist_k=[]
-
-    t_b=t_s=t_k=0.0
-    cur_h=None
-    knn_pred=None
-
-    for t in range(T):
-        truth, occ, is_occ, is_start, is_reveal, h = w.step()
-        obs_vals, obs_idx = w.observe(truth, occ)
-
-        if is_start:
-            cur_h=h
-            nupca_b.on_occlusion_start(obs_vals, obs_idx, h)
-            nupca_s.on_occlusion_start(obs_vals, obs_idx, h)
-            knn_pred = knn.on_occlusion_start(obs_vals, obs_idx, h)
-
-        # evaluate at reveal BEFORE learning on reveal tick
-        if is_reveal and cur_h is not None and truth_in_occluder(truth):
-            iou_b[cur_h].append(iou_occ(nupca_b.belief_occ, truth))
-            iou_s[cur_h].append(iou_occ(nupca_s.belief_occ, truth))
-            iou_k[cur_h].append(iou_occ(knn_pred if knn_pred is not None else [0.0]*len(OCC_IDXS), truth))
-
-            ct = centroid(truth, OCC_IDXS)
-            if ct is not None:
-                pb = centroid_pred(nupca_b.belief_occ)
-                ps = centroid_pred(nupca_s.belief_occ)
-                pk = centroid_pred(knn_pred if knn_pred is not None else [0.0]*len(OCC_IDXS))
-                if pb: dist_b.append(l2(pb, ct))
-                if ps: dist_s.append(l2(ps, ct))
-                if pk: dist_k.append(l2(pk, ct))
-
-            cur_h=None
-            knn_pred=None
-
-        # tick agents
-        t0=time.perf_counter(); nupca_b.tick(obs_vals, obs_idx, is_occ, is_reveal); t_b += time.perf_counter()-t0
-        t0=time.perf_counter(); nupca_s.tick(obs_vals, obs_idx, is_occ, is_reveal); t_s += time.perf_counter()-t0
-        t0=time.perf_counter(); knn.tick(obs_vals, obs_idx, is_reveal);           t_k += time.perf_counter()-t0
-
-    print("\n================ CONCLUSIVE BENCHMARK ================")
-    print(f"Steps={T}  horizons={HORIZONS}  grid={H}x{W}  occ=[{OCC_X0}..{OCC_X1}]")
-    print("Metric: IoU on occluder region at reveal, conditioned on truth-in-occluder>0 (no empty IoU degeneracy).")
-    print("Agents: NUPCA-Bounded (LSH), NUPCA-FullScan (oracle), kNN-Scan (standard replay baseline)\n")
-
-    print("Speed:")
-    print(f"  NUPCA-Bounded: {1000*t_b/T:.3f} ms/step")
-    print(f"  NUPCA-FullScan:{1000*t_s/T:.3f} ms/step")
-    print(f"  kNN-Scan:      {1000*t_k/T:.3f} ms/step\n")
-
-    print("Retrieval health (NUPCA-Bounded):")
-    hit_rate = nupca_b.stage1_hits / max(1, nupca_b.stage1_queries)
-    print(f"  Stage1 hit-rate: {hit_rate:.3f}")
-    print(f"  Avg candidates/query: {nupca_b.stage1_cand_sum / max(1,nupca_b.stage1_queries):.2f}")
-    print(f"  Avg scored/query:     {nupca_b.stage2_scored_sum / max(1,nupca_b.stage1_queries):.2f}\n")
-
-    print("Per-horizon IoU (mean±std, n):")
-    print(f"{'h':>3s} {'Bounded':>10s} {'FullScan':>10s} {'kNN':>10s} {'n':>6s}")
-    print("-"*44)
-    for h in HORIZONS:
-        n = len(iou_b[h])
-        if n == 0:
-            print(f"{h:3d} {'nan':>10s} {'nan':>10s} {'nan':>10s} {0:6d}")
+        if any(line.startswith(p) for p in SKIP_PREFIXES):
             continue
-        print(f"{h:3d} {mean(iou_b[h]):.3f}±{std(iou_b[h]):.3f} "
-              f"{mean(iou_s[h]):.3f}±{std(iou_s[h]):.3f} "
-              f"{mean(iou_k[h]):.3f}±{std(iou_k[h]):.3f} {n:6d}")
+        if SKIP_LINE_RE.match(line):
+            continue
 
-    print("\nCentroid distance during occluder-at-reveal (lower is better):")
-    if dist_b: print(f"  Bounded:  {mean(dist_b):.2f} ± {std(dist_b):.2f} (n={len(dist_b)})")
-    if dist_s: print(f"  FullScan: {mean(dist_s):.2f} ± {std(dist_s):.2f} (n={len(dist_s)})")
-    if dist_k: print(f"  kNN:      {mean(dist_k):.2f} ± {std(dist_k):.2f} (n={len(dist_k)})")
+        m = DIR_HEADER_RE.match(line)
+        if m:
+            current_dir = m.group("path").strip()
+            continue
+
+        if current_dir is None:
+            continue
+
+        m = ENTRY_RE.match(line)
+        if not m:
+            continue
+
+        name = m.group("name").strip()
+        if name in (".", ".."):
+            continue
+
+        tag = m.group("size_or_tag").strip()
+
+        try:
+            mtime = dt.datetime.strptime(
+                f"{m.group('date')} {m.group('time')} {m.group('ampm')}",
+                "%m/%d/%Y %I:%M %p",
+            )
+            mtime_ts = int(mtime.timestamp())
+        except Exception:
+            mtime_ts = 0
+
+        is_dir = tag.startswith("<") and "DIR" in tag.upper()
+        if is_dir:
+            if not emit_dirs:
+                continue
+            size = 0
+        else:
+            try:
+                size = int(tag.replace(",", ""))
+            except Exception:
+                # Unknown tag (e.g. <JUNCTION>) — ignore unless emitting dirs.
+                if emit_dirs:
+                    is_dir = True
+                    size = 0
+                else:
+                    continue
+
+        full_path = _safe_join_dir(current_dir, name)
+        drive = _drive_letter(current_dir)
+        relpath = _relpath_from_drive(full_path)
+        root = _root1(relpath)
+
+        yield (is_dir, drive, current_dir, name, size, mtime_ts, full_path, relpath, root)
+
+
+def init_db(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+
+    # Speed pragmas; acceptable because this DB is rebuildable.
+    cur.execute("PRAGMA journal_mode=WAL;")
+    cur.execute("PRAGMA synchronous=NORMAL;")
+    cur.execute("PRAGMA temp_store=MEMORY;")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS files (
+          full_path   TEXT PRIMARY KEY,
+          drive       TEXT NOT NULL,
+          dir_path    TEXT NOT NULL,
+          name        TEXT NOT NULL,
+          name_lc     TEXT NOT NULL,
+          relpath     TEXT NOT NULL,
+          relpath_lc  TEXT NOT NULL,
+          root1       TEXT NOT NULL,
+          ext         TEXT NOT NULL,
+          size_bytes  INTEGER NOT NULL,
+          mtime_ts    INTEGER NOT NULL
+        );
+        """
+    )
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_files_name_size ON files(name_lc, size_bytes);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_files_rel_size  ON files(relpath_lc, size_bytes);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_files_drive      ON files(drive);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_files_root1      ON files(drive, root1);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_files_ext        ON files(ext);")
+    conn.commit()
+    return conn
+
+
+def insert_files(conn: sqlite3.Connection, rows: Sequence[Tuple]) -> None:
+    cur = conn.cursor()
+    cur.executemany(
+        """
+        INSERT OR REPLACE INTO files
+        (full_path, drive, dir_path, name, name_lc, relpath, relpath_lc, root1, ext, size_bytes, mtime_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """,
+        rows,
+    )
+
+
+def write_csv(path: Path, header: Sequence[str], rows: Iterable[Sequence]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(list(header))
+        for r in rows:
+            w.writerow(list(r))
+
+
+def query_to_csv(conn: sqlite3.Connection, sql: str, params: Sequence, out_path: Path, header: Sequence[str]) -> None:
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    write_csv(out_path, header, cur.fetchall())
+
+
+def generate_reports(
+    conn: sqlite3.Connection,
+    out_dir: Path,
+    *,
+    top_n: int,
+    old_days: int,
+    old_min_mb: int,
+    dup_min_mb: int,
+    max_dup_groups: int,
+    max_paths_per_group: int,
+    max_delete_candidates: int,
+    min_candidate_mb: int,
+    system_excludes: List[re.Pattern],
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cur = conn.cursor()
+
+    # Totals per drive
+    query_to_csv(
+        conn,
+        """
+        SELECT drive,
+               COUNT(*) AS file_count,
+               SUM(size_bytes) AS total_bytes
+        FROM files
+        GROUP BY drive
+        ORDER BY total_bytes DESC;
+        """,
+        (),
+        out_dir / "drive_totals.csv",
+        ["drive", "file_count", "total_bytes"],
+    )
+
+    # Top root folders by size per drive
+    query_to_csv(
+        conn,
+        """
+        SELECT drive,
+               root1,
+               COUNT(*) AS file_count,
+               SUM(size_bytes) AS total_bytes
+        FROM files
+        GROUP BY drive, root1
+        ORDER BY total_bytes DESC
+        LIMIT ?;
+        """,
+        (max(1000, top_n * 10),),
+        out_dir / "top_root_folders.csv",
+        ["drive", "root1", "file_count", "total_bytes"],
+    )
+
+    # Extensions by size
+    query_to_csv(
+        conn,
+        """
+        SELECT ext,
+               COUNT(*) AS file_count,
+               SUM(size_bytes) AS total_bytes
+        FROM files
+        GROUP BY ext
+        ORDER BY total_bytes DESC
+        LIMIT ?;
+        """,
+        (max(200, top_n * 2),),
+        out_dir / "extensions.csv",
+        ["ext", "file_count", "total_bytes"],
+    )
+
+    # Largest files
+    query_to_csv(
+        conn,
+        """
+        SELECT size_bytes, mtime_ts, drive, full_path
+        FROM files
+        ORDER BY size_bytes DESC
+        LIMIT ?;
+        """,
+        (top_n,),
+        out_dir / "largest_files.csv",
+        ["size_bytes", "mtime_ts", "drive", "full_path"],
+    )
+
+    # Old large files
+    threshold_ts = int(time.time()) - int(old_days) * 86400
+    min_old_bytes = int(old_min_mb) * 1024 * 1024
+    query_to_csv(
+        conn,
+        """
+        SELECT size_bytes, mtime_ts, drive, full_path
+        FROM files
+        WHERE mtime_ts > 0 AND mtime_ts < ? AND size_bytes >= ?
+        ORDER BY size_bytes DESC
+        LIMIT ?;
+        """,
+        (threshold_ts, min_old_bytes, top_n),
+        out_dir / "old_large_files.csv",
+        ["size_bytes", "mtime_ts", "drive", "full_path"],
+    )
+
+    # Duplicate groups by (name_lc, size)
+    min_dup_bytes = int(dup_min_mb) * 1024 * 1024
+    query_to_csv(
+        conn,
+        """
+        SELECT name_lc,
+               size_bytes,
+               COUNT(*) AS copies,
+               SUM(size_bytes) AS total_bytes
+        FROM files
+        WHERE size_bytes >= ?
+        GROUP BY name_lc, size_bytes
+        HAVING COUNT(*) > 1
+        ORDER BY total_bytes DESC, copies DESC
+        LIMIT ?;
+        """,
+        (min_dup_bytes, max_dup_groups),
+        out_dir / "dup_name_size_groups.csv",
+        ["name_lc", "size_bytes", "copies", "total_bytes"],
+    )
+
+    # Expand duplicate paths (name+size)
+    cur.execute(
+        """
+        SELECT name_lc, size_bytes
+        FROM (
+            SELECT name_lc, size_bytes, COUNT(*) AS copies, SUM(size_bytes) AS total_bytes
+            FROM files
+            WHERE size_bytes >= ?
+            GROUP BY name_lc, size_bytes
+            HAVING COUNT(*) > 1
+            ORDER BY total_bytes DESC, copies DESC
+            LIMIT ?
+        );
+        """,
+        (min_dup_bytes, max_dup_groups),
+    )
+    keys = cur.fetchall()
+
+    def iter_dup_paths_by_name_size() -> Iterator[Tuple]:
+        for name_lc, size_bytes in keys:
+            cur.execute(
+                """
+                SELECT drive, mtime_ts, full_path
+                FROM files
+                WHERE name_lc = ? AND size_bytes = ?
+                ORDER BY mtime_ts DESC, drive, full_path
+                LIMIT ?;
+                """,
+                (name_lc, size_bytes, max_paths_per_group),
+            )
+            for drive, mtime_ts, full_path in cur.fetchall():
+                yield (name_lc, size_bytes, drive, mtime_ts, full_path)
+
+    write_csv(
+        out_dir / "dup_name_size_paths.csv",
+        ["name_lc", "size_bytes", "drive", "mtime_ts", "full_path"],
+        iter_dup_paths_by_name_size(),
+    )
+
+    # Duplicate groups by (relpath_lc, size)
+    query_to_csv(
+        conn,
+        """
+        SELECT relpath_lc,
+               size_bytes,
+               COUNT(*) AS copies,
+               SUM(size_bytes) AS total_bytes
+        FROM files
+        WHERE size_bytes >= ?
+        GROUP BY relpath_lc, size_bytes
+        HAVING COUNT(*) > 1
+        ORDER BY total_bytes DESC, copies DESC
+        LIMIT ?;
+        """,
+        (min_dup_bytes, max_dup_groups),
+        out_dir / "dup_relpath_size_groups.csv",
+        ["relpath_lc", "size_bytes", "copies", "total_bytes"],
+    )
+
+    # Expand duplicate paths (relpath+size)
+    cur.execute(
+        """
+        SELECT relpath_lc, size_bytes
+        FROM (
+            SELECT relpath_lc, size_bytes, COUNT(*) AS copies, SUM(size_bytes) AS total_bytes
+            FROM files
+            WHERE size_bytes >= ?
+            GROUP BY relpath_lc, size_bytes
+            HAVING COUNT(*) > 1
+            ORDER BY total_bytes DESC, copies DESC
+            LIMIT ?
+        );
+        """,
+        (min_dup_bytes, max_dup_groups),
+    )
+    rel_keys = cur.fetchall()
+
+    def iter_dup_paths_by_relpath_size() -> Iterator[Tuple]:
+        for relpath_lc, size_bytes in rel_keys:
+            cur.execute(
+                """
+                SELECT drive, mtime_ts, full_path
+                FROM files
+                WHERE relpath_lc = ? AND size_bytes = ?
+                ORDER BY mtime_ts DESC, drive, full_path
+                LIMIT ?;
+                """,
+                (relpath_lc, size_bytes, max_paths_per_group),
+            )
+            for drive, mtime_ts, full_path in cur.fetchall():
+                yield (relpath_lc, size_bytes, drive, mtime_ts, full_path)
+
+    write_csv(
+        out_dir / "dup_relpath_size_paths.csv",
+        ["relpath_lc", "size_bytes", "drive", "mtime_ts", "full_path"],
+        iter_dup_paths_by_relpath_size(),
+    )
+
+    # Build delete candidate list (review-only) in a streaming way.
+    trash_path_re = re.compile("|".join(TRASHY_PATH_HINTS), re.IGNORECASE) if TRASHY_PATH_HINTS else None
+    min_candidate_bytes = int(min_candidate_mb) * 1024 * 1024
+
+    def is_system_excluded(p: str) -> bool:
+        return any(rx.search(p) for rx in system_excludes)
+
+    def consider(best: Dict[str, Tuple[int, str, int, int]], full_path: str, prio: int, reason: str, size: int, mtime_ts: int):
+        # Keep the highest-priority reason per path; tie-break by size.
+        prev = best.get(full_path)
+        if prev is None:
+            best[full_path] = (prio, reason, size, mtime_ts)
+        else:
+            prev_prio, prev_reason, prev_size, prev_mtime = prev
+            if prio > prev_prio or (prio == prev_prio and size > prev_size):
+                best[full_path] = (prio, reason, size, mtime_ts)
+
+    def reason_and_prio(path: str, ext: str, size_bytes: int, mtime_ts: int) -> Optional[Tuple[str, int]]:
+        if is_system_excluded(path):
+            return None
+
+        e = (ext or "").lower()
+        p = path
+
+        # Strong path hints.
+        if trash_path_re and trash_path_re.search(p):
+            if size_bytes < min_candidate_bytes:
+                return None
+            if e in ARCHIVE_EXTS or e in INSTALLER_EXTS:
+                return ("in downloads/temp/cache + archive/installer", 2)
+            if e in TRASHY_EXTS:
+                return ("in downloads/temp/cache + log/tmp/dump", 2)
+            if size_bytes == 0:
+                return ("zero-byte file in downloads/temp/cache", 2)
+            return ("in downloads/temp/cache (review)", 1)
+
+        # File-type hints.
+        if e in TRASHY_EXTS and size_bytes >= min_candidate_bytes:
+            return ("log/tmp/dump extension (review)", 1)
+        if e in ARCHIVE_EXTS and size_bytes >= max(min_candidate_bytes, 50 * 1024 * 1024):
+            return ("large archive (review)", 1)
+        if e in INSTALLER_EXTS and size_bytes >= max(min_candidate_bytes, 50 * 1024 * 1024):
+            return ("large installer (review)", 1)
+
+        return None
+
+    best: Dict[str, Tuple[int, str, int, int]] = {}
+
+    # Content-based candidates (streaming)
+    cur.execute("SELECT full_path, ext, size_bytes, mtime_ts FROM files;")
+    while True:
+        chunk = cur.fetchmany(50000)
+        if not chunk:
+            break
+        for full_path, ext, size_bytes, mtime_ts in chunk:
+            rp = reason_and_prio(full_path, ext, int(size_bytes), int(mtime_ts))
+            if rp is None:
+                continue
+            reason, prio = rp
+            consider(best, full_path, prio, reason, int(size_bytes), int(mtime_ts))
+
+    # Duplicate-based candidates: mark all but newest as "extras" (capped per group)
+    cur2 = conn.cursor()
+    cur2.execute(
+        """
+        SELECT name_lc, size_bytes
+        FROM files
+        WHERE size_bytes >= ?
+        GROUP BY name_lc, size_bytes
+        HAVING COUNT(*) > 1;
+        """,
+        (min_dup_bytes,),
+    )
+    dup_groups = cur2.fetchall()
+    for name_lc, size_bytes in dup_groups:
+        cur2.execute(
+            """
+            SELECT full_path, mtime_ts
+            FROM files
+            WHERE name_lc = ? AND size_bytes = ?
+            ORDER BY mtime_ts DESC, full_path
+            LIMIT ?;
+            """,
+            (name_lc, size_bytes, max_paths_per_group),
+        )
+        paths = cur2.fetchall()
+        if len(paths) <= 1:
+            continue
+        keep_path = paths[0][0]
+        for full_path, mtime_ts in paths[1:]:
+            if is_system_excluded(full_path):
+                continue
+            consider(
+                best,
+                full_path,
+                3,
+                f"duplicate name+size (keep: {keep_path})",
+                int(size_bytes),
+                int(mtime_ts),
+            )
+
+    # Write delete candidates, largest first (cap to max_delete_candidates)
+    rows = [
+        (reason, size, mtime_ts, full_path)
+        for full_path, (prio, reason, size, mtime_ts) in best.items()
+    ]
+    rows.sort(key=lambda r: (r[1], r[2]), reverse=True)
+    if max_delete_candidates > 0:
+        rows = rows[:max_delete_candidates]
+
+    write_csv(
+        out_dir / "delete_candidates.csv",
+        ["reason", "size_bytes", "mtime_ts", "full_path"],
+        rows,
+    )
+
+    # Write summary.txt
+    summary_lines: List[str] = []
+    summary_lines.append("Drive audit summary")
+    summary_lines.append("===================")
+    summary_lines.append("")
+
+    cur3 = conn.cursor()
+    cur3.execute("SELECT drive, COUNT(*), SUM(size_bytes) FROM files GROUP BY drive ORDER BY SUM(size_bytes) DESC;")
+    summary_lines.append("Totals by drive:")
+    for drive, cnt, total in cur3.fetchall():
+        summary_lines.append(f"  {drive}: {cnt:,} files, {total or 0:,} bytes")
+    summary_lines.append("")
+
+    summary_lines.append(f"Largest files: see largest_files.csv (top {top_n}).")
+    summary_lines.append(f"Old large files: see old_large_files.csv (>{old_min_mb} MB and older than {old_days} days).")
+    summary_lines.append(f"Duplicate candidates: see dup_name_size_*.csv and dup_relpath_size_*.csv (min {dup_min_mb} MB).")
+    summary_lines.append(f"Deletion review list: delete_candidates.csv (max {max_delete_candidates:,} rows, min {min_candidate_mb} MB; system paths excluded).")
+    summary_lines.append("")
+
+    # Root folder overlap across drives (organization signal)
+    cur3.execute(
+        """
+        SELECT root1, COUNT(DISTINCT drive) AS drives, SUM(size_bytes) AS total_bytes, COUNT(*) AS files
+        FROM files
+        WHERE root1 != ''
+        GROUP BY root1
+        HAVING drives > 1
+        ORDER BY total_bytes DESC
+        LIMIT 50;
+        """
+    )
+    overlap = cur3.fetchall()
+    if overlap:
+        summary_lines.append("Top root folders present on multiple drives (consolidation candidates):")
+        for root1, drives, total_bytes, files in overlap:
+            summary_lines.append(f"  {root1}: on {drives} drives, {files:,} files, {total_bytes:,} bytes")
+        summary_lines.append("")
+
+    (out_dir / "summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description="Audit Windows dir.txt dumps for cleanup and organization.")
+    ap.add_argument("--input", required=True, help="Path to drives.zip OR a dir dump .txt OR a folder of .txt files")
+    ap.add_argument("--out", default="audit_out", help="Output folder for reports")
+    ap.add_argument("--db", default="", help="Path to sqlite db (default: <out>/audit.sqlite)")
+    ap.add_argument("--top", type=int, default=200, help="Rows for top-N lists (largest/old-large)")
+    ap.add_argument("--old-days", type=int, default=730, help="Old threshold in days (for old_large_files.csv)")
+    ap.add_argument("--old-min-mb", type=int, default=200, help="Minimum size (MB) for old_large_files.csv")
+    ap.add_argument("--dup-min-mb", type=int, default=50, help="Minimum size (MB) for duplicates reports")
+    ap.add_argument("--max-dup-groups", type=int, default=5000, help="Max duplicate groups to output")
+    ap.add_argument("--max-paths-per-group", type=int, default=50, help="Max paths per duplicate group expansion")
+    ap.add_argument("--max-delete-candidates", type=int, default=20000, help="Max rows for delete_candidates.csv (0 = no cap)")
+    ap.add_argument("--min-candidate-mb", type=int, default=10, help="Minimum size (MB) for non-duplicate delete candidates")
+    ap.add_argument("--no-system-excludes", action="store_true", help="Include system paths on C: in delete candidates")
+    args = ap.parse_args(argv)
+
+    input_path = Path(args.input).expanduser()
+    out_dir = Path(args.out).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    db_path = Path(args.db).expanduser() if args.db else (out_dir / "audit.sqlite")
+
+    system_excludes: List[re.Pattern] = []
+    if not args.no_system_excludes:
+        system_excludes = [re.compile(p, re.IGNORECASE) for p in DEFAULT_SYSTEM_EXCLUDES]
+
+    conn = init_db(db_path)
+
+    zf: Optional[zipfile.ZipFile] = None
+    try:
+        # If input is zip, keep it open while iterating its members.
+        if input_path.is_file() and input_path.suffix.lower() == ".zip":
+            zf = zipfile.ZipFile(input_path, "r")
+
+            def sources_from_zip(z: zipfile.ZipFile):
+                for info in z.infolist():
+                    if info.is_dir():
+                        continue
+                    if not info.filename.lower().endswith(".txt"):
+                        continue
+                    raw = z.open(info, "r")
+                    stream = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
+                    yield info.filename, stream
+
+            sources = sources_from_zip(zf)
+        elif input_path.is_dir():
+            sources = iter_text_sources(input_path)
+        else:
+            sources = iter_text_sources(input_path)
+
+        batch: List[Tuple] = []
+        batch_size = 5000
+
+        for src_name, stream in sources:
+            with stream:
+                for is_dir, drive, dir_path, name, size_bytes, mtime_ts, full_path, relpath, root1 in parse_dir_dump(
+                    src_name, stream, emit_dirs=False
+                ):
+                    row = (
+                        full_path,
+                        drive,
+                        dir_path,
+                        name,
+                        name.lower(),
+                        relpath,
+                        relpath.lower(),
+                        root1,
+                        _ext_of(name),
+                        int(size_bytes),
+                        int(mtime_ts),
+                    )
+                    batch.append(row)
+                    if len(batch) >= batch_size:
+                        insert_files(conn, batch)
+                        conn.commit()
+                        batch.clear()
+
+        if batch:
+            insert_files(conn, batch)
+            conn.commit()
+
+        generate_reports(
+            conn,
+            out_dir,
+            top_n=args.top,
+            old_days=args.old_days,
+            old_min_mb=args.old_min_mb,
+            dup_min_mb=args.dup_min_mb,
+            max_dup_groups=args.max_dup_groups,
+            max_paths_per_group=args.max_paths_per_group,
+            max_delete_candidates=args.max_delete_candidates,
+            min_candidate_mb=args.min_candidate_mb,
+            system_excludes=system_excludes,
+        )
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        if zf is not None:
+            try:
+                zf.close()
+            except Exception:
+                pass
+
+    print(f"Wrote reports to: {out_dir}")
+    print(f"SQLite database: {db_path}")
+    print("Start with: summary.txt, delete_candidates.csv, largest_files.csv, dup_*")
+    return 0
+
 
 if __name__ == "__main__":
-    run(seed=0, T=5000)
+    raise SystemExit(main())

@@ -100,8 +100,17 @@ def normalize_margins(
     x = np.array([margins.m_E, margins.m_D, margins.m_L, margins.m_C, margins.m_S], dtype=float)
     mu = np.array(baselines.mu, dtype=float)
     var_fast = np.array(baselines.var_fast, dtype=float)
+    var_floor = float(getattr(cfg, "baseline_var_floor", 0.0))
+    var_floor_C = float(getattr(cfg, "baseline_var_floor_C", var_floor))
+    if var_floor > 0.0:
+        var_fast = np.maximum(var_fast, var_floor)
+    if var_floor_C > 0.0 and var_fast.size >= 4:
+        var_fast[3] = max(float(var_fast[3]), var_floor_C)
     denom = np.sqrt(np.maximum(var_fast, 0.0)) + eps
     tilde = (x - mu) / denom
+    z_clip = float(getattr(cfg, "baseline_z_clip", 6.0))
+    if z_clip > 0.0:
+        tilde = np.clip(tilde, -z_clip, z_clip)
 
     tilde_prev = baselines.tilde_prev
     if tilde_prev is None:

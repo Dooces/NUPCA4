@@ -34,6 +34,7 @@ from .logging import (
     log_sparse_metrics,
     log_transport_check,
     log_transport_summary,
+    log_v5023_diagnostics,
 )
 from .render import _block_grid_bounds, _occupancy_array, _print_visualization
 from .utils import build_partial_obs
@@ -599,33 +600,35 @@ def run_steps(
             )
 
         if transport_test_active:
+            objects_present = bool(pos_dims)
             tdelta = tuple(trace.get("transport_delta", (0, 0)))
             match = tdelta == tuple(true_delta)
-            transport_test_total += 1
-            if match:
-                transport_test_matches += 1
-            if diff_count == 0 and match:
-                diff_zero_match += 1
-            elif diff_count == 0 and not match:
-                diff_zero_mismatch += 1
-            elif diff_count != 0 and match:
-                diff_nonzero_match += 1
-            else:
-                diff_nonzero_mismatch += 1
-            log_transport_check(
-                step_idx=step_idx,
-                true_delta=true_delta,
-                tdelta=tdelta,
-                match=match,
-                coarse_prev_norm=trace.get("coarse_prev_norm", 0.0),
-                coarse_curr_norm=trace.get("coarse_curr_norm", 0.0),
-                periph_block_ids=trace.get("periph_block_ids", ()),
-                periph_dims_in_req=trace.get("periph_dims_in_req", 0),
-                periph_dims_missing_count=trace.get("periph_dims_missing_count", 0),
-                periph_dims_missing_head=trace.get("periph_dims_missing_head", ()),
-                coarse_prev_head=trace.get("coarse_prev_head", ()),
-                coarse_curr_head=trace.get("coarse_curr_head", ()),
-            )
+            if objects_present:
+                transport_test_total += 1
+                if match:
+                    transport_test_matches += 1
+                if diff_count == 0 and match:
+                    diff_zero_match += 1
+                elif diff_count == 0 and not match:
+                    diff_zero_mismatch += 1
+                elif diff_count != 0 and match:
+                    diff_nonzero_match += 1
+                else:
+                    diff_nonzero_mismatch += 1
+                log_transport_check(
+                    step_idx=step_idx,
+                    true_delta=true_delta,
+                    tdelta=tdelta,
+                    match=match,
+                    coarse_prev_norm=trace.get("coarse_prev_norm", 0.0),
+                    coarse_curr_norm=trace.get("coarse_curr_norm", 0.0),
+                    periph_block_ids=trace.get("periph_block_ids", ()),
+                    periph_dims_in_req=trace.get("periph_dims_in_req", 0),
+                    periph_dims_missing_count=trace.get("periph_dims_missing_count", 0),
+                    periph_dims_missing_head=trace.get("periph_dims_missing_head", ()),
+                    coarse_prev_head=trace.get("coarse_prev_head", ()),
+                    coarse_curr_head=trace.get("coarse_curr_head", ()),
+                )
 
         emit = step_idx < step_log_limit or (int(log_every) > 0 and step_idx % int(log_every) == 0)
         if emit:
@@ -722,6 +725,59 @@ def run_steps(
                 first_avg=first_avg,
                 reap_avg=reap_avg,
                 ratio=ratio,
+            )
+            fovea_state = getattr(agent.state, "fovea", None)
+            block_resid_arr = np.asarray(getattr(fovea_state, "block_residual", np.zeros(0)), dtype=float).reshape(-1)
+            block_age_arr = np.asarray(getattr(fovea_state, "block_age", np.zeros(0)), dtype=float).reshape(-1)
+            periph_demand_arr = np.asarray(
+                getattr(fovea_state, "block_periph_demand", np.zeros(0)), dtype=float
+            ).reshape(-1)
+            block_stats = {
+                "count": int(block_resid_arr.size),
+                "resid_mean": float(np.nanmean(block_resid_arr)) if block_resid_arr.size else 0.0,
+                "resid_max": float(np.nanmax(block_resid_arr)) if block_resid_arr.size else 0.0,
+                "age_mean": float(np.nanmean(block_age_arr)) if block_age_arr.size else 0.0,
+                "age_max": float(np.nanmax(block_age_arr)) if block_age_arr.size else 0.0,
+                "periph_demand_mean": float(np.nanmean(periph_demand_arr)) if periph_demand_arr.size else 0.0,
+            }
+            context_register = getattr(agent.state, "context_register", np.zeros(0))
+            purge_health = {
+                "context_register": int(np.asarray(context_register).size),
+                "observed_history": int(len(getattr(agent.state, "observed_history", []))),
+                "trace_cache_entries": int(trace.get("trace_cache_entries", 0)),
+                "trace_cache_blocks": int(trace.get("trace_cache_blocks", 0)),
+                "trace_cache_cue_mass": int(trace.get("trace_cache_cue_mass", 0)),
+                "support_window": int(trace.get("support_window_size", 0)),
+                "support_union": int(trace.get("support_window_union_size", 0)),
+            }
+            lib = getattr(agent.state, "library", None)
+            sig_index = getattr(lib, "sig_index", None) if lib is not None else None
+            err_cache = getattr(sig_index, "_err_cache", None) if sig_index is not None else None
+            if isinstance(err_cache, np.ndarray):
+                err_shape = tuple(err_cache.shape)
+                err_nan = bool(np.isnan(err_cache).any())
+                err_present = bool(err_cache.size)
+            else:
+                err_shape = (0, 0)
+                err_nan = False
+                err_present = False
+            buckets = getattr(sig_index, "buckets", []) if sig_index is not None else []
+            populated_blocks = tuple(len(tbl) for tbl in buckets) if buckets else tuple()
+            index_health = {
+                "tables": int(getattr(sig_index, "tables", 0)) if sig_index is not None else 0,
+                "bucket_bits": int(getattr(sig_index, "bucket_bits", 0)) if sig_index is not None else 0,
+                "bucket_cap": int(getattr(sig_index, "bucket_cap", 0)) if sig_index is not None else 0,
+                "populated_blocks": populated_blocks,
+                "err_cache_shape": err_shape,
+                "err_cache_nan": err_nan,
+                "err_cache_present": err_present,
+            }
+            log_v5023_diagnostics(
+                D_agent=D_agent,
+                seed=seed,
+                block_stats=block_stats,
+                purge_health=purge_health,
+                index_health=index_health,
             )
 
     coverage_hit_rate = float(coverage_hits) / float(coverage_steps_total) if coverage_steps_total else 0.0

@@ -185,6 +185,7 @@ def _select_transport_delta(
     x_prev: np.ndarray,
     obs_idx: np.ndarray,
     obs_vals: np.ndarray,
+    pos_idx: np.ndarray | None,
     cfg: AgentConfig,
     state: AgentState,
     env_shift: Tuple[int, int] | None,
@@ -227,9 +228,22 @@ def _select_transport_delta(
 
     obs_mask = np.zeros(D, dtype=bool)
     obs_values = np.zeros(D, dtype=float)
+    obs_signal_mask = np.zeros(D, dtype=bool)
+    pos_idx = np.asarray(pos_idx if pos_idx is not None else np.zeros(0, dtype=int), dtype=int).reshape(-1)
+    pos_idx = pos_idx[(pos_idx >= 0) & (pos_idx < D)]
+    pos_mask = np.zeros(D, dtype=bool)
+    if pos_idx.size:
+        pos_mask[pos_idx] = True
+    signal_floor = float(getattr(cfg, "transport_signal_floor", 1e-5))
+    if signal_floor < 0.0:
+        signal_floor = 0.0
     if obs_idx.size:
         obs_mask[obs_idx] = True
         obs_values[obs_idx] = obs_vals
+        obs_signal_mask[obs_idx] = np.abs(obs_vals) > signal_floor
+    scored_obs_mask = obs_mask & pos_mask
+    if not np.any(scored_obs_mask):
+        scored_obs_mask = obs_signal_mask
 
     min_overlap = max(0, int(getattr(cfg, "transport_min_overlap", 1)))
     overlap_penalty = float(getattr(cfg, "transport_overlap_penalty", 0.0))
@@ -246,7 +260,7 @@ def _select_transport_delta(
         shifted = apply_transport(x_prev, delta, cfg, rotation=rotation)
         shifted_prev_obs = apply_transport(prev_obs_values, delta, cfg, rotation=rotation)
         mask_shifted = apply_transport(prev_obs_mask, delta, cfg, rotation=rotation)
-        overlap_mask = obs_mask & (mask_shifted > 0.5)
+        overlap_mask = scored_obs_mask & (mask_shifted > 0.5)
         overlap_idx = np.nonzero(overlap_mask)[0]
         overlap = int(overlap_idx.size)
         if overlap:
@@ -321,9 +335,10 @@ def _select_transport_delta(
     uninformative_threshold = float(
         getattr(cfg, "transport_uninformative_score", _TRANSPORT_UNINFORMATIVE_SCORE)
     )
+    no_scored_signal = not np.any(scored_obs_mask)
     best_informative = best_raw_candidate is not None and best_raw_candidate.score > uninformative_threshold
     evidence_margin = float(getattr(cfg, "transport_evidence_margin", 0.02))
-    null_evidence = (not best_informative) or (score_margin < evidence_margin)
+    null_evidence = no_scored_signal or (not best_informative) or (score_margin < evidence_margin)
 
     if null_evidence:
         # Keep a deterministic placeholder belief on the zero shift to avoid empty belief errors.

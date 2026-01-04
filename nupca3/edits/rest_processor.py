@@ -42,6 +42,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 
 from ..memory.library import link_node_neighbors
+from ..memory.primitives import compute_primitive_tokens
 from ..types import (
     AgentState, Node, EditProposal, EditKind,
     AcceptanceResult, TransitionRecord, infer_footprint
@@ -76,6 +77,12 @@ def _unit_sig64_for_new_unit(state: AgentState, cfg: AgentConfig) -> int:
     if sig == 0:
         raise ValueError("NUPCA5: state.last_sig64 is 0; invalid stored unit address")
     return sig
+
+
+def _assign_sig_index_tokens(state: AgentState, node: Node, footprint: int, cfg: AgentConfig) -> None:
+    tokens = compute_primitive_tokens(state, cfg, block_ids={int(footprint)})
+    if tokens:
+        setattr(node, "sig_index_tokens", tuple(int(t) for t in tokens))
 
 
 # =============================================================================
@@ -283,10 +290,11 @@ def apply_merge(
         result.error_message = "merged_mask_wrong_footprint"
         return result
 
+    footprint = evidence.footprint
     merged_node.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
+    _assign_sig_index_tokens(state, merged_node, footprint, cfg)
 
     new_id = library.add_node(merged_node)
-    footprint = evidence.footprint
     bucket = get_incumbent_bucket(state, footprint, create=True)
     if bucket is not None:
         bucket.add(new_id)
@@ -376,6 +384,7 @@ def apply_spawn(
     )
 
     new_node.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
+    _assign_sig_index_tokens(state, new_node, footprint, cfg)
 
     # Handle anti-aliasing replacement if requested
     if acceptance.replace_incumbent and acceptance.aliased_with is not None:
@@ -497,6 +506,8 @@ def apply_split(
 
     node_1.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
     node_2.unit_sig64 = _unit_sig64_for_new_unit(state, cfg)
+    _assign_sig_index_tokens(state, node_1, footprint, cfg)
+    _assign_sig_index_tokens(state, node_2, footprint, cfg)
 
     new_id_1 = library.add_node(node_1)
     new_id_2 = library.add_node(node_2)
@@ -703,4 +714,3 @@ def process_struct_queue(
     result.total_consolidation_cost = float(total_consolidation_cost)
 
     return result
-

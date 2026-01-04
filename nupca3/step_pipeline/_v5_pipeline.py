@@ -25,7 +25,7 @@ from ..edits.proposals import propose_structural_edits
 from ..edits.rest_processor import RestProcessingResult, process_struct_queue
 from ..geometry.binding import (build_binding_maps, select_best_binding,
                                  select_best_binding_by_fit)
-from ..geometry.fovea import dims_for_block, make_observation_set, update_fovea_tracking
+from ..geometry.fovea import block_of_dim, dims_for_block, make_observation_set, update_fovea_tracking
 from ..geometry.streams import (apply_transport, compute_transport_shift,
                                 extract_coarse)
 from ..memory.completion import complete
@@ -44,6 +44,7 @@ from ..memory.salience import (
 from ..memory.working_set import select_working_set
 from ..memory.pred_store import emit_pred_snapshot, process_due_validations
 from ..memory.trace_cache import cache_observation
+from ..memory.primitives import update_q_block_mean
 from ..state.baselines import (commit_tilde_prev, normalize_margins,
                                update_baselines)
 from ..state.macrostate import evolve_macrostate, rest_permitted
@@ -691,6 +692,14 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     state.sig_prev_counts = np.asarray(meta_t.block_counts, dtype=np.int16).copy()
     state.sig_prev_hist = np.asarray(meta_t.block_mask_bytes, dtype=np.uint16).copy()
 
+    pos_dims = getattr(env_obs, "pos_dims", None) or set()
+    pos_idx = np.array(sorted({int(dim) for dim in pos_dims if 0 <= int(dim) < D}), dtype=int)
+    pos_unobs_idx = np.zeros(0, dtype=int)
+    pos_obs_mask = np.zeros(0, dtype=bool)
+    if pos_idx.size:
+        pos_obs_mask = np.isin(pos_idx, obs_idx) if obs_idx.size else np.zeros(pos_idx.shape, dtype=bool)
+        pos_unobs_idx = pos_idx[~pos_obs_mask]
+
 
     (
         shift,
@@ -711,6 +720,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         x_prev_pre,
         obs_idx,
         obs_vals,
+        pos_idx,
         cfg,
         state,
         env_shift,
@@ -765,14 +775,16 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         x_prev_post = apply_transport(x_prev_pre, applied_shift, cfg)
     x_prev = x_prev_post
     shift = applied_shift
+    observed_object_signal = bool(pos_obs_mask.any())
+    true_delta_for_learning = env_true_delta_hint if observed_object_signal else None
     _update_transport_learning_state(
         state,
         cfg,
         transport_best_candidate,
         shift,
-        env_true_delta_hint,
+        true_delta_for_learning,
     )
-    state.transport_last_delta = shift
+    state.transport_last_delta = shift if observed_object_signal else (0, 0)
     state.coarse_shift = shift
     transport_effect = float(np.mean(np.abs(x_prev_post - x_prev_pre))) if x_prev_pre.size else 0.0
     transport_applied_norm = float(transport_effect)
@@ -795,13 +807,6 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     n_fine_blocks_selected = max(0, len(selected_blocks) - n_periph_blocks_selected)
     periph_included = bool(n_periph_blocks_selected)
 
-    pos_dims = getattr(env_obs, "pos_dims", None) or set()
-    pos_idx = np.array(sorted({int(dim) for dim in pos_dims if 0 <= int(dim) < D}), dtype=int)
-    pos_unobs_idx = np.zeros(0, dtype=int)
-    pos_obs_mask = np.zeros(0, dtype=bool)
-    if pos_idx.size:
-        pos_obs_mask = np.isin(pos_idx, obs_idx) if obs_idx.size else np.zeros(pos_idx.shape, dtype=bool)
-        pos_unobs_idx = pos_idx[~pos_obs_mask]
     true_vals = None
     true_vals_unobs = None
     mae_pos_unobs_pre_transport = float("nan")
@@ -982,6 +987,36 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         periph_demand=np.asarray(periph_demand, dtype=float).reshape(-1),
         abs_error=abs_error,
     )
+
+    # Stale persistence TTL for unobserved blocks (buffer-side expiry).
+    B = int(getattr(cfg, "B", 0))
+    block_age = np.asarray(
+        getattr(state.buffer, "block_age", np.zeros(max(0, B), dtype=np.int32)),
+        dtype=np.int32,
+    )
+    if block_age.size != B:
+        block_age = np.zeros(max(0, B), dtype=np.int32)
+    if B > 0:
+        block_age = block_age + 1
+        if O_t:
+            for dim in O_t:
+                b = block_of_dim(int(dim), cfg)
+                if 0 <= b < B:
+                    block_age[b] = 0
+        ttl = int(getattr(cfg, "stale_block_ttl", 0))
+        if ttl > 0:
+            stale_blocks = np.where(block_age >= ttl)[0]
+            if stale_blocks.size:
+                stale_dims: list[int] = []
+                for b in stale_blocks.tolist():
+                    stale_dims.extend(int(k) for k in dims_for_block(int(b), cfg))
+                if stale_dims:
+                    idx = np.asarray(stale_dims, dtype=int)
+                    if idx.size:
+                        idx = idx[(idx >= 0) & (idx < D)]
+                        if idx.size:
+                            x_t[idx] = 0.0
+    state.buffer.block_age = block_age
 
     # Update observation buffer (dense estimate and observed dims)
     state.buffer.x_prior = prior_t.copy()
@@ -1348,6 +1383,11 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         b_cons_t = float(getattr(rest_res, "total_consolidation_cost", 0.0))
         _dbg(f'REST processed={edits_processed_t} b_cons_t={b_cons_t:.3f}', state=state)
 
+    # -------------------------------------------------------------------------
+    # Update per-block committed summaries (q_b) after retrieval and REST edits.
+    # -------------------------------------------------------------------------
+    update_q_block_mean(state, obs_idx, obs_vals, cfg)
+
     queue_len = int(len(getattr(state, "q_struct", []) or []))
     rest_permit_struct = bool(getattr(rest_res, "permit_struct", False))
     rest_actionable = bool(queue_len > 0)
@@ -1424,12 +1464,16 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     # -------------------------------------------------------------------------
     # Margins (A0.1 / A2) + baselines (A3.1) + arousal (A0.2–A0.4)
     # -------------------------------------------------------------------------
+    plan = float(getattr(meter, "B_plan", 0.0))
+    use = float(getattr(meter, "B_use", 0.0))
+    denom = max(plan, float(getattr(cfg, "eps_budget", 1e-6)))
+    c_deficit = max(0.0, (use - plan) / denom)
     margins_t, rawE_t, rawD_t, _rawS = _derive_margins(
         E=state.E,
         D=state.D,
         drift_P=state.drift_P,
         opp=float(getattr(env_obs, "opp", 0.0)),
-        x_C=float(budget.x_C),
+        x_C=float(c_deficit),
         cfg=cfg,
     )
     _dbg('A0/A2 derive margins', state=state)
@@ -1492,7 +1536,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     w_delta = float(cfg.w_delta)
     w_E = float(cfg.w_E)
     term_L = w_L * abs(mL)
-    term_C = w_C * abs(mC)
+    term_C = w_C * max(0.0, mC)
     term_S = w_S * abs(mS)
     term_delta = w_delta * (abs(dE) + abs(dD) + abs(dL) + abs(dC) + abs(dS))
     term_E = w_E * abs(float(getattr(feel, "q_res", 0.0)))

@@ -109,7 +109,6 @@ A node is a **masked linear-Gaussian operator** over the abstraction vector x(t)
 
 ## 4) One step through the main loop (pseudocode)
 
-```
 # Inputs: state, env_obs, cfg
 D = cfg.D
 x_prev = state.buffer.x_last
@@ -157,7 +156,6 @@ yhat_tp1, Sigma_tp1_pred, _ = complete(None, mode="prediction", predicted_prior_
 
 # (10) Cache learn context and continue with control, rollout, REST, etc.
 state.learn_cache = {x_t, yhat_tp1, sigma_tp1_diag, A_t, ...}
-```
 
 ---
 

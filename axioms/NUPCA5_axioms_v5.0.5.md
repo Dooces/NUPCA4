@@ -1,5 +1,75 @@
-NUPCA5 AXIOMS — v5.02 (FINAL CONSOLIDATED, IMPLEMENTATION-READY; CONSOLIDATED, PASTABLE; MUST-FIXES + OPERATOR INTERFACES + BOUNDED REFERENCE DEFINITIONS INTEGRATED)
+NUPCA5 AXIOMS — v5.05 (FINAL CONSOLIDATED, IMPLEMENTATION-READY; CONSOLIDATED, PASTABLE; MUST-FIXES + OPERATOR INTERFACES + BOUNDED REFERENCE DEFINITIONS INTEGRATED)
 (= v5.01 + time-index separation + contemplative OPERATING + recognized-change vs novelty-persistence split + value-of-compute V_t + deferred-validation ordering insert + time-sliced persistent threads + OPERATING-readable foveated trace cache + explicit “planning-only” write permissions + MUST FIXES: cross-tick pred snapshot store, staged thread mutation, novelty U_prev_state, bounded-problem definition, budget cap min(B_rt,B_max) + REQUIRED ADDENDA: typed operator interfaces, bounded deterministic reference definitions, incremental budget semantics, determinism rules, stable IDs/index maintenance, and anti-replay edit semantics.)
+
+
+---
+
+5.05 changes:
+
+A16.X Retrieval eligibility and candidate admission (normative)
+
+Definitions (normative)
+
+* Let the active library contain (N) stored units (u \in \mathcal{U}).
+* Each unit (u) has a stored set of retrieval primitives (K(u) \subseteq \mathbb{P}) (primitive IDs). This set is immutable for (u) except via committed structural edits (which update (K(u)) as part of the edit transaction).
+* For a query observation at tick (t), define (K(q_t) \subseteq \mathbb{P}) as the set of primitives extracted from the committed audited bundle (F(t)) (same extraction used for storage keys; no alternate extractors).
+
+Primitive vocabulary and extractor (normative)
+
+* The primitive vocabulary (\mathbb{P}) is a fixed, discrete ID set. (K(q_t)) and (K(u)) MUST be computed by the same deterministic extractor over (F(t)) or the creation bundle; no alternate extractors are permitted.
+* Allowed primitive sources are limited to: block IDs selected in (O_t); quantized summaries already allowed in this spec ((q_b(t-1), p_b(t), r_b(t-1), U_prev_state(b)) as bounded scalars); plus fixed schema metadata.
+* The extractor MUST emit only small, bounded, closed-form IDs. Implementers MUST NOT introduce dense features, learned embeddings, or arbitrary continuous features.
+* Example compliant primitive family (bounded, closed-form, deterministic):
+  - (P_BLOCK(b)) for each committed block
+  - (P_PMEAN(b, bin)) where bin = Quantize(mean(y_commit[b]))
+  - (P_U(b, bin)) where bin = Quantize(U(b,t)) or (U_prev_state(b))
+  - (P_DMEAN(b, bin)) where bin = Quantize(mean(p_b(t)) - mean(q_b(t-1)))
+  - (P_REC(b)) if recognized(b,t)=1
+
+Bootstrapping (clarifying)
+
+* Initial units start empty or minimal; early on, debt/novelty can persist in some blocks.
+* REST CREATE/SPAWN creates first units for those blocks using only bounded sufficient stats (A12.0.3).
+* (K(u)) is computed from the same primitive extractor applied at creation time.
+* Define document frequency:
+  [
+  df(p) ;=; \left|{u \in \mathcal{U} ;:; p \in K(u)}\right|
+  ]
+* Define eligibility (stoplist) with fixed threshold (\tau_{df}\in(0,1)):
+  [
+  Eligible(p) \iff \frac{df(p)}{N} < \tau_{df}
+  ]
+  There are **no semantic exceptions**. Null/empty is handled by the same rule (typically (df/N \approx 1\Rightarrow) ineligible).
+* Define eligible key sets:
+  [
+  K_E(u)={p\in K(u): Eligible(p)}, \quad K_E(q_t)={p\in K(q_t): Eligible(p)}
+  ]
+
+Candidate admission (normative)
+
+* Fix integer (m \ge 2).
+* The candidate set (C(t)) is defined exactly as:
+  [
+  C(t)={u\in\mathcal{U} : |K_E(u)\cap K_E(q_t)| \ge m}
+  ]
+* Distinctness is by primitive ID only. Multiple occurrences of the same primitive do not increase the count.
+
+Ordering (normative)
+
+* Candidate admission as defined above MUST occur before any stage-2 scoring/rerank and before any REST proposal generation. Units not in (C(t)) MUST NOT consume scoring or proposal budget.
+
+Incremental maintenance (normative)
+
+* (df(p)) MUST be maintained incrementally on unit add/evict and on committed edits that change (K(u)). No per-tick scans over (\mathcal{U}) or over all primitives are permitted.
+
+Conformance (normative)
+
+* Any implementation MAY use bucket indices, sketches, or other accelerations, but MUST return a candidate set observationally equivalent to the definition of (C(t)) above (up to truncation by the existing per-tick candidate cap, if applicable).
+
+Parameters (normative defaults)
+
+* (\tau_{df} = 0.02) (or your chosen value), (m=2).
+
 
 ===============================================================================
 CRITICAL IMPLEMENTATION NOTICE (READ BEFORE CODING):
@@ -729,6 +799,8 @@ A15.2 Dynamics must be explicit and auditable.
 A16 — ATTENTION GEOMETRY & COVERAGE-DISCIPLINED FOVEATION
 ===============================================================================
 
+Non-discriminative primitives (stoplist): Maintain document frequency df(p) over stored units for every primitive/token p that can participate in retrieval addressing. Define a stop threshold τ_df ∈ (0,1). A primitive p is non-discriminative if df(p)/N_units ≥ τ_df. Non-discriminative primitives MUST NOT be used for: (i) bucket address construction, (ii) bucket insertion, (iii) query key construction, or (iv) candidate admission evidence. Literal null/empty background is a special case of this rule (df≈1); but the rule applies to any high-frequency non-null primitive. df(p) MUST be updated incrementally on unit add/evict (no per-step scans).
+
 A16.0 Full ingress, selective commit.
 - Agent receives y_full(t), commits only O_t.
 
@@ -754,6 +826,8 @@ A16.4.1 Inputs/outputs
 - Input: adviser score V(b,t) (ephemeral), debt(b,t) (persistent), and remaining encode budget B_enc_rem.
 - Output: O_t as a set of blocks.
 
+Candidate admission gate: A stored unit u may enter the candidate set C only if it matches the current query on at least m distinct, non-stoplisted retrieval evidences (tokens or sketch components). ‘Match on one evidence’ is insufficient by definition and MUST NOT create a candidate. Evidence counting MUST be bounded and computed via bucket collisions only (no full scans). Admission must early-exit once |C| reaches the per-tick cap. After admission, normal stage-2 scoring proceeds; this gate is purely to prevent candidate explosion and budget crowd-out.”
+
 A16.4.2 Reference greedy_cov (deterministic; bounded)
 - For each block b define:
   score(b) = (λV*V(b,t) + λD*debt(b,t)) / cost_enc(b)
@@ -767,6 +841,8 @@ A16.4.3 Boundedness rule
 - Forbidden: inspecting all units; forbidden: per-dim scans beyond selected blocks.
 
 - Contemplative override: if g_contemplate=1 then bypass greedy_cov per A13.1 step 4.
+
+
 
 A16.5 Peripheral adviser (internal prepass; bounded interfaces + reference defs)
 A16.5.1 computePGist(y_full(t)) (ephemeral; bounded; deterministic baseline)
@@ -935,7 +1011,6 @@ A4.3′ says sig64 is computed from "committed observation METADATA from O_t (co
 
 ### Proposed Axiom Text
 
-```
 ================================================================================
 A4.3′.1 sig64 METADATA SCHEMA (normative; prevents dense smuggling)
 ================================================================================
@@ -962,7 +1037,6 @@ A4.3′.1.3 Forbidden metadata content
 - Any field not in the schema above
 
 [CHEAT-RISK] Don't add "just one more summary stat" to metadata. The schema is closed.
-```
 
 ### Implementation Notes
 - B_MAX is the maximum number of blocks in the domain (compile-time constant)
@@ -979,7 +1053,6 @@ A16.5.1 reference gist uses `mean(|Δy|[b])` where Δy is "difference vs last co
 
 ### Proposed Axiom Text
 
-```
 ================================================================================
 A16.5.1′ GIST COMPUTATION (revised; no dense persistence)
 ================================================================================
@@ -1006,7 +1079,6 @@ A16.5.1′.3 Forbidden dense storage
 - No per-dim history arrays.
 
 [CHEAT-RISK] Don't store "just the last frame's y_commit" as a dense array. Use q_b only.
-```
 
 ### Implementation Notes
 - q_b(t) replaces any need to store raw y_commit values
@@ -1023,7 +1095,6 @@ A16.5.3 defines `recognized(b,t) = 1 iff ∃ unit u with unit_block[u]=b AND ...
 
 ### Proposed Axiom Text
 
-```
 ================================================================================
 A16.5.6 BLOCK-LEVEL UNIT STATISTICS (scan-free maintenance; normative)
 ================================================================================
@@ -1071,7 +1142,6 @@ A16.5.6.5 ChangeRateEMA persistence
 
 [CHEAT-RISK] Don't scan units to answer recognized(b,t). Use BlockStats.
 [CHEAT-RISK] Don't rebuild best_err_ema by scanning; accept staleness or bound REST maintenance.
-```
 
 ### Implementation Notes
 - BlockStats adds ~6 bytes per block (negligible vs. B_MAX)
@@ -1088,7 +1158,6 @@ A13.1(9).2 says "update using e_obs restricted to footprint(u)" but doesn't spec
 
 ### Proposed Axiom Text
 
-```
 ================================================================================
 A9.4 UNIT PARAMETER UPDATE RULE (normative; bounded; no replay)
 ================================================================================
@@ -1157,11 +1226,9 @@ A9.4.8 Budget accounting
 [CHEAT-RISK] Don't accumulate gradients across ticks "for stability." Each tick is self-contained.
 [CHEAT-RISK] Don't use TraceCache to compute "better" gradients. That's replay.
 [CHEAT-RISK] Don't add momentum/Adam state that grows with N_MAX. Per-unit state is bounded.
-```
 
 ### Implementation Notes
 
-```haskell
 -- Reference implementation (simplified)
 updateUnit :: Unit -> ErrorVec -> PriorVec -> Float -> Unit
 updateUnit u e_u x_prior s_ar = u
@@ -1178,10 +1245,8 @@ updateUnit u e_u x_prior s_ar = u
     g_b_clip = Vec.map (clamp (-g_MAX) g_MAX) g_b
     updateVar old_σ e = clamp σ_MIN σ_MAX $ (1 - α_Σ) * old_σ + α_Σ * e^2
     new_π = (1 - α_π) * reliability u + α_π / (1 + mean (Vec.map abs e_u))
-```
 
 ### Constants (suggested defaults)
-```
 η = 0.01           -- base learning rate
 κ_ar = 0.5         -- arousal modulation strength
 G_MAX = 10.0       -- gradient clipping threshold
@@ -1191,7 +1256,8 @@ G_MAX = 10.0       -- gradient clipping threshold
 Σ_MAX = 1e3        -- maximum variance (prevent overflow)
 π_MIN = 0.01       -- minimum reliability
 π_MAX = 1.0        -- maximum reliability
-```
+τ_df = 0.01–0.05 (pick one), and a hard cap of K_stoplisted tokens per unit stored for auditing.
+m = 2 (minimum) or m = 3 if your tokenization is noisy; keep your existing per-tick candidate cap as the final guard.
 
 ---
 
@@ -1208,7 +1274,6 @@ G_MAX = 10.0       -- gradient clipping threshold
 
 ## Integration Checklist
 
-```
 [ ] A4.3′.1 added; sig64 uses only M.block_mask, M.total_dims, M.anchor_count, M.block_counts
 [ ] A16.5.1′ added; q_b is 2 bytes/block; no dense y_commit storage
 [ ] A16.5.6 added; BlockStats maintained incrementally; recognized(b,t) is O(1)
@@ -1216,7 +1281,6 @@ G_MAX = 10.0       -- gradient clipping threshold
 [ ] No "for unit in all_units" anywhere including recognized checks
 [ ] No dense arrays persisted beyond fixed-size summaries
 [ ] Learning uses only current-tick error on footprint dims
-```
 
 These four amendments close the remaining specification gaps. An implementation satisfying v5.02 + these amendments has no remaining degrees of freedom that could enable architectural violations.
 

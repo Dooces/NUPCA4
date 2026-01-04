@@ -141,20 +141,22 @@ def register_unit_in_sig_index(
     *,
     dim2block: Optional[np.ndarray] = None,
 ) -> None:
-    """Register a unit in the packed signature index.
-
-    This is a unit-lifecycle operation (creation), not an online step-loop
-    operation.
-    """
+    """Register a unit in the packed signature index using token overlaps."""
     sig_index = getattr(lib, "sig_index", None)
     if sig_index is None:
         return
-    addr = int(getattr(node, "unit_sig64", 0)) & _MASK64
     bids = _sig_index_blocks_for_node(node=node, dim2block=dim2block)
     setattr(node, "sig_index_blocks", bids)
+    tokens = tuple(int(t) for t in (getattr(node, "sig_index_tokens", ()) or ()) if int(t) >= 0)
+    if tokens:
+        setattr(node, "sig_index_tokens", tokens)
+    else:
+        tokens = bids
+        setattr(node, "sig_index_tokens", tokens)
     nid = int(getattr(node, "node_id", -1))
-    for b in bids:
-        sig_index.insert(int(addr), int(b), int(nid))
+    if nid < 0:
+        return
+    sig_index.insert_tokens(int(nid), tokens)
 
 
 def unregister_unit_from_sig_index(
@@ -165,11 +167,11 @@ def unregister_unit_from_sig_index(
     sig_index = getattr(lib, "sig_index", None)
     if sig_index is None:
         return
-    addr = int(getattr(node, "unit_sig64", 0)) & _MASK64
-    bids = tuple(int(b) for b in (getattr(node, "sig_index_blocks", ()) or ()))
+    bids = tuple(int(b) for b in (getattr(node, "sig_index_tokens", ()) or ()))
     nid = int(getattr(node, "node_id", -1))
-    for b in bids:
-        sig_index.remove(int(addr), int(b), int(nid))
+    if nid < 0:
+        return
+    sig_index.remove_tokens(int(nid), bids)
 
 
 def _build_blocks(state_dim: int, n_blocks: int) -> List[List[int]]:

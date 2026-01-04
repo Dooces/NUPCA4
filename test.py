@@ -12,6 +12,10 @@ Controls:
   q : quit (saves)
   r : reset agent (keep library)
   c : cold-reset agent (clear library)
+  +/= : speed up world ticks
+  -   : slow down world ticks
+  n   : add a shape slot (and spawn)
+  m   : remove a shape slot (and despawn one if present)
 
 The environment here is a discrete 20x20 grid with simple polyomino templates.
 """
@@ -26,9 +30,10 @@ import struct
 import sys
 import time
 import queue
+import traceback
 from dataclasses import asdict, dataclass, replace as dc_replace
 from multiprocessing.shared_memory import SharedMemory
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from rich import box
@@ -44,7 +49,7 @@ from multiprocessing.shared_memory import SharedMemory
 # Harness parameters
 # ----------------------------
 
-UPDATE_DELAY_MS = 2000  # world tick pacing. 0 = as fast as possible.
+UPDATE_DELAY_MS = 500  # world tick pacing. 0 = as fast as possible.
 
 STATE_PATH = "agent_state.npz"
 VAL_MAX = 4.0
@@ -136,22 +141,44 @@ class Shape:
 
 
 class GridWorld:
-    def __init__(self, grid_size: int = 20, *, occlusion_width: int = 3):
+    def __init__(
+        self,
+        grid_size: int = 20,
+        *,
+        occlusion_width: int = 0,
+        max_shapes: int = 5,
+        min_shapes: int = 1,
+        spawn_p: float = 0.08,
+    ):
         self.grid_size = int(grid_size)
         self.shapes: List[Shape] = []
         self.t = 0
+        self.shape_scale = 2
 
-        self.spawn_p = 0.08
-        self.max_shapes = 3
+        self.spawn_p = float(spawn_p)
+        self.min_shapes = max(1, int(min_shapes))
+        self.max_shapes = max(self.min_shapes, int(max_shapes))
+        self.on_max_shapes_zero: Optional[Callable[[str], None]] = None
 
         # Four solid templates with explicit sizes.
         self.templates = ["triangle", "square", "rectangle", "rhombus"]
 
-        ow = max(1, int(occlusion_width))
-        c0 = max(0, self.grid_size // 2 - ow // 2)
-        c1 = min(self.grid_size - 1, c0 + ow - 1)
         self.occlusion_mask = np.zeros((self.grid_size, self.grid_size), dtype=bool)
-        self.occlusion_mask[:, c0 : c1 + 1] = True
+        ow = max(0, int(occlusion_width))
+        if ow > 0:
+            c0 = max(0, self.grid_size // 2 - ow // 2)
+            c1 = min(self.grid_size - 1, c0 + ow - 1)
+            self.occlusion_mask[:, c0 : c1 + 1] = True
+
+    def _scale_cells(self, cells: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+        """Upscale shape cells by shape_scale (nearest-neighbor)."""
+        s = max(1, int(self.shape_scale))
+        scaled: List[Tuple[int, int]] = []
+        for r, c in cells:
+            for dr in range(s):
+                for dc in range(s):
+                    scaled.append((r * s + dr, c * s + dc))
+        return scaled
 
     def _make_triangle(self) -> List[Tuple[int, int]]:
         # Solid right triangle with height/base 5 (bounding box 5x5)
@@ -159,15 +186,17 @@ class GridWorld:
         for r in range(5):
             for c in range(r + 1):
                 cells.append((r, c))
-        return cells
+        return self._scale_cells(cells)
 
     def _make_square(self) -> List[Tuple[int, int]]:
         # Solid 4x4 block
-        return [(r, c) for r in range(4) for c in range(4)]
+        base = [(r, c) for r in range(4) for c in range(4)]
+        return self._scale_cells(base)
 
     def _make_rectangle(self) -> List[Tuple[int, int]]:
         # Solid 2x6 block
-        return [(r, c) for r in range(2) for c in range(6)]
+        base = [(r, c) for r in range(2) for c in range(6)]
+        return self._scale_cells(base)
 
     def _make_rhombus(self) -> List[Tuple[int, int]]:
         # Solid rhombus (diamond-like), height 4, width 5
@@ -177,7 +206,7 @@ class GridWorld:
         for r, (offset, width) in enumerate(zip(rows, widths)):
             for c in range(width):
                 cells.append((r, offset + c))
-        return cells
+        return self._scale_cells(cells)
 
     def spawn_shape(self) -> None:
         if len(self.shapes) >= self.max_shapes:
@@ -204,6 +233,40 @@ class GridWorld:
         color_id = random.randint(1, 4)
         self.shapes.append(Shape(cells=cells, x=x, y=y, dx=dx, dy=dy, color_id=color_id))
 
+    def set_max_shapes(self, count: int) -> None:
+        prev = int(self.max_shapes)
+        self.max_shapes = max(self.min_shapes, int(count))
+        self._trace_max_shapes_zero(prev, int(self.max_shapes))
+        while len(self.shapes) > self.max_shapes and self.shapes:
+            self.shapes.pop()
+
+    def add_shape(self) -> None:
+        self.set_max_shapes(self.max_shapes + 1)
+        self.spawn_shape()
+
+    def remove_shape(self) -> None:
+        prev = int(self.max_shapes)
+        if self.max_shapes <= self.min_shapes:
+            return
+        if self.shapes and len(self.shapes) > self.min_shapes:
+            self.shapes.pop()
+        self.max_shapes = max(self.min_shapes, self.max_shapes - 1)
+        self._trace_max_shapes_zero(prev, int(self.max_shapes))
+
+    def _trace_max_shapes_zero(self, prev: int, new: int) -> None:
+        if prev != 1 or new != 0:
+            return
+        stack = "".join(traceback.format_stack(limit=32))
+        msg = f"[max_shapes_change] prev=1 new=0 t={self.t}\n{stack}\n"
+        print(msg)
+        hook = getattr(self, "on_max_shapes_zero", None)
+        if hook is None:
+            return
+        try:
+            hook(msg)
+        except Exception:
+            pass
+
     def _would_hit_wall(self, sh: Shape, x_next: int) -> bool:
         for dr, dc in sh.cells:
             c = x_next + dc
@@ -213,36 +276,26 @@ class GridWorld:
 
     def update(self) -> None:
         self.t += 1
-        if random.random() < self.spawn_p or not self.shapes:
+        spawned_for_min = False
+        while len(self.shapes) < self.min_shapes and len(self.shapes) < self.max_shapes:
+            self.spawn_shape()
+            spawned_for_min = True
+        if (not spawned_for_min) and len(self.shapes) < self.max_shapes and random.random() < self.spawn_p:
             self.spawn_shape()
 
-        new_shapes: List[Shape] = []
         for sh in self.shapes:
-            x_next = sh.x + sh.dx
-            if sh.dx != 0 and self._would_hit_wall(sh, x_next):
-                sh.dx = -sh.dx
-                x_next = sh.x + sh.dx
-                if self._would_hit_wall(sh, x_next):
-                    x_next = sh.x
-
-            sh.x = x_next
-            sh.y += sh.dy
-
-            if any(0 <= sh.y + dr < self.grid_size for dr, _ in sh.cells):
-                new_shapes.append(sh)
-
-        self.shapes = new_shapes
+            sh.x = (sh.x + sh.dx) % self.grid_size
+            sh.y = (sh.y + sh.dy) % self.grid_size
 
     def get_current_grid(self) -> np.ndarray:
         grid = np.zeros((self.grid_size, self.grid_size), dtype=np.int32)
         for sh in self.shapes:
             for dr, dc in sh.cells:
-                r = sh.y + dr
-                c = sh.x + dc
-                if 0 <= r < self.grid_size and 0 <= c < self.grid_size:
-                    if self.occlusion_mask[r, c]:
-                        continue
-                    grid[r, c] = int(sh.color_id)
+                r = (sh.y + dr) % self.grid_size
+                c = (sh.x + dc) % self.grid_size
+                if self.occlusion_mask[r, c]:
+                    continue
+                grid[r, c] = int(sh.color_id)
         return grid
 
 
@@ -702,8 +755,11 @@ def load_nupca5_state_npz(path: str):
         stored_blocks = tuple(int(b) for b in getattr(node, "sig_index_blocks", ()))
         if stored_blocks:
             setattr(node, "sig_index_blocks", stored_blocks)
-            for b in stored_blocks:
-                si.insert(int(addr), int(b), int(nid))
+            if hasattr(si, "insert_tokens"):
+                si.insert_tokens(int(nid), stored_blocks)
+            else:
+                for b in stored_blocks:
+                    si.insert(int(addr), int(b), int(nid))
             continue
         register_unit_in_sig_index(lib, node, dim2block=dim2block)
 
@@ -1205,6 +1261,16 @@ def agent_worker(
 
             _action, trace = agent.step(o)
             last_trace = trace if isinstance(trace, dict) else {}
+            try:
+                cmd = getattr(_action, "command", None)
+                val = int(getattr(_action, "value", 0) or 0)
+                cmd_val = getattr(cmd, "value", None) if cmd is not None else None
+                if cmd_val is None:
+                    cmd_val = str(cmd) if cmd is not None else "none"
+                if str(cmd_val) != "none" or val != 0:
+                    conn.send({"cmd": "action", "action": str(cmd_val), "value": int(val)})
+            except Exception:
+                pass
 
             st = agent.state
             x_prior = _np.asarray(getattr(st.buffer, "x_prior", _np.zeros(obs_n, dtype=_np.float32)), dtype=_np.float32).reshape(-1)
@@ -1384,6 +1450,8 @@ def main() -> None:
     parser.add_argument("--periph-bins", type=int, default=2)
     parser.add_argument("--periph-routing-weight", type=float, default=0.5)
     parser.add_argument("--grid-size", type=int, default=20)
+    parser.add_argument("--max-shapes", type=int, default=5)
+    parser.add_argument("--min-shapes", type=int, default=1)
     args = parser.parse_args()
 
     import multiprocessing as mp
@@ -1457,7 +1525,12 @@ def main() -> None:
                     print(f"State load skipped ({state_path}): stored permutation mismatches identity (len={perm_loaded.size}, expected={expected.size})")
         except Exception as e:
             print(f"State load failed ({state_path}): {e}")
-    world = GridWorld(grid_size=side, occlusion_width=max(1, side // 5))
+    world = GridWorld(
+        grid_size=side,
+        occlusion_width=0,
+        max_shapes=int(args.max_shapes),
+        min_shapes=int(args.min_shapes),
+    )
     if state_t_w_loaded > 0:
         world.t = int(state_t_w_loaded)
 
@@ -1551,6 +1624,8 @@ def main() -> None:
 
     autosave_every_s = float(args.autosave_every_s)
     last_autosave_wall = time.time()
+    update_delay_ms = max(0, int(UPDATE_DELAY_MS))
+    speed_step_ms = 100
 
     console = Console()
 
@@ -1561,6 +1636,16 @@ def main() -> None:
     diff_text = diff_to_text(np.zeros_like(env_grid), env_grid)
     status_text = Text("starting...", style="white")
     layout = build_layout(env_text, pred_text, pred_future_text, diff_text, status_text, pane_w=24, pane_h=22)
+
+    output_path = "output.txt"
+    log_file = open(output_path, "w")
+    def _log_max_shapes_zero(message: str) -> None:
+        try:
+            log_file.write(message)
+            log_file.flush()
+        except Exception:
+            pass
+    world.on_max_shapes_zero = _log_max_shapes_zero
 
     try:
         with KeyPoller() as kp, Live(layout, console=console, refresh_per_second=30, screen=True):
@@ -1575,6 +1660,20 @@ def main() -> None:
                             raise RuntimeError(f"agent worker error: {worker_err}\n{trace_s}")
                         if cmd == "out":
                             pending_out = msg.get("data")
+                            continue
+                        if cmd == "action":
+                            action_cmd = str(msg.get("action", "none"))
+                            action_val = int(msg.get("value", 0) or 0)
+                            if action_cmd == "add_shape":
+                                world.add_shape()
+                            elif action_cmd == "remove_shape":
+                                world.remove_shape()
+                            elif action_cmd == "speed_up":
+                                step = speed_step_ms * max(1, action_val) if action_val >= 0 else speed_step_ms
+                                update_delay_ms = max(0, update_delay_ms - step)
+                            elif action_cmd == "slow_down":
+                                step = speed_step_ms * max(1, action_val) if action_val >= 0 else speed_step_ms
+                                update_delay_ms = min(5000, update_delay_ms + step)
                             continue
                     # ignore other control replies (save/reset/quit)
 
@@ -1656,6 +1755,9 @@ def main() -> None:
                     status_text = Text("\n".join(patched_lines))
                 else:
                     status_text = Text(f"t={world.t}  (waiting for agent)\nautosave_in={autosave_in:5.1f}s")
+                status_text.append(
+                    f"\nworld: delay_ms={update_delay_ms} shapes={len(world.shapes)}/{world.max_shapes}"
+                )
 
                 env_title = f"ENV t={display_env_t} (world {world.t})"
                 pred_title = f"PRIOR t={last_agent_t or '?'} env={last_proc_env_t or '?'}"
@@ -1671,6 +1773,26 @@ def main() -> None:
                 layout["top"]["diff"].update(Panel(diff_text, title=diff_title, padding=(0, 0), box=box.SQUARE))
                 layout["bottom"]["status"].update(Panel(status_text, title="NUPCA5", padding=(0, 1), box=box.SQUARE))
 
+                try:
+                    env_plain = env_text.plain
+                    pred_plain = pred_text.plain
+                    predf_plain = pred_future_text.plain
+                    diff_plain = diff_text.plain
+                    status_plain_out = status_text.plain
+                    log_file.write(
+                        f"tick={world.t} display_env_t={display_env_t} env_seq={env_seq} "
+                        f"agent_t={last_agent_t} proc_env_t={last_proc_env_t} last_sig={last_sig64}\n"
+                    )
+                    log_file.write(f"{env_title}\n{env_plain}")
+                    log_file.write(f"{pred_title}\n{pred_plain}")
+                    log_file.write(f"{predf_title}\n{predf_plain}")
+                    log_file.write(f"{diff_title}\n{diff_plain}")
+                    log_file.write(f"STATUS\n{status_plain_out}\n")
+                    log_file.write("-" * 32 + "\n")
+                    log_file.flush()
+                except Exception:
+                    pass
+
                 k = kp.poll()
                 if k:
                     kk = k.lower()
@@ -1683,16 +1805,28 @@ def main() -> None:
                         parent_conn.send({"cmd": "reset", "clear_memory": False})
                     if kk == "c":
                         parent_conn.send({"cmd": "reset", "clear_memory": True})
+                    if kk in ("+", "="):
+                        update_delay_ms = max(0, update_delay_ms - 100)
+                    if kk == "-":
+                        update_delay_ms = min(5000, update_delay_ms + 100)
+                    if kk == "n":
+                        world.add_shape()
+                    if kk == "m":
+                        world.remove_shape()
 
                 now = time.time()
                 if autosave_every_s > 0 and (now - last_autosave_wall) >= autosave_every_s:
                     last_autosave_wall = now
                     parent_conn.send({"cmd": "save"})
 
-                if UPDATE_DELAY_MS > 0:
-                    time.sleep(UPDATE_DELAY_MS / 1000.0)
+                if update_delay_ms > 0:
+                    time.sleep(update_delay_ms / 1000.0)
 
     finally:
+        try:
+            log_file.close()
+        except Exception:
+            pass
         try:
             parent_conn.send({"cmd": "quit", "save": True})
         except Exception:

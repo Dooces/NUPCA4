@@ -52,6 +52,8 @@ class CurriculumCommand(Enum):
     NONE = "none"
     ADD_SHAPE = "add_shape"
     REMOVE_SHAPE = "remove_shape"
+    SPEED_UP = "speed_up"
+    SLOW_DOWN = "slow_down"
 
 @dataclass
 class Action:
@@ -177,6 +179,7 @@ class ObservationBuffer:
     x_last: np.ndarray
     x_prior: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     observed_dims: Set[int] = field(default_factory=set)
+    block_age: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
 
 
 @dataclass
@@ -300,6 +303,7 @@ class ExpertNode:
 
     # Bookkeeping for deterministic sig_index removal (set by library on registration).
     sig_index_blocks: Tuple[int, ...] = field(default_factory=tuple)
+    sig_index_tokens: Tuple[int, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         # Normalize arrays
@@ -337,6 +341,10 @@ class ExpertNode:
             self.sig_index_blocks = tuple()
         else:
             self.sig_index_blocks = tuple(int(b) for b in self.sig_index_blocks)
+        if self.sig_index_tokens is None:
+            self.sig_index_tokens = tuple()
+        else:
+            self.sig_index_tokens = tuple(int(t) for t in self.sig_index_tokens)
 
     @property
     def block_id(self) -> int:
@@ -496,6 +504,10 @@ class PackedExpertLibrary:
     edge_parent: np.ndarray           # int32 (E,)
     edge_child: np.ndarray            # int32 (E,)
 
+    # Retrieval primitives (ragged tokens per node).
+    sig_tokens_data: np.ndarray = field(default_factory=lambda: np.zeros((0,), dtype=np.int32))
+    sig_tokens_indptr: np.ndarray = field(default_factory=lambda: np.zeros((0,), dtype=np.int32))
+
     def as_npz_dict(self) -> Dict[str, np.ndarray]:
         """Return an array-only dict suitable for np.savez."""
         return {
@@ -532,6 +544,8 @@ class PackedExpertLibrary:
             "in_idx_data": self.in_idx_data,
             "in_idx_indptr": self.in_idx_indptr,
             "has_in_idx": self.has_in_idx,
+            "sig_tokens_data": self.sig_tokens_data,
+            "sig_tokens_indptr": self.sig_tokens_indptr,
             "edge_parent": self.edge_parent,
             "edge_child": self.edge_child,
         }
@@ -662,6 +676,7 @@ def pack_expert_library(lib: ExpertLibrary) -> PackedExpertLibrary:
     in_idxs: List[np.ndarray] = []
     has_out_idx = np.zeros((N,), dtype=np.uint8)
     has_in_idx = np.zeros((N,), dtype=np.uint8)
+    sig_tokens: List[np.ndarray] = []
 
     # Edge list (parent -> child)
     e_parent: List[int] = []
@@ -720,6 +735,11 @@ def pack_expert_library(lib: ExpertLibrary) -> PackedExpertLibrary:
         else:
             in_idxs.append(np.asarray(ii, dtype=np.int32).reshape(-1))
             has_in_idx[i] = 1
+        tok = getattr(n, "sig_index_tokens", None)
+        if tok is None:
+            sig_tokens.append(np.zeros((0,), dtype=np.int32))
+        else:
+            sig_tokens.append(np.asarray(tok, dtype=np.int32).reshape(-1))
 
         # DAG edges
         for c in getattr(n, "children", set()):
@@ -733,6 +753,7 @@ def pack_expert_library(lib: ExpertLibrary) -> PackedExpertLibrary:
     Sigma_data, Sigma_indptr = _pack_ragged_f32(Sigmas)
     out_idx_data, out_idx_indptr = _pack_ragged_i32(out_idxs)
     in_idx_data, in_idx_indptr = _pack_ragged_i32(in_idxs)
+    sig_tokens_data, sig_tokens_indptr = _pack_ragged_i32(sig_tokens)
 
     edge_parent = np.asarray(e_parent, dtype=np.int32)
     edge_child = np.asarray(e_child, dtype=np.int32)
@@ -771,6 +792,8 @@ def pack_expert_library(lib: ExpertLibrary) -> PackedExpertLibrary:
         in_idx_data=in_idx_data,
         in_idx_indptr=in_idx_indptr,
         has_in_idx=has_in_idx,
+        sig_tokens_data=sig_tokens_data,
+        sig_tokens_indptr=sig_tokens_indptr,
         edge_parent=edge_parent,
         edge_child=edge_child,
     )
@@ -788,6 +811,10 @@ def unpack_expert_library(packed: PackedExpertLibrary) -> ExpertLibrary:
     lib.revision = int(packed.revision)
 
     N = int(packed.node_ids.size)
+    sig_tokens_data = getattr(packed, "sig_tokens_data", np.zeros((0,), dtype=np.int32))
+    sig_tokens_indptr = getattr(packed, "sig_tokens_indptr", np.zeros((0,), dtype=np.int32))
+    if int(sig_tokens_indptr.size) < N + 1:
+        sig_tokens_indptr = np.zeros((N + 1,), dtype=np.int32)
     # First pass: create nodes
     for i in range(N):
         nid = int(packed.node_ids[i])
@@ -814,6 +841,7 @@ def unpack_expert_library(packed: PackedExpertLibrary) -> ExpertLibrary:
         if int(packed.has_in_idx[i]) == 1:
             ii = _unpack_ragged(packed.in_idx_data, packed.in_idx_indptr, i).astype(np.int32, copy=False)
 
+        tok = _unpack_ragged(sig_tokens_data, sig_tokens_indptr, i).astype(np.int32, copy=False)
         node = ExpertNode(
             node_id=nid,
             mask=mask,
@@ -832,6 +860,7 @@ def unpack_expert_library(packed: PackedExpertLibrary) -> ExpertLibrary:
             unit_sig64=int(packed.unit_sig64[i]),
             is_transport=bool(int(packed.is_transport[i])),
             sig_index_blocks=tuple(),
+            sig_index_tokens=tuple(int(t) for t in tok.tolist()),
         )
         lib.nodes[nid] = node
 
@@ -1256,6 +1285,7 @@ class AgentState:
     novelty_pressure: float = 0.0
     P_nov_state: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     U_prev_state: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    q_block_mean: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
     g_contemplate: bool = False
     focus_mode: str = "operate"
     planning_budget: float = 0.0

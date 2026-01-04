@@ -17,7 +17,7 @@ Intentionally NOT persisted (v5 durability boundary):
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, fields, is_dataclass
+from dataclasses import MISSING, asdict, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple
 from collections import deque
@@ -156,6 +156,7 @@ def save_checkpoint(path: Path, cfg: AgentConfig, state: AgentState) -> None:
     arrays["state.sig_prev_hist"] = np.asarray(state.sig_prev_hist, dtype=np.uint16)
     arrays["state.P_nov_state"] = np.asarray(getattr(state, "P_nov_state", np.zeros(0, dtype=float)), dtype=float)
     arrays["state.U_prev_state"] = np.asarray(getattr(state, "U_prev_state", np.zeros(0, dtype=float)), dtype=float)
+    arrays["state.q_block_mean"] = np.asarray(getattr(state, "q_block_mean", np.zeros(0, dtype=float)), dtype=float)
 
     # NOTE: pending_validation is intentionally NOT persisted in v5.
 
@@ -244,9 +245,14 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
             if key in z:
                 lib_kwargs[f.name] = np.asarray(z[key])
             else:
-                if f.name not in lib_scalars:
+                if f.name in lib_scalars:
+                    lib_kwargs[f.name] = lib_scalars[f.name]
+                elif f.default is not MISSING:
+                    lib_kwargs[f.name] = f.default
+                elif f.default_factory is not MISSING:  # type: ignore[comparison-overlap]
+                    lib_kwargs[f.name] = f.default_factory()  # type: ignore[misc]
+                else:
                     raise ValueError(f"Checkpoint missing PackedExpertLibrary field: {f.name}")
-                lib_kwargs[f.name] = lib_scalars[f.name]
         packed = PackedExpertLibrary(**lib_kwargs)  # type: ignore[arg-type]
 
         base_lib = ExpertLibrary.unpack(packed)
@@ -323,10 +329,12 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
 
         # ObservationBuffer is intentionally cleared on load.
         D = int(getattr(cfg, "D", 0))
+        B = int(getattr(cfg, "B", 0))
         buf = ObservationBuffer(
             x_last=np.zeros(D, dtype=float),
             x_prior=np.zeros(D, dtype=float),
             observed_dims=set(),
+            block_age=np.zeros(max(0, B), dtype=np.int32),
         )
 
         state = AgentState(
@@ -356,6 +364,10 @@ def load_checkpoint(path: Path) -> Tuple[AgentConfig, AgentState]:
             state.U_prev_state = np.asarray(z["state.U_prev_state"], dtype=float).copy()
         else:
             state.U_prev_state = np.zeros(B, dtype=float)
+        if "state.q_block_mean" in z:
+            state.q_block_mean = np.asarray(z["state.q_block_mean"], dtype=float).copy()
+        else:
+            state.q_block_mean = np.zeros(B, dtype=float)
         adviser_meta = st.get("value_of_compute", {}) or {}
         state.value_of_compute = float(adviser_meta.get("value_of_compute", 0.0))
         state.hazard_pressure = float(adviser_meta.get("hazard_pressure", 0.0))

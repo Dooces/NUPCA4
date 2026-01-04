@@ -22,7 +22,9 @@ from ..types import ObservationBuffer, EnvObs
 
 def init_observation_buffer(cfg: AgentConfig) -> ObservationBuffer:
     base = np.zeros(cfg.D, dtype=float)
-    return ObservationBuffer(x_last=base.copy(), x_prior=base.copy())
+    B = int(getattr(cfg, "B", 0))
+    block_age = np.zeros(max(0, B), dtype=np.int32)
+    return ObservationBuffer(x_last=base.copy(), x_prior=base.copy(), block_age=block_age)
 
 
 def buffer_update(buf: ObservationBuffer, obs: EnvObs, cfg: AgentConfig) -> None:

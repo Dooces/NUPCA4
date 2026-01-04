@@ -569,6 +569,8 @@ def _compute_peripheral_metrics(
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
     state.peripheral_confidence = confidence
+    if not np.isfinite(residual):
+        residual = 0.0
     state.peripheral_residual = residual
 
 
