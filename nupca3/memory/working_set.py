@@ -456,7 +456,9 @@ def select_working_set(
         is_anchor = getattr(node, "is_anchor", False)
 
         # Anchors get weight 1.0 if not in salience dict
-        a_j = float(salience.get(nid, 1.0 if is_anchor else 0.0))
+        # Get activation with minimum baseline to ensure some candidates
+        base_salience = 0.15 if is_anchor else 0.08
+        a_j = float(salience.get(nid, base_salience))
         L_j = _get_node_cost(node)
 
         weights[nid] = a_j
@@ -504,6 +506,13 @@ def select_working_set(
         state._ws_linger_ids = linger_ids
         state._ws_linger_last_t = int(t_now)
 
+    # -------------------------------------------------------------------------
+    # DEBUG: Force minimum working set for learning testing - REMOVED
+    # -------------------------------------------------------------------------
+    # Working set selection should work normally now that salience is fixed
+        
+    # Return working set result
+    # -------------------------------------------------------------------------
     return WorkingSet(
         active=active,
         weights=weights,

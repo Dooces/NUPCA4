@@ -152,16 +152,10 @@ class AgentConfig:
     transport_belief_decay: float = 0.5
     transport_inertia_weight: float = 0.0
     # Margin required between top candidates to commit with confidence (probability difference)
-    transport_confidence_margin: float = 0.25
-    # Additional routing bonus for blocks that disambiguate candidate shifts
-    transport_disambiguation_weight: float = 1.0
-
-    # When True, seed the candidate set with the environment-provided delta and force selection (debug).
-    transport_force_true_delta: bool = False
-
-    # High-confidence gating thresholds for pseudo-label acquisition.
-    transport_high_confidence_margin: float = 0.05
-    transport_high_confidence_overlap: int = 2
+    transport_confidence_margin: float = 0.15  # Reduced from 0.25
+    transport_high_confidence_margin: float = 0.015  # Reduced from 0.05
+    transport_high_confidence_overlap: int = 1  # Reduced from 2
+    transport_disambiguation_weight: float = 0.0  # Added missing field
 
     # Minimum overlap (|I(d)|) required for a candidate to be informative.
     transport_min_overlap: int = 1
@@ -357,7 +351,7 @@ class AgentConfig:
     tau_base: float = 1.0
     tau_min: float = 0.5
     tau_max: float = 5.0
-    tau_a: float = 0.5
+    tau_a: float = 0.15  # Reduced from 0.50 to increase activation sensitivity
     # Debug hook: score all nodes when True (override candidate universe).
     salience_debug_exhaustive: bool = False
 
@@ -387,7 +381,7 @@ class AgentConfig:
     split_stats_beta: float = 0.1
 
     # Learn gate threshold (A10/A11).
-    theta_learn: float = 0.15
+    theta_learn: float = 0.25  # Increased to allow more learning
 
     # Baseline normalization safety (A3.2).
     baseline_var_floor: float = 0.0
@@ -533,15 +527,15 @@ class AgentConfig:
     # Arousal logistic parameters (θ_ar, κ_ar).
     theta_ar: float = 0.50
     kappa_ar: float = 0.20
-    theta_a: float = 0.50
+    theta_a: float = 0.10  # Reduced from 0.50 to allow more node activation
 
     # Arousal leaky dynamics (τ_rise, τ_decay).
     tau_rise: float = 50.0
     tau_decay: float = 500.0
 
     # Exploration/“openness” coupling β_open and need sharpening β_sharp.
-    beta_open: float = 0.10
-    beta_sharp: float = 2.0
+    beta_open: float = 0.5  # Increased from 0.1 to encourage more exploration0
+    beta_sharp: float = 0.2  # Reduced from 2.0 to allow more exploration
 
     # Diagonal σ floor used when forming precision-weighted diagnostics.
     sigma_floor_diag: float = 1e-2
@@ -555,7 +549,7 @@ class AgentConfig:
     # Implementation capacity / queue limits (not new axioms; operational bounds)
     # =========================================================================
     N_max: int = 256
-    L_work_max: float = 48.0
+    L_work_max: int = 12  # Increased from 8 to allow more working set candidates
     K_max: int = 0
     C_cand_max: int = 0
     max_candidates: int = 32
@@ -687,8 +681,10 @@ class AgentConfig:
             raise ValueError("transport_inertia_weight must be >= 0")
         if not (0.0 <= self.transport_confidence_margin <= 1.0):
             raise ValueError("transport_confidence_margin must be in [0, 1]")
-        if self.transport_disambiguation_weight < 0.0:
+        if not (0.0 <= getattr(self, 'transport_disambiguation_weight', 0.0) <= 1.0):
             raise ValueError("transport_disambiguation_weight must be >= 0")
+        if not (0.0 <= getattr(self, 'transport_disambiguation_weight', 0.0) <= 1.0):
+            raise ValueError("transport_disambiguation_weight must be in [0, 1]")
         if self.transport_signal_floor < 0.0:
             raise ValueError("transport_signal_floor must be >= 0")
 

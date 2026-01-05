@@ -37,12 +37,218 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.layout import Layout
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 from multiprocessing.shared_memory import SharedMemory
+
+# =============================================================================
+# VISUALIZATION ENHANCEMENTS
+# =============================================================================
+
+def create_meter(value: float, min_val: float, max_val: float, width: int, label: str = "", reverse: bool = False) -> str:
+    """Create ASCII meter/bar visualization."""
+    if reverse:
+        normalized = max(0, min(1, (max_val - value) / (max_val - min_val + 1e-6)))
+        bar = "░" * (width - int(normalized * width)) + "█" * int(normalized * width)
+    else:
+        normalized = max(0, min(1, (value - min_val) / (max_val - min_val + 1e-6)))
+        bar = "█" * int(normalized * width) + "░" * (width - int(normalized * width))
+    
+    return f"{label}: [{bar}] {value:.3f}"
+
+def create_trend_line(values: List[float], width: int, symbol: str = "●") -> str:
+    """Create ASCII trend line from values."""
+    if not values:
+        return " " * width
+    
+    # Normalize values to fit width
+    min_val, max_val = min(values), max(values)
+    if max_val - min_val < 1e-6:
+        normalized = [width // 2] * len(values)
+    else:
+        normalized = [
+            int((v - min_val) / (max_val - min_val + 1e-6) * (width - 1)) 
+            for v in values
+        ]
+    
+    # Create trend visualization
+    trend = [" "] * width
+    for norm_val in normalized[-width:]:  # Show last width values
+        if 0 <= norm_val < width:
+            trend[norm_val] = symbol
+    
+    return "".join(trend)
+
+def create_confidence_meter(conf: float) -> str:
+    """Create confidence visualization."""
+    if conf >= 0.7:
+        icon = "🟢"
+        label = "HIGH"
+    elif conf >= 0.4:
+        icon = "🟡"
+        label = "MED"
+    elif conf >= 0.1:
+        icon = "🟠"
+        label = "LOW"
+    else:
+        icon = "🔴"
+        label = "NONE"
+    
+    bar_width = int(conf * 10)
+    bar = "█" * bar_width + "░" * (10 - bar_width)
+    return f"{icon} CONF: [{bar}] {conf:.2f} {label}"
+
+def render_environment_grid(env_state: np.ndarray, pred_state: np.ndarray, block_size: int = 4) -> str:
+    """Render environment grid with predictions overlay."""
+    try:
+        # Reshape for display
+        env_grid = env_state.reshape(20, 20)
+        pred_grid = pred_state.reshape(20, 20)
+        
+        lines = []
+        lines.append("ENVIRONMENT GRID (██=occupied, ▓▓=predicted, ░░=empty):")
+        
+        for i in range(20):
+            row = ""
+            for j in range(20):
+                env_val = int(env_grid[i, j])
+                pred_val = int(pred_grid[i, j])
+                
+                if env_val > 0:
+                    row += "██"  # Occupied
+                elif pred_val > 0:
+                    row += "▓▓"  # Predicted but empty
+                else:
+                    row += "░░"  # Empty
+            lines.append(f"{i:2d} {row}")
+        
+        lines.append("   " + "  ".join(f"{j:2d}" for j in range(20)))
+        return "\n".join(lines)
+    except:
+        return "GRID RENDER ERROR (using fallback visualization)"
+
+def render_agent_status(status, margins, stress) -> str:
+    """Render agent internal state with visual indicators."""
+    
+    # Compute visual bars
+    energy_bar = "█" * int(margins[0] * 10) + "░" * (10 - int(margins[0] * 10))
+    data_bar = "█" * int(margins[1] * 10) + "░" * (10 - int(margins[1] * 10))
+    learning_bar = "█" * int(margins[2] * 10) + "░" * (10 - int(margins[2] * 10))
+    compute_bar = "█" * int(margins[3] * 10) + "░" * (10 - int(margins[3] * 10))
+    semantic_bar = "█" * int(margins[4] * 10) + "░" * (10 - int(margins[4] * 10))
+    
+    # Arousal indicator
+    arousal = stress[0]
+    if arousal > 0.5:
+        arousal_icon = "🔴"
+        arousal_state = "HIGH"
+    elif arousal > 0.2:
+        arousal_icon = "🟡"
+        arousal_state = "MED"
+    else:
+        arousal_icon = "🟢"
+        arousal_state = "LOW"
+    
+    # External threat
+    threat = stress[2]
+    threat_icon = "⚠️" if threat > 0.5 else "  " if threat > 0.1 else "✅"
+    
+    return f"""
+AGENT INTERNAL STATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENERGY   : [{energy_bar}] {margins[0]:.2f}  (operational capacity)
+DATA     : [{data_bar}] {margins[1]:.2f}  (stability/damage)
+LEARNING  : [{learning_bar}] {margins[2]:.2f}  (learning opportunity)
+COMPUTE  : [{compute_bar}] {margins[3]:.2f}  (compute slack)
+SEMANTIC : [{semantic_bar}] {margins[4]:.2f}  (semantic integrity)
+
+AROUSEL  : {arousal_icon} {arousal_state} ({arousal:.3f})
+THREAT    : {threat_icon} External threat ({threat:.3f})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+def render_node_network(node_ids: np.ndarray, node_activations: Dict[int, float]) -> str:
+    """Render node activation network."""
+    try:
+        # Take top nodes
+        top_n = min(16, len(node_ids))
+        active_nodes = node_ids[:top_n]
+        
+        lines = []
+        lines.append("NODE ACTIVATION NETWORK (Top 16 nodes):")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        
+        # Create 4x4 grid
+        for row in range(4):
+            line = ""
+            for col in range(4):
+                idx = row * 4 + col
+                if idx < top_n:
+                    node_id = int(active_nodes[idx])
+                    activation = node_activations.get(node_id, 0.0)
+                    if activation > 0.7:
+                        symbol = "🟢"
+                    elif activation > 0.3:
+                        symbol = "🟡"
+                    else:
+                        symbol = "⚪"
+                    line += f"{symbol}{node_id:4d}"
+                else:
+                    line += "    "
+            lines.append(f"  {line}")
+        
+        return "\n".join(lines)
+    except:
+        return "NETWORK RENDER ERROR (using fallback visualization)"
+
+def render_learning_dashboard(learn_gate_info, predictions) -> str:
+    """Render comprehensive learning and prediction dashboard."""
+    
+    # Learning status
+    theta_eff = learn_gate_info.get('theta_eff', 0.0)
+    cand_count = learn_gate_info.get('cand', 0)
+    upd_count = learn_gate_info.get('upd', 0)
+    clamp_count = learn_gate_info.get('clamp', 0)
+    
+    # Learning health indicator
+    if upd_count > 0:
+        learning_icon = "🟢"
+        learning_status = "ACTIVE"
+    elif cand_count > 0:
+        learning_icon = "🟡"
+        learning_status = "CANDIDATES"
+    else:
+        learning_icon = "🔴"
+        learning_status = "STAGNANT"
+    
+    # Prediction metrics
+    mae_prior = predictions.get('mae_prior', 1.0)
+    mae_post = predictions.get('mae_post', 1.0)
+    eq_prior = predictions.get('eq_prior', 0.0)
+    eq_post = predictions.get('eq_post', 0.0)
+    
+    # Performance meters
+    acc_meter = create_meter(eq_post, 0, 1, 20, "Accuracy")
+    mae_meter = create_meter(mae_post, 0, 2, 20, "MAE", reverse=True)
+    
+    return f"""
+LEARNING & PREDICTION DASHBOARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LEARNING STATUS: {learning_icon} {learning_status}
+Threshold (θ_eff): {theta_eff:.3f}
+Candidates: {cand_count:3d} | Updates: {upd_count:3d} | Clamped: {clamp_count:3d}
+
+PREDICTION PERFORMANCE:
+{acc_meter}
+{mae_meter}
+
+Transport Confidence: {predictions.get('transport_conf', 0.0):.3f}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 
 
 # ----------------------------
@@ -358,7 +564,6 @@ def build_layout(
 
     top = Layout(name="top", size=pane_h)
     top.split_row(
-        Layout(name="padL", ratio=1),
         Layout(name="env", size=pane_w),
         Layout(name="gap1", size=gap_w),
         Layout(name="pred", size=pane_w),
@@ -366,14 +571,11 @@ def build_layout(
         Layout(name="predf", size=pane_w),
         Layout(name="gap3", size=gap_w),
         Layout(name="diff", size=pane_w),
-        Layout(name="padR", ratio=1),
     )
 
     bottom = Layout(name="bottom", ratio=1)
     bottom.split_row(
-        Layout(name="padL2", ratio=1),
         Layout(name="status", size=total_w),
-        Layout(name="padR2", ratio=1),
     )
 
     layout.split_column(top, bottom)
@@ -385,13 +587,9 @@ def build_layout(
     bottom["status"].update(Panel(status_text, title="NUPCA5", padding=(0, 1), box=box.SQUARE))
 
     blank = Text("")
-    top["padL"].update(blank)
     top["gap1"].update(blank)
     top["gap2"].update(blank)
     top["gap3"].update(blank)
-    top["padR"].update(blank)
-    bottom["padL2"].update(blank)
-    bottom["padR2"].update(blank)
 
     return layout
 
@@ -1238,6 +1436,14 @@ def agent_worker(
             obs_dims = make_observation_set(requested_blocks, agent.cfg)
             if not obs_dims:
                 obs_dims = {0}
+                
+                # DEBUG: Ensure observed_dims are always set for learning
+                if len(obs_dims) == 0:
+                    # Emergency fallback - select some random dimensions
+                    import random
+                    available_dims = list(range(100))  # First 100 dims as fallback
+                    obs_dims = set(random.sample(available_dims, min(8, len(available_dims))))
+                    print(f"DEBUG: Emergency fallback obs_dims = {obs_dims}")
             x_partial = {int(i): float(obs[int(i)]) for i in obs_dims if 0 <= int(i) < obs.size}
             env_tick = int(getattr(agent.state, "t_w", getattr(agent.state, "t", 0))) + 1
             wall_ms = int(_time.perf_counter() * 1000)
@@ -1631,7 +1837,7 @@ def main() -> None:
     autosave_every_s = float(args.autosave_every_s)
     last_autosave_wall = time.time()
     update_delay_ms = max(0, int(UPDATE_DELAY_MS))
-    speed_step_ms = 100
+    speed_step_ms = 25
 
     console = Console()
 
@@ -1641,6 +1847,8 @@ def main() -> None:
     pred_future_text = grid_to_text(np.zeros_like(env_grid))
     diff_text = diff_to_text(np.zeros_like(env_grid), env_grid)
     status_text = Text("starting...", style="white")
+    # Modified layout for horizontal grid display - wide format
+    # Using pane_w=24, pane_h=22 for compact display without excessive padding
     layout = build_layout(env_text, pred_text, pred_future_text, diff_text, status_text, pane_w=24, pane_h=22)
 
     output_path = "output.txt"
@@ -1747,23 +1955,328 @@ def main() -> None:
 
                 autosave_in = max(0.0, autosave_every_s - (time.time() - last_autosave_wall)) if autosave_every_s > 0 else 0.0
 
+                world_line = (
+                    f"world: delay_ms={update_delay_ms} "
+                    f"shapes={len(world.shapes)}/{world.max_shapes}"
+                )
+
                 if status_plain:
-                    patched_lines = []
+                    metrics = {}
                     for ln in status_plain.splitlines():
                         s = ln.strip()
-                        if s.startswith("autosave_in="):
-                            suffix = ""
-                            if "  (keys:" in ln:
-                                suffix = ln[ln.find("  (keys:") :]
-                            patched_lines.append(f"autosave_in={autosave_in:5.1f}s{suffix}")
-                        else:
-                            patched_lines.append(ln)
-                    status_text = Text("\n".join(patched_lines))
+                        if not s:
+                            continue
+
+                        if s.startswith("t=") and "env_t=" in s:
+                            normalized = s.replace("|A|=", "active_nodes=")
+                            for token in normalized.split():
+                                if "=" not in token:
+                                    continue
+                                key, val = token.split("=", 1)
+                                key = key.strip()
+                                val = val.strip()
+                                if key in ("nodes", "active_nodes"):
+                                    try:
+                                        metrics[key] = int(val)
+                                    except Exception:
+                                        metrics[key] = 0
+                                elif key == "sig64":
+                                    metrics["sig64"] = val
+                                elif key == "kernel":
+                                    metrics["kernel"] = val
+
+                        if "h=" in s and "b_enc=" in s:
+                            for token in s.split():
+                                if "=" not in token:
+                                    continue
+                                key, val = token.split("=", 1)
+                                key = key.strip()
+                                val = val.strip()
+                                if key in ("h", "b_enc", "b_roll", "x_C"):
+                                    try:
+                                        metrics[key] = float(val)
+                                    except Exception:
+                                        metrics[key] = 0.0
+
+                        if "budget use/lim=" in s:
+                            try:
+                                budget_part = s.split("budget use/lim=", 1)[1].split()[0]
+                                usage, limit = budget_part.split("/")
+                                metrics["budget_use"] = float(usage)
+                                metrics["budget_lim"] = float(limit)
+                            except Exception:
+                                pass
+                            if "plan=" in s:
+                                try:
+                                    metrics["plan"] = float(s.split("plan=", 1)[1].split()[0])
+                                except Exception:
+                                    pass
+                            if "max=" in s:
+                                try:
+                                    metrics["max"] = float(s.split("max=", 1)[1].split()[0])
+                                except Exception:
+                                    pass
+                            if "degrade=" in s:
+                                try:
+                                    metrics["degrade"] = int(s.split("degrade=", 1)[1].split()[0])
+                                except Exception:
+                                    pass
+
+                        if s.startswith("REST="):
+                            for token in s.split():
+                                if "=" not in token:
+                                    continue
+                                key, val = token.split("=", 1)
+                                key = key.strip()
+                                val = val.strip()
+                                if key == "REST":
+                                    metrics["rest_t"] = val.lower() == "true"
+                                elif key == "rest_q":
+                                    try:
+                                        metrics["rest_q"] = int(val)
+                                    except Exception:
+                                        metrics["rest_q"] = 0
+                                elif key == "reason":
+                                    metrics["rest_reason"] = val
+
+                        if "mae(obs|prior)=" in s:
+                            try:
+                                metrics["mae_prior"] = float(s.split("mae(obs|prior)=", 1)[1].split()[0])
+                            except Exception:
+                                pass
+
+                        if "mae(obs|post)=" in s:
+                            try:
+                                metrics["mae_post"] = float(s.split("mae(obs|post)=", 1)[1].split()[0])
+                            except Exception:
+                                pass
+
+                        if "transport=" in s and "conf=" in s:
+                            try:
+                                metrics["transport_conf"] = float(s.split("conf=", 1)[1].split()[0])
+                            except Exception:
+                                pass
+
+                        if "eq(prior,obs)=" in s:
+                            try:
+                                metrics["eq_prior"] = float(s.split("eq(prior,obs)=", 1)[1].split()[0])
+                            except Exception:
+                                pass
+
+                        if "eq(post,obs)=" in s:
+                            try:
+                                metrics["eq_post"] = float(s.split("eq(post,obs)=", 1)[1].split()[0])
+                            except Exception:
+                                pass
+
+                        if "arousal=" in s and "s_need=" in s:
+                            for token in s.split():
+                                if "=" not in token:
+                                    continue
+                                key, val = token.split("=", 1)
+                                key = key.strip()
+                                val = val.strip()
+                                if key in ("arousal", "s_need", "s_th", "mE", "mD", "mC"):
+                                    try:
+                                        metrics[key] = float(val)
+                                    except Exception:
+                                        metrics[key] = 0.0
+
+                        if "pred/val:" in s:
+                            if "validations=" in s:
+                                try:
+                                    metrics["validations"] = int(s.split("validations=", 1)[1].split()[0])
+                                except Exception:
+                                    pass
+                            if "E/B/M=" in s:
+                                try:
+                                    part = s.split("E/B/M=", 1)[1].split()[0]
+                                    entries, blocks, mass = part.split("/")
+                                    metrics["tc_entries"] = int(entries)
+                                    metrics["tc_blocks"] = int(blocks)
+                                    metrics["tc_mass"] = int(mass)
+                                except Exception:
+                                    pass
+
+                        if "learn gate:" in s:
+                            for token in s.split():
+                                if "=" not in token:
+                                    continue
+                                key, val = token.split("=", 1)
+                                key = key.strip()
+                                val = val.strip()
+                                if key == "freeze":
+                                    metrics["freeze"] = val.lower() == "true"
+                                elif key == "theta_eff":
+                                    try:
+                                        metrics["theta_eff"] = float(val)
+                                    except Exception:
+                                        metrics["theta_eff"] = 0.0
+                                elif key == "cand":
+                                    try:
+                                        metrics["cand"] = int(val)
+                                    except Exception:
+                                        metrics["cand"] = 0
+                                elif key == "upd":
+                                    try:
+                                        metrics["upd"] = int(val)
+                                    except Exception:
+                                        metrics["upd"] = 0
+                                elif key == "clamp":
+                                    try:
+                                        metrics["clamp"] = int(val)
+                                    except Exception:
+                                        metrics["clamp"] = 0
+
+                        if "compute V=" in s:
+                            tokens = s.split()
+                            for token in tokens:
+                                if "=" not in token:
+                                    continue
+                                key, val = token.split("=", 1)
+                                key = key.strip()
+                                val = val.strip()
+                                if key == "V":
+                                    try:
+                                        metrics["value_of_compute"] = float(val)
+                                    except Exception:
+                                        metrics["value_of_compute"] = 0.0
+                                elif key == "haz":
+                                    try:
+                                        metrics["hazard_pressure"] = float(val)
+                                    except Exception:
+                                        metrics["hazard_pressure"] = 0.0
+                                elif key == "nov":
+                                    try:
+                                        metrics["novelty_pressure"] = float(val)
+                                    except Exception:
+                                        metrics["novelty_pressure"] = 0.0
+                                elif key == "contemplate":
+                                    metrics["contemplate"] = val
+                                elif key == "focus":
+                                    metrics["focus_mode"] = val
+                                elif key == "plan_budget":
+                                    try:
+                                        metrics["plan_budget"] = float(val)
+                                    except Exception:
+                                        metrics["plan_budget"] = 0.0
+                                elif key == "targets":
+                                    metrics["plan_targets"] = val
+
+                        if "pending_validation=" in s:
+                            if "learn_prev_keys=" in s:
+                                try:
+                                    metrics["pending_validation"] = int(s.split("pending_validation=", 1)[1].split()[0])
+                                except Exception:
+                                    pass
+                                try:
+                                    metrics["learn_prev_keys"] = s.split("learn_prev_keys=", 1)[1].split()[0]
+                                except Exception:
+                                    pass
+
+                        if "fovea_blocks=" in s:
+                            for token in s.split():
+                                if "=" not in token:
+                                    continue
+                                key, val = token.split("=", 1)
+                                key = key.strip()
+                                val = val.strip()
+                                if key in ("fovea_blocks", "periph_blocks", "periph_on", "periph_conf", "periph_ring"):
+                                    metrics[key] = val
+
+                    sections = []
+                    summary_table = Table.grid(expand=True)
+                    for _ in range(4):
+                        summary_table.add_column(justify="left")
+
+                    sig_label = metrics.get("sig64", f"0x{last_sig64:016x}")
+                    h_val = metrics.get("h", 0.0)
+                    b_enc_val = metrics.get("b_enc", 0.0)
+                    budget_use = metrics.get("budget_use", 0.0)
+                    budget_lim = metrics.get("budget_lim", 0.0)
+                    summary_table.add_row(
+                        f"t={last_agent_t}",
+                        f"env tick={display_env_t}",
+                        f"agent env={last_proc_env_t}",
+                        f"sig64={sig_label}",
+                    )
+                    summary_table.add_row(
+                        f"nodes={metrics.get('nodes', 0)}",
+                        f"|A|={metrics.get('active_nodes', 0)}",
+                        f"h={h_val:.1f}",
+                        f"b_enc={b_enc_val:.1f}",
+                    )
+                    summary_table.add_row(
+                        f"budget use/lim={budget_use:.3f}/{budget_lim:.3f}",
+                        f"plan={metrics.get('plan', 0.0):.2f}",
+                        f"max={metrics.get('max', 0.0):.2f}",
+                        f"degrade={metrics.get('degrade', 0)}",
+                    )
+                    if metrics.get("kernel"):
+                        summary_table.add_row(f"kernel={metrics['kernel']}", "", "", "")
+
+                    sections.append(Text("🎯 Status Overview", style="bold magenta"))
+                    sections.append(summary_table)
+                    sections.append(Text(""))
+
+                    if metrics.get("cand") is not None:
+                        learn_info = {
+                            "cand": metrics.get("cand", 0),
+                            "upd": metrics.get("upd", 0),
+                            "clamp": metrics.get("clamp", 0),
+                            "theta_eff": metrics.get("theta_eff", 0.0),
+                        }
+                        pred_info = {
+                            "mae_prior": metrics.get("mae_prior", 1.0),
+                            "mae_post": metrics.get("mae_post", 1.0),
+                            "eq_prior": metrics.get("eq_prior", 0.0),
+                            "eq_post": metrics.get("eq_post", 0.0),
+                            "transport_conf": metrics.get("transport_conf", 0.0),
+                        }
+                        sections.append(Text("📚 Learning & Prediction", style="bold green"))
+                        sections.append(Text(render_learning_dashboard(learn_info, pred_info).strip()))
+                        sections.append(Text(""))
+
+                    if metrics.get("arousal") is not None:
+                        m_lim = max(budget_lim, 1e-6)
+                        margins = [
+                            1.0,
+                            max(0.0, 1.0 - metrics.get("s_need", 0.0)),
+                            metrics.get("theta_eff", 0.0),
+                            max(0.0, 1.0 - (budget_use / m_lim)),
+                            0.8,
+                        ]
+                        stress = [
+                            metrics.get("arousal", 0.0),
+                            metrics.get("s_need", 0.0),
+                            metrics.get("s_th", 0.0),
+                        ]
+                        sections.append(Text("🧠 Agent Internal State", style="bold blue"))
+                        sections.append(Text(render_agent_status(None, margins, stress).strip()))
+                        sections.append(Text(""))
+
+                    if "mae_post" in metrics:
+                        acc_meter = create_meter(metrics.get("eq_post", 0.0), 0, 1, 20, "Accuracy")
+                        mae_meter = create_meter(metrics.get("mae_post", 1.0), 0, 2, 20, "MAE", reverse=True)
+                        conf_meter = create_confidence_meter(metrics.get("transport_conf", 0.0))
+                        perf_text = Text("📊 Performance Meters\n", style="bold yellow")
+                        perf_text.append(f"Prediction Accuracy: {acc_meter}\n")
+                        perf_text.append(f"Error (MAE):      {mae_meter}\n")
+                        perf_text.append(f"Transport Confidence: {conf_meter}")
+                        sections.append(perf_text)
+                        sections.append(Text(""))
+
+                    sections.append(Text("📋 Raw Status Output:", style="bold"))
+                    sections.append(Text(status_plain, style="grey70"))
+                    sections.append(Text(""))
+                    sections.append(Text(world_line, style="white"))
+
+                    status_text = Group(*sections)
                 else:
-                    status_text = Text(f"t={world.t}  (waiting for agent)\nautosave_in={autosave_in:5.1f}s")
-                status_text.append(
-                    f"\nworld: delay_ms={update_delay_ms} shapes={len(world.shapes)}/{world.max_shapes}"
-                )
+                    status_text = Text(
+                        f"t={world.t}  (waiting for agent)\nautosave_in={autosave_in:5.1f}s"
+                    )
+                    status_text.append(f"\n{world_line}")
 
                 env_title = f"ENV t={display_env_t} (world {world.t})"
                 pred_title = f"PRIOR t={last_agent_t or '?'} env={last_proc_env_t or '?'}"
@@ -1784,13 +2297,13 @@ def main() -> None:
                     pred_plain = pred_text.plain
                     predf_plain = pred_future_text.plain
                     diff_plain = diff_text.plain
-                    status_plain_out = status_text.plain
+                    status_plain_out = status_text.plain if hasattr(status_text, "plain") else status_plain
                     log_file.write(
                         f"tick={world.t} display_env_t={display_env_t} env_seq={env_seq} "
                         f"agent_t={last_agent_t} proc_env_t={last_proc_env_t} last_sig={last_sig64}\n"
                     )
-                    log_file.write(f"{env_title}\n{env_plain}")
-                    log_file.write(f"{pred_title}\n{pred_plain}")
+                    # Grids are logged by Rich layout system
+                    # Rich console handles terminal display appropriately
                     log_file.write(f"{predf_title}\n{predf_plain}")
                     log_file.write(f"{diff_title}\n{diff_plain}")
                     log_file.write(f"STATUS\n{status_plain_out}\n")

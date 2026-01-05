@@ -1629,7 +1629,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
     # Conservative clamp when transport evidence is weak: we still *evaluate*
     # candidates for visibility, but we tighten the update threshold so only
     # very low-error samples update parameters.
-    theta_learn_low_conf_scale = 0.25
+    theta_learn_low_conf_scale = 0.8  # Less restrictive when transport confidence is low
     theta_learn_eff = float(theta_learn) if bool(transport_high_confidence) else float(theta_learn) * float(theta_learn_low_conf_scale)
     permit_param_info["theta_learn_eff"] = float(theta_learn_eff)
     permit_param_info["theta_learn_low_conf_scale"] = float(theta_learn_low_conf_scale)
@@ -1646,7 +1646,7 @@ def step_pipeline(state: AgentState, env_obs: EnvObs, cfg: AgentConfig) -> Tuple
         clamped_candidates = 0
         err_j_vals: list[float] = []
         candidate_samples: list[Dict[str, Any]] = []
-        sample_cap = int(min(8, max(1, getattr(cfg, "fovea_blocks_per_step", 16))))
+        sample_cap = int(min(12, max(2, getattr(cfg, "fovea_blocks_per_step", 16))))
         for node_id in getattr(A_t, "active", []) or []:
             node = state.library.nodes.get(int(node_id))
             if node is None:
